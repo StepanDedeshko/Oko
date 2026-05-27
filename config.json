@@ -1,0 +1,275 @@
+{
+  "_comment": "Главный конфиг. Здесь настраиваются Zabbix, продукты, дашборды, графики и страницы проблем. Пароли сюда не писать.",
+  "settings": {
+    "_comment": "window_mode: maximized, fullscreen или normal. graph_columns - сколько графиков в ряд.",
+    "window_mode": "maximized",
+    "window_width_percent": 0.98,
+    "window_height_percent": 0.95,
+    "default_time_range": "1h",
+    "graph_refresh_seconds": 300,
+    "problems_refresh_seconds": 60,
+    "graph_columns": 1,
+    "web_zoom_factor": 0.85,
+    "fit_graphs_to_window": true,
+    "_comment_credentials": "allow_save_password=true включает чекбокс сохранения логина/пароля локально. Файл будет в ~/.config/zabbix_duty_panel/credentials.json с правами 600.",
+    "allow_save_password": true,
+    "remember_credentials_by_default": false,
+    "vertical_graphs_only": true,
+    "graph_card_min_height": 420,
+    "theme": "simple_dark",
+    "theme_comment": "mass_effect - темная sci-fi тема в стиле космического HUD.",
+    "home_notes": "",
+    "show_splash": true
+  },
+  "time_ranges": [
+    {
+      "title": "30 минут",
+      "value": "30m"
+    },
+    {
+      "title": "1 час",
+      "value": "1h"
+    },
+    {
+      "title": "3 часа",
+      "value": "3h"
+    },
+    {
+      "title": "6 часов",
+      "value": "6h"
+    },
+    {
+      "title": "12 часов",
+      "value": "12h"
+    },
+    {
+      "title": "1 день",
+      "value": "1d"
+    },
+    {
+      "title": "3 дня",
+      "value": "3d"
+    },
+    {
+      "title": "Неделя",
+      "value": "7d"
+    }
+  ],
+  "zabbix_instances": [
+    {
+      "_comment": "Первый Zabbix. id используется ниже в dashboard/pages. Поменяй адреса на свои.",
+      "id": "zbx_product_1",
+      "name": "Zabbix FacePay",
+      "base_url": "https://zabbix-product1.local",
+      "login_url": "https://zabbix-product1.local/index.php",
+      "enabled": true
+    },
+    {
+      "_comment": "Второй Zabbix. Если не нужен - enabled=false.",
+      "id": "zbx_product_2",
+      "name": "Zabbix продукт 2",
+      "base_url": "https://zabbix-product2.local",
+      "login_url": "https://zabbix-product2.local/index.php",
+      "enabled": true
+    }
+  ],
+  "products": [
+    {
+      "_comment": "FacePay. Внутри два дашборда: 8 графиков и страница проблем.",
+      "name": "FacePay",
+      "enabled": true,
+      "dashboards": [
+        {
+          "_comment": "Дашборд с 8 графиками. Кнопки времени будут видны только здесь.",
+          "name": "Графики",
+          "type": "graphs_grid",
+          "enabled": true,
+          "zabbix_id": "zbx_product_1",
+          "columns": 1,
+          "graphs": [
+            {
+              "enabled": true,
+              "title": "sum_prohod_FP2: Агрегация проходов FP2 по веткам метро 1-10",
+              "url": "http://10.250.10.10/chart2.php?graphid=83035&width=2758&height=534&legend=1&from=now-1h&to=now&profileIdx=web.dashboard.filter&profileIdx2=105&outer=1&widget_view=1",
+              "use_time_range": true,
+              "open_url": ""
+            },
+            {
+              "enabled": true,
+              "title": "fp-db-primary: photo_processing_long_ebs_photo\n (При достижении значения >500 создаем задачу на инженеров)",
+              "url": "http://10.250.10.10/chart.php?from=now-7d&to=now&itemids%5B0%5D=599171&type=0&profileIdx=web.item.graph.filter&profileIdx2=599171&width=2658&height=200&_=xu1jgpct&screenid=",
+              "use_time_range": true,
+              "open_url": "http://10.250.10.10/history.php?action=showgraph&itemids%5B%5D=599171"
+            }
+          ],
+          "layout": "vertical"
+        },
+        {
+          "_comment": "Обычная страница проблем Zabbix. Без шаблонов.",
+          "name": "Проблемы",
+          "type": "problems_page",
+          "enabled": true,
+          "zabbix_id": "zbx_product_1",
+          "url": "http://10.250.10.10/zabbix.php?show=3&name=&severities%5B0%5D=0&severities%5B2%5D=2&severities%5B3%5D=3&severities%5B4%5D=4&severities%5B5%5D=5&inventory%5B0%5D%5Bfield%5D=type&inventory%5B0%5D%5Bvalue%5D=&evaltype=0&tags%5B0%5D%5Btag%5D=&tags%5B0%5D%5Boperator%5D=0&tags%5B0%5D%5Bvalue%5D=&show_tags=3&tag_name_format=0&tag_priority=&show_opdata=0&show_timeline=1&filter_name=&filter_show_counter=0&filter_custom_time=0&sort=clock&sortorder=DESC&age_state=0&show_suppressed=0&unacknowledged=0&compact_view=0&details=0&highlight_row=0&action=problem.view"
+        },
+        {
+          "_comment": "Обычная страница/дашборд Zabbix. Без шаблонов.",
+          "name": "Взаимодействие с ЕЦХД/ТИБ",
+          "type": "dashboard_page",
+          "enabled": true,
+          "zabbix_id": "zbx_product_1",
+          "url": "http://10.250.10.10/zabbix.php?action=dashboard.view"
+        },
+        {
+          "_comment": "Страница с двумя режимами. Каждый режим открывает свою ссылку Zabbix. URL заполняется вручную.",
+          "name": "Сработки",
+          "type": "mode_pages",
+          "enabled": true,
+          "zabbix_id": "zbx_product_1",
+          "modes": [
+            {
+              "name": "Режим 1",
+              "url": "",
+              "_comment": "Вставь сюда ссылку для режима 1"
+            },
+            {
+              "name": "Режим 2",
+              "url": "",
+              "_comment": "Вставь сюда ссылку для режима 2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "_comment": "Сфера. Один дашборд с 8 графиками.",
+      "name": "Сфера",
+      "enabled": true,
+      "dashboards": [
+        {
+          "name": "Графики",
+          "type": "graphs_grid",
+          "enabled": true,
+          "zabbix_id": "zbx_product_2",
+          "columns": 1,
+          "graphs": [
+            {
+              "enabled": true,
+              "title": "fc-cbd-primary: CPU utilization (Если бьет под 100% больше 20 минут, то задача на инженеров)",
+              "url": "http://10.250.3.161/zabbix/chart2.php?graphid=15594&from=now%2Fd&to=now&height=201&width=1935&profileIdx=web.charts.filter&_=xtxtbnqu",
+              "use_time_range": true,
+              "open_url": "http://10.250.3.161/zabbix/zabbix.php?action=charts.view&filter_hostids%5B0%5D=10471&filter_name=CPU%20utilization&filter_show=1&filter_set=1&from=now%2Fd&to=now"
+            },
+            {
+              "enabled": true,
+              "title": "fc-nginx-01: Nginx: Requests per second (Если бьет под 100% больше 20 минут, то задача на инженеров)",
+              "url": "http://10.250.3.161/zabbix/chart2.php?graphid=12652&from=now%2Fd&to=now&height=201&width=1935&profileIdx=web.charts.filter&_=xtxtcvd3",
+              "use_time_range": true,
+              "open_url": "http://10.250.3.161/zabbix/zabbix.php?action=charts.view&filter_hostids%5B0%5D=10467&filter_name=Nginx%3A%20Requests%20per%20second&filter_show=1&filter_set=1&from=now%2Fd&to=now"
+            },
+            {
+              "enabled": true,
+              "title": "fc-cbd-primary: Дельты с лицами из ГИАЦ",
+              "url": "http://10.250.3.161/zabbix/chart2.php?graphid=74577&from=now%2Fd&to=now&height=201&width=1935&profileIdx=web.charts.filter&_=xtxtern6",
+              "use_time_range": true,
+              "open_url": "http://10.250.3.161/zabbix/zabbix.php?action=charts.view&filter_hostids%5B0%5D=10471&filter_name=%D0%94%D0%B5%D0%BB%D1%8C%D1%82%D1%8B%20%D1%81%20%D0%BB%D0%B8%D1%86%D0%B0%D0%BC%D0%B8%20%D0%B8%D0%B7%20%D0%93%D0%98%D0%90%D0%A6&filter_show=1&filter_set=1&from=now%2Fd&to=now"
+            },
+            {
+              "enabled": true,
+              "title": "(Сфера 1) detects-history-search: Общее количество сработок за опер. сутки",
+              "url": "http://10.250.3.161/zabbix/chart2.php?graphid=59476&from=now-3h&to=now&height=201&width=1935&profileIdx=web.charts.filter&_=xtxtfanp",
+              "use_time_range": true,
+              "open_url": "http://10.250.3.161/zabbix/zabbix.php?action=charts.view&filter_hostids%5B0%5D=12649&filter_name=%D0%9E%D0%B1%D1%89%D0%B5%D0%B5%20%D0%BA%D0%BE%D0%BB%D0%B8%D1%87%D0%B5%D1%81%D1%82%D0%B2%D0%BE%20%D1%81%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BE%D0%BA%20%D0%B7%D0%B0%20%D0%BE%D0%BF%D0%B5%D1%80.%20%D1%81%D1%83%D1%82%D0%BA%D0%B8&filter_show=1&filter_set=1&from=now-3h&to=now"
+            },
+            {
+              "enabled": true,
+              "title": "(Сфера 2) detects-history-search: Общее количество сработок за опер. сутки",
+              "url": "http://10.250.23.161/zabbix/chart2.php?graphid=8647&from=now-3h&to=now&height=201&width=1656&profileIdx=web.charts.filter&_=xtxtgrj4",
+              "use_time_range": true,
+              "open_url": ""
+            },
+            {
+              "enabled": true,
+              "title": "(Сфера 1) detects-history-search: Кол-во детекций с матчингом",
+              "url": "http://10.250.3.161/zabbix/chart2.php?graphid=59451&from=now-12h&to=now&height=201&width=1935&profileIdx=web.charts.filter&_=xtxti0fb",
+              "use_time_range": true,
+              "open_url": "http://10.250.3.161/zabbix/zabbix.php?action=charts.view&filter_hostids%5B0%5D=12649&filter_name=%D0%9A%D0%BE%D0%BB-%D0%B2%D0%BE%20%D0%B4%D0%B5%D1%82%D0%B5%D0%BA%D1%86%D0%B8%D0%B9%20%D1%81%20%D0%BC%D0%B0%D1%82%D1%87%D0%B8%D0%BD%D0%B3%D0%BE%D0%BC&filter_show=1&filter_set=1&from=now-12h&to=now"
+            },
+            {
+              "enabled": true,
+              "title": "(Сфера 2) detects-history-search: Кол-во детекций с матчингом",
+              "url": "http://10.250.23.161/zabbix/chart2.php?graphid=8450&from=now-2d&to=now&height=201&width=1656&profileIdx=web.charts.filter&_=xtxti0ud",
+              "use_time_range": true,
+              "open_url": "http://10.250.23.161/zabbix/zabbix.php?action=charts.view&filter_hostids%5B0%5D=381&filter_name=%D0%BA%D0%BE%D0%BB-%D0%B2%D0%BE%20%D0%B4%D0%B5%D1%82%D0%B5%D0%BA%D1%86%D0%B8%D0%B9%20%D1%81%20%D0%BC%D0%B0%D1%82%D1%87%D0%B8%D0%BD%D0%B3%D0%BE%D0%BC&filter_show=1&filter_set=1&from=now-2d&to=now"
+            },
+            {
+              "enabled": true,
+              "title": "33 нода тестовая, фиксируем если не работает исторический поиск",
+              "url": "http://10.248.233.161/zabbix/chart.php?from=now-15m&to=now&itemids%5B0%5D=322419&type=0&profileIdx=web.item.graph.filter&profileIdx2=322419&width=2166&height=200&_=xtstjkc7&screenid=",
+              "use_time_range": true,
+              "open_url": "http://10.248.233.161/zabbix/history.php?action=showgraph&itemids%5B%5D=322419"
+            }
+          ],
+          "layout": "vertical"
+        }
+      ]
+    }
+  ],
+  "loading_screen": {
+    "_comment": "Заставка с видео/музыкой. Может висеть до получения счётчика проблем или до max_wait_ms.",
+    "enabled": true,
+    "show_until_problem_counter_ready": false,
+    "max_wait_ms": 30000,
+    "show_after_login": true,
+    "duration_ms": 5000,
+    "video_path": "assets/loading/loading.mp4",
+    "music_path": "assets/loading/loading_music.mp3",
+    "music_volume": 35,
+    "loop_video": true,
+    "loop_music": true,
+    "show_on_problems_open": false,
+    "problem_counter_poll_interval_ms": 5000,
+    "min_show_ms": 1500,
+    "auto_detect_media": true
+  },
+  "duty_mode": {
+    "enabled": false,
+    "hourly_notification": true,
+    "skip_minutes": 5,
+    "sound_path": "",
+    "graph_ids": [],
+    "otrs_create_url": "",
+    "otrs": {
+      "create_url": "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentNewTicketForm;NewTicketFormID=6",
+      "template_button_selector": "#TemplateSelectionToCustomer",
+      "template_select_selector": "#templateSelect",
+      "template_value": "zabbix",
+      "template_title": "Проверка Zabbix (Важные IT-сервисы)",
+      "template_confirm_selector": "#selectButton",
+      "service_search_selector": "#ServiceID_Search",
+      "service_tree_selector": "#ServiceID_Select",
+      "service_text": "Прочее",
+      "sla_search_selector": "#SLAID_Search",
+      "sla_tree_selector": "#SLAID_Select",
+      "sla_text": "SLA_none",
+      "proactivity_search_selector": "#DynamicField_Proactivity_Search",
+      "proactivity_tree_selector": "#DynamicField_Proactivity_Select",
+      "proactivity_text": "Нет",
+      "note_url_template": "",
+      "note_url_base": "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID="
+    },
+    "current_ticket_number": "",
+    "current_ticket_id": "",
+    "current_ticket_url": "",
+    "expected_ticket_subject": "Проверка Zabbix (Важных IT-сервисов)",
+    "otrs_login_enabled": false,
+    "otrs_login": "",
+    "otrs_password": "",
+    "otrs_auto_submit_login": false
+  },
+  "app": {
+    "name": "Око",
+    "version": "0.2 [pre-release]",
+    "description": "Панель дежурного мониторинга Zabbix/ОТРС."
+  }
+}
