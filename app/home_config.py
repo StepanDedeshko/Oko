@@ -29,6 +29,7 @@ from app.config import save_config
 from app.credentials import load_saved_credentials, save_credentials, clear_saved_credentials
 from app.theme import get_available_themes
 from app.app_info import APP_NAME, APP_VERSION, APP_DESCRIPTION
+from app.updater import download_and_install_update
 
 
 def clone(value):
@@ -564,6 +565,75 @@ class NotesWidget(QWidget):
         QMessageBox.information(self, "Заметки", "Сохранено.")
 
 
+class UpdateWidget(QWidget):
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = ensure_home_defaults(config)
+        root = QVBoxLayout(self)
+
+        title = QLabel("Обновление")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        version = QLabel(f"Текущая версия: {APP_VERSION}")
+        version.setWordWrap(True)
+        root.addWidget(version)
+
+        self.url_input = QLineEdit(
+            self.config.setdefault("settings", {}).get("update_archive_url", "")
+        )
+        self.url_input.setPlaceholderText(
+            "https://github.com/<owner>/<repo>/releases/download/<tag>/update.zip"
+        )
+
+        help_label = QLabel(
+            "Рекомендуется использовать прямую ссылку на asset из GitHub Releases."
+        )
+        help_label.setWordWrap(True)
+
+        form = QFormLayout()
+        form.addRow("URL архива обновления:", self.url_input)
+        root.addLayout(form)
+        root.addWidget(help_label)
+
+        install_button = QPushButton("Скачать и установить")
+        install_button.clicked.connect(self.download_and_install)
+        root.addWidget(install_button)
+        root.addStretch()
+
+    def download_and_install(self):
+        update_url = self.url_input.text().strip()
+        if not update_url:
+            QMessageBox.warning(self, "Обновление", "Укажи URL архива обновления.")
+            return
+
+        self.config.setdefault("settings", {})["update_archive_url"] = update_url
+        save_config(self.config)
+
+        answer = QMessageBox.question(
+            self,
+            "Подтверждение обновления",
+            "Перед обновлением будет создан backup.\n"
+            "config.json сохранится.\n\n"
+            "Начать обновление?"
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            download_and_install_update(update_url, self)
+        except Exception as error:
+            QMessageBox.critical(self, "Ошибка обновления", f"{error}")
+            return
+
+        restarted = request_application_restart(
+            self,
+            "Обновление установлено. Рекомендуется перезапустить приложение."
+        )
+        if not restarted:
+            QMessageBox.information(self, "Обновление", "Перезапусти приложение позже вручную.")
+
+
 class HomePageWidget(QWidget):
     def __init__(self, config, open_duty_callback=None, parent=None):
         super().__init__(parent)
@@ -592,6 +662,7 @@ class HomePageWidget(QWidget):
         tabs.addTab(ProductsWidget(self.config), "Продукты и страницы")
         tabs.addTab(ThemeWidget(self.config), "Тема")
         tabs.addTab(NotesWidget(self.config), "Заметки")
+        tabs.addTab(UpdateWidget(self.config), "Обновление")
         root.addWidget(tabs, stretch=1)
 
         footer = QLabel(f"Версия: {APP_VERSION}\n{APP_DESCRIPTION}")

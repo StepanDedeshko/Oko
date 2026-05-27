@@ -9,6 +9,9 @@ UPDATE_OKO.sh
 ROLLBACK_OKO.sh
 Откат на последнюю резервную копию.
 
+PUBLISH_UPDATE_TO_GITHUB.sh
+Публикация архива обновления в GitHub Releases (через gh CLI).
+
 run_oko.sh
 Обычный запуск приложения.
 
