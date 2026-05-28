@@ -33,6 +33,7 @@ from app.system_metrics import SystemMetricsProvider
 from app.theme import apply_theme, get_available_themes
 from app.theme_logo import load_theme_logo
 from app.app_info import APP_NAME
+from app.logger import get_logger
 
 
 class MainWindow(QMainWindow):
@@ -79,6 +80,7 @@ class MainWindow(QMainWindow):
         self.problem_counter_ready = False
         self.current_problem_loading_widget = None
         self.problem_loading_active = False
+        self.logger = get_logger()
 
         self.setWindowTitle(APP_NAME)
 
@@ -165,10 +167,12 @@ class MainWindow(QMainWindow):
         self.product_combo = QComboBox()
         self.product_combo.setMinimumWidth(180)
         self.product_combo.currentIndexChanged.connect(self.on_product_changed)
+        self.product_combo.activated.connect(self.on_product_changed)
 
         self.section_combo = QComboBox()
         self.section_combo.setMinimumWidth(180)
         self.section_combo.currentIndexChanged.connect(self.on_section_changed)
+        self.section_combo.activated.connect(self.on_section_changed)
 
         self.time_combo = QComboBox()
         self.time_combo.setMinimumWidth(130)
@@ -497,12 +501,14 @@ class MainWindow(QMainWindow):
         self.product_combo.blockSignals(False)
 
 
-    def on_product_changed(self):
+    def on_product_changed(self, *_args):
         if self.is_updating_selectors:
             return
 
         product_name = self.product_combo.currentData()
         sections = self.product_dashboard_indexes.get(product_name, [])
+        self.logger.info("Выбран продукт: %s", product_name)
+        self.logger.info("Найдено разделов для продукта '%s': %s", product_name, len(sections))
 
         self.is_updating_selectors = True
 
@@ -512,16 +518,25 @@ class MainWindow(QMainWindow):
 
         self.is_updating_selectors = False
 
-        self.on_section_changed()
+        if sections:
+            self.section_combo.setCurrentIndex(0)
+            self.on_section_changed()
+            return
 
-    def on_section_changed(self):
+        self.logger.info("Для продукта '%s' разделов не найдено.", product_name)
+        if self.home_page_index is not None:
+            self.open_home_page()
+
+    def on_section_changed(self, *_args):
         if self.is_updating_selectors:
             return
 
         section = self.section_combo.currentData()
         if not section:
+            self.logger.info("Раздел не выбран или отсутствует в section_combo.")
             return
 
+        self.logger.info("Выбран раздел: %s", section.get("name"))
         index = section["index"]
         self.stack.setCurrentIndex(index)
         self.update_toolbar_for_current_page(index)
