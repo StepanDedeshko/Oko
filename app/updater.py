@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import urllib.request
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ from app.config_migrator import patch_config_file
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+UPDATE_SCRIPT = PROJECT_ROOT / "UPDATE_OKO.sh"
 
 
 def _find_project_root_in_zip(extract_dir: Path) -> Path:
@@ -196,3 +198,43 @@ def apply_update_from_zip(parent_widget=None):
             "Ошибка обновления",
             f"Не удалось применить обновление:\n\n{error}"
         )
+
+
+def download_and_install_update(update_url: str):
+    if not update_url:
+        raise RuntimeError("Укажи URL архива обновления.")
+
+    if not UPDATE_SCRIPT.exists():
+        raise RuntimeError("Не найден UPDATE_OKO.sh в корне проекта.")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        archive_path = Path(tmp) / "update_archive.zip"
+        urllib.request.urlretrieve(update_url, archive_path)
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(UPDATE_SCRIPT),
+                "--archive",
+                str(archive_path),
+                "--no-run-prompt",
+            ],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        stdout_text = (result.stdout or "").strip()
+        stderr_text = (result.stderr or "").strip()
+
+        if result.returncode != 0:
+            details = (
+                "UPDATE_OKO.sh завершился с ошибкой.\n\n"
+                f"Код возврата: {result.returncode}\n\n"
+                f"STDOUT:\n{stdout_text or '(empty)'}\n\n"
+                f"STDERR:\n{stderr_text or '(empty)'}"
+            )
+            raise RuntimeError(details)
+
+        return stdout_text, stderr_text
