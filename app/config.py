@@ -37,12 +37,17 @@ def _default_config():
     }
 
 
+def ensure_config_exists():
+    if CONFIG_PATH.exists():
+        return
+    if CONFIG_EXAMPLE_PATH.exists():
+        CONFIG_PATH.write_text(CONFIG_EXAMPLE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        save_config(_default_config())
+
+
 def load_config():
-    if not CONFIG_PATH.exists():
-        if CONFIG_EXAMPLE_PATH.exists():
-            CONFIG_PATH.write_text(CONFIG_EXAMPLE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
-        else:
-            save_config(_default_config())
+    ensure_config_exists()
     with CONFIG_PATH.open("r", encoding="utf-8") as file:
         return json.load(file)
 

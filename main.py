@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from app.config import load_config
+from app.config import ensure_config_exists, load_config
 from app.config_migrator import patch_config_file
 from app.login_dialog import LoginDialog
 from app.main_window import MainWindow
@@ -52,6 +52,7 @@ def main():
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
+    ensure_config_exists()
     patch_config_file()
     config = load_config()
     apply_theme(app, config.get("settings", {}).get("theme", "mass_effect"))
