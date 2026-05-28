@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from app.app_info import APP_VERSION
 from app.config import save_config
+from app.logger import get_logger
 from app.updater import (
     download_and_install_update,
     fetch_latest_release_info,
@@ -68,6 +69,7 @@ class UpdateWidget(QWidget):
         super().__init__(parent)
         self.config = config
         self.request_restart_callback = request_restart_callback
+        self.logger = get_logger()
         self.release_check_interactive = False
         self.release_check_auto_start_install = False
         root = QVBoxLayout(self)
@@ -132,6 +134,7 @@ class UpdateWidget(QWidget):
     def check_for_updates(self, interactive=False, auto_start_install=False):
         if self.release_thread is not None:
             return
+        self.logger.info("Начало проверки обновлений")
         self.release_check_interactive = interactive
         self.release_check_auto_start_install = auto_start_install
         self.release_thread = QThread(self)
@@ -157,6 +160,7 @@ class UpdateWidget(QWidget):
         asset_url = payload.get("update_asset_url", "")
         current_version = payload.get("current_version", APP_VERSION)
 
+        self.logger.info("Найдена версия релиза: %s", latest_tag or "unknown")
         if not latest_tag:
             if interactive:
                 self.append_status("Ошибка обновления")
@@ -194,7 +198,7 @@ class UpdateWidget(QWidget):
 
     def on_release_check_failed(self, error_text):
         interactive = self.release_check_interactive
-        print(f"Не удалось проверить обновления: {error_text}")
+        self.logger.warning("Не удалось проверить обновления: %s", error_text)
         if interactive:
             self.append_status("Ошибка обновления")
             self.append_status(error_text)
@@ -230,6 +234,7 @@ class UpdateWidget(QWidget):
         if answer != QMessageBox.Yes:
             return
 
+        self.logger.info("Начало установки обновления из URL: %s", update_url)
         self.status_log.clear()
         self.append_status("Скачивание обновления...")
         self.install_button.setEnabled(False)
@@ -249,6 +254,7 @@ class UpdateWidget(QWidget):
         self.update_thread.start()
 
     def on_update_finished(self, stdout_text, stderr_text):
+        self.logger.info("Обновление успешно завершено")
         self.append_status("Обновление завершено")
         if stdout_text:
             self.append_status("\n=== STDOUT ===")
@@ -265,6 +271,7 @@ class UpdateWidget(QWidget):
             QMessageBox.information(self, "Обновление", "Перезапусти приложение позже вручную.")
 
     def on_update_failed(self, error_text):
+        self.logger.error("Ошибка обновления: %s", error_text)
         self.append_status("Ошибка обновления")
         self.append_status("\n=== ОШИБКА ===")
         self.append_status(error_text)

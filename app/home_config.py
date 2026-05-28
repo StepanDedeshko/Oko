@@ -30,6 +30,7 @@ from app.credentials import load_saved_credentials, save_credentials, clear_save
 from app.theme import get_available_themes
 from app.app_info import APP_NAME, APP_VERSION, APP_DESCRIPTION
 from app.update_widget import UpdateWidget
+from app.diagnostics_widget import DiagnosticsWidget
 
 
 def clone(value):
@@ -597,6 +598,7 @@ class HomePageWidget(QWidget):
         tabs.addTab(NotesWidget(self.config), "Заметки")
         self.update_widget = UpdateWidget(self.config, request_application_restart)
         tabs.addTab(self.update_widget, "Обновление")
+        tabs.addTab(DiagnosticsWidget(self.config), "Диагностика")
         root.addWidget(tabs, stretch=1)
 
         footer = QLabel(f"Версия: {APP_VERSION}\n{APP_DESCRIPTION}")

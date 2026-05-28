@@ -14,7 +14,8 @@ from app.splash import ThemeSplash
 from app.loading_screen import LoadingScreen
 from app.screen_utils import screen_under_cursor, screen_for_widget, center_widget_on_screen, geometry_dict
 from app.theme import apply_theme
-from app.app_info import APP_NAME
+from app.app_info import APP_NAME, APP_VERSION
+from app.logger import get_logger
 
 def show_start_loading(config):
     loading_config = config.get("loading_screen", {})
@@ -44,6 +45,13 @@ def show_start_loading(config):
 
 
 def main():
+    logger = get_logger()
+    app_root = Path(__file__).resolve().parent
+    config_path = app_root / "config.json"
+    logger.info("Запуск приложения")
+    logger.info("APP_VERSION=%s", APP_VERSION)
+    logger.info("Путь приложения: %s", app_root)
+    logger.info("Путь config.json: %s", config_path)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setDesktopFileName("oko")
@@ -91,8 +99,8 @@ def main():
             settings = config.get("settings", {})
             if settings.get("check_updates_on_startup", True):
                 home.check_for_updates(interactive=False, auto_start_install=False)
-        except Exception as error:
-            print(f"Не удалось проверить обновления: {error}")
+        except Exception:
+            logger.exception("Не удалось проверить обновления при запуске")
 
     QTimer.singleShot(1500, startup_update_check)
 
