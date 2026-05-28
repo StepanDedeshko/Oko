@@ -19,8 +19,7 @@
     "theme": "simple_dark",
     "theme_comment": "mass_effect - темная sci-fi тема в стиле космического HUD.",
     "home_notes": "",
-    "show_splash": true,
-    "update_archive_url": "https://github.com/StepanDedeshko/Oko/releases/download/v0.2.1/update.zip"
+    "show_splash": true
   },
   "time_ranges": [
     {
@@ -263,7 +262,7 @@
     "current_ticket_id": "",
     "current_ticket_url": "",
     "expected_ticket_subject": "Проверка Zabbix (Важных IT-сервисов)",
-    "otrs_login_enabled": true,
+    "otrs_login_enabled": false,
     "otrs_login": "",
     "otrs_password": "",
     "otrs_auto_submit_login": false
@@ -272,11 +271,5 @@
     "name": "Око",
     "version": "0.2 [pre-release]",
     "description": "Панель дежурного мониторинга Zabbix/ОТРС."
-  },
-  "_startup_screen_geometry": {
-    "x": 2560,
-    "y": 0,
-    "width": 2560,
-    "height": 1440
   }
 }
