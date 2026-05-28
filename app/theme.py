@@ -502,6 +502,7 @@ def apply_theme(app, theme_name: str = "mass_effect"):
 
     app.setPalette(build_palette(theme_name))
     app.setStyleSheet(build_stylesheet(theme_name))
+    app.setProperty("oko_theme_name", theme_name)
 
     # Принудительно переполируем уже созданные виджеты,
     # чтобы тема применялась к кнопкам, полям и меню сразу.

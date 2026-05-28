@@ -98,6 +98,8 @@ class ThemeSplash(QWidget):
         return "загрузка приложения"
 
     def palette(self):
+        if self.theme == "light_standard":
+            return {"bg1": QColor("#f3f4f6"), "bg2": QColor("#ffffff"), "accent": QColor("#3b82f6"), "accent2": QColor("#2563eb"), "text": "#111827", "muted": "#4b5563", "border": QColor("#d1d5db")}
         if self.theme == "mass_effect":
             return {"bg1": QColor(8, 12, 18), "bg2": QColor(24, 36, 52), "accent": QColor(235, 59, 71), "accent2": QColor(70, 190, 255), "text": "#f2f6ff", "muted": "#9fb7cc", "border": QColor(235, 59, 71)}
         if self.theme == "cerberus_red":
@@ -128,9 +130,10 @@ class ThemeSplash(QWidget):
 
     def progress_style(self):
         p = self.palette()
+        progress_bg = "rgba(255, 255, 255, 180)" if self.theme == "light_standard" else "rgba(0, 0, 0, 70)"
         return f"""
             QProgressBar {{
-                background-color: rgba(0, 0, 0, 70);
+                background-color: {progress_bg};
                 border: 1px solid {p['border'].name()};
                 border-radius: 4px;
             }}
