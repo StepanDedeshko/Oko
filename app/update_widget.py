@@ -68,6 +68,8 @@ class UpdateWidget(QWidget):
         super().__init__(parent)
         self.config = config
         self.request_restart_callback = request_restart_callback
+        self.release_check_interactive = False
+        self.release_check_auto_start_install = False
         root = QVBoxLayout(self)
 
         title = QLabel("Обновление")
@@ -108,9 +110,7 @@ class UpdateWidget(QWidget):
         root.addWidget(self.check_on_startup_checkbox)
 
         self.check_updates_now_button = QPushButton("Проверить обновления сейчас")
-        self.check_updates_now_button.clicked.connect(
-            lambda: self.check_for_updates(interactive=True, auto_start_install=False)
-        )
+        self.check_updates_now_button.clicked.connect(self.check_updates_now)
         root.addWidget(self.check_updates_now_button)
         root.addStretch()
 
@@ -122,6 +122,9 @@ class UpdateWidget(QWidget):
     def append_status(self, text):
         self.status_log.appendPlainText(text)
 
+    def check_updates_now(self):
+        self.check_for_updates(interactive=True, auto_start_install=False)
+
     def save_check_updates_on_startup(self, enabled):
         self.config.setdefault("settings", {})["check_updates_on_startup"] = bool(enabled)
         save_config(self.config)
@@ -129,15 +132,15 @@ class UpdateWidget(QWidget):
     def check_for_updates(self, interactive=False, auto_start_install=False):
         if self.release_thread is not None:
             return
+        self.release_check_interactive = interactive
+        self.release_check_auto_start_install = auto_start_install
         self.release_thread = QThread(self)
         self.release_worker = ReleaseCheckWorker(APP_VERSION)
         self.release_worker.moveToThread(self.release_thread)
         self.release_thread.started.connect(self.release_worker.run)
         self.release_worker.status.connect(self.append_status)
-        self.release_worker.finished.connect(
-            lambda payload: self.on_release_check_finished(payload, interactive, auto_start_install)
-        )
-        self.release_worker.failed.connect(lambda error: self.on_release_check_failed(error, interactive))
+        self.release_worker.finished.connect(self.on_release_check_finished)
+        self.release_worker.failed.connect(self.on_release_check_failed)
         self.release_worker.finished.connect(self.release_thread.quit)
         self.release_worker.failed.connect(self.release_thread.quit)
         self.release_worker.finished.connect(self.release_worker.deleteLater)
@@ -146,7 +149,9 @@ class UpdateWidget(QWidget):
         self.release_thread.finished.connect(self.clear_release_thread_refs)
         self.release_thread.start()
 
-    def on_release_check_finished(self, payload, interactive, auto_start_install):
+    def on_release_check_finished(self, payload):
+        interactive = self.release_check_interactive
+        auto_start_install = self.release_check_auto_start_install
         latest_tag = payload.get("tag_name", "")
         is_newer = payload.get("is_newer", False)
         asset_url = payload.get("update_asset_url", "")
@@ -187,7 +192,8 @@ class UpdateWidget(QWidget):
         if auto_start_install:
             self.download_and_install()
 
-    def on_release_check_failed(self, error_text, interactive):
+    def on_release_check_failed(self, error_text):
+        interactive = self.release_check_interactive
         print(f"Не удалось проверить обновления: {error_text}")
         if interactive:
             self.append_status("Ошибка обновления")

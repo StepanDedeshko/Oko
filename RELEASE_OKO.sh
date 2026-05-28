@@ -9,8 +9,32 @@ if [ -z "$TAG" ]; then
 fi
 
 if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "Ошибка: рабочее дерево не чистое. Закоммитьте или уберите изменения."
+  echo "Рабочее дерево не чистое. Сначала закоммитьте или уберите изменения."
   exit 1
+fi
+
+VERSION="${TAG#v}"
+CURRENT_VERSION="$(python3 - <<'PY'
+from pathlib import Path
+import re
+text = Path('app/app_info.py').read_text(encoding='utf-8')
+m = re.search(r'APP_VERSION\\s*=\\s*\"([^\"]+)\"', text)
+print(m.group(1) if m else "")
+PY
+)"
+
+if [ "$CURRENT_VERSION" != "$VERSION" ]; then
+  python3 - <<PY
+from pathlib import Path
+import re
+p = Path('app/app_info.py')
+t = p.read_text(encoding='utf-8')
+t = re.sub(r'APP_VERSION\\s*=\\s*\"[^\"]+\"', 'APP_VERSION = \"$VERSION\"', t, count=1)
+p.write_text(t, encoding='utf-8')
+PY
+  git add app/app_info.py
+  git commit -m "Bump version to $VERSION"
+  git push origin main
 fi
 
 python3 -m py_compile main.py
@@ -26,6 +50,7 @@ zip -r "$OUT_ZIP" . \
   -x "*/__pycache__/*" \
   -x "*.pyc" \
   -x "_backups/*" \
+  -x "config.json" \
   -x "update.zip"
 
 bash ./PUBLISH_UPDATE_TO_GITHUB.sh "$TAG" "$OUT_ZIP"
