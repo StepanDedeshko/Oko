@@ -140,13 +140,13 @@ class UpdateWidget(QWidget):
         self.release_worker.failed.connect(lambda error: self.on_release_check_failed(error, interactive))
         self.release_worker.finished.connect(self.release_thread.quit)
         self.release_worker.failed.connect(self.release_thread.quit)
-        self.release_thread.finished.connect(self.release_worker.deleteLater)
+        self.release_worker.finished.connect(self.release_worker.deleteLater)
+        self.release_worker.failed.connect(self.release_worker.deleteLater)
         self.release_thread.finished.connect(self.release_thread.deleteLater)
+        self.release_thread.finished.connect(self.clear_release_thread_refs)
         self.release_thread.start()
 
     def on_release_check_finished(self, payload, interactive, auto_start_install):
-        self.release_thread = None
-        self.release_worker = None
         latest_tag = payload.get("tag_name", "")
         is_newer = payload.get("is_newer", False)
         asset_url = payload.get("update_asset_url", "")
@@ -188,12 +188,14 @@ class UpdateWidget(QWidget):
             self.download_and_install()
 
     def on_release_check_failed(self, error_text, interactive):
-        self.release_thread = None
-        self.release_worker = None
         print(f"Не удалось проверить обновления: {error_text}")
         if interactive:
             self.append_status("Ошибка обновления")
             self.append_status(error_text)
+
+    def clear_release_thread_refs(self):
+        self.release_thread = None
+        self.release_worker = None
 
     def open_update_tab(self):
         parent = self.parent()
@@ -234,8 +236,10 @@ class UpdateWidget(QWidget):
         self.update_worker.failed.connect(self.on_update_failed)
         self.update_worker.finished.connect(self.update_thread.quit)
         self.update_worker.failed.connect(self.update_thread.quit)
-        self.update_thread.finished.connect(self.update_worker.deleteLater)
+        self.update_worker.finished.connect(self.update_worker.deleteLater)
+        self.update_worker.failed.connect(self.update_worker.deleteLater)
         self.update_thread.finished.connect(self.update_thread.deleteLater)
+        self.update_thread.finished.connect(self.clear_update_thread_refs)
         self.update_thread.start()
 
     def on_update_finished(self, stdout_text, stderr_text):
@@ -247,8 +251,6 @@ class UpdateWidget(QWidget):
             self.append_status("\n=== STDERR ===")
             self.append_status(stderr_text)
         self.install_button.setEnabled(True)
-        self.update_thread = None
-        self.update_worker = None
         restarted = self.request_restart_callback(
             self,
             "Обновление установлено. Рекомендуется перезапустить приложение."
@@ -261,6 +263,8 @@ class UpdateWidget(QWidget):
         self.append_status("\n=== ОШИБКА ===")
         self.append_status(error_text)
         self.install_button.setEnabled(True)
+        QMessageBox.critical(self, "Ошибка обновления", error_text)
+
+    def clear_update_thread_refs(self):
         self.update_thread = None
         self.update_worker = None
-        QMessageBox.critical(self, "Ошибка обновления", error_text)
