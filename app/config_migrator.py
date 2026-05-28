@@ -2,6 +2,8 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+from app.config import CONFIG_EXAMPLE_PATH, _default_config
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.json"
@@ -78,11 +80,23 @@ def ensure_runtime_defaults(config):
     return config
 
 
+def _ensure_config_for_patch(config_path: Path):
+    if config_path.exists():
+        return
+
+    if CONFIG_EXAMPLE_PATH.exists():
+        config_path.write_text(CONFIG_EXAMPLE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        return
+
+    config_path.write_text(
+        json.dumps(_default_config(), ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+
 def patch_config_file(config_path=CONFIG_PATH):
     config_path = Path(config_path)
-
-    if not config_path.exists():
-        raise FileNotFoundError(f"config.json не найден: {config_path}")
+    _ensure_config_for_patch(config_path)
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config = ensure_runtime_defaults(config)

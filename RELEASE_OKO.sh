@@ -18,7 +18,7 @@ CURRENT_VERSION="$(python3 - <<'PY'
 from pathlib import Path
 import re
 text = Path('app/app_info.py').read_text(encoding='utf-8')
-m = re.search(r'APP_VERSION\\s*=\\s*\"([^\"]+)\"', text)
+m = re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', text)
 print(m.group(1) if m else "")
 PY
 )"
@@ -29,7 +29,7 @@ from pathlib import Path
 import re
 p = Path('app/app_info.py')
 t = p.read_text(encoding='utf-8')
-t = re.sub(r'APP_VERSION\\s*=\\s*\"[^\"]+\"', 'APP_VERSION = \"$VERSION\"', t, count=1)
+t = re.sub(r'APP_VERSION\s*=\s*\"[^\"]+\"', 'APP_VERSION = \"$VERSION\"', t, count=1)
 p.write_text(t, encoding='utf-8')
 PY
   git add app/app_info.py
