@@ -82,6 +82,19 @@ def main():
     window.show()
     splash.close()
 
+    def startup_update_check():
+        try:
+            home = getattr(window, "home_page_widget", None)
+            if home is None:
+                return
+            settings = config.get("settings", {})
+            if settings.get("check_updates_on_startup", True):
+                home.check_for_updates(interactive=False, auto_start_install=False)
+        except Exception as error:
+            print(f"Не удалось проверить обновления: {error}")
+
+    QTimer.singleShot(1500, startup_update_check)
+
     sys.exit(app.exec())
 
 
