@@ -33,6 +33,7 @@ class LoginDialog(QDialog):
         self.preferred_screen = preferred_screen
         self.credentials = {}
         self.saved_credentials = load_saved_credentials()
+        self.theme_name = self.config.get("settings", {}).get("theme", "mass_effect")
 
         self.setWindowTitle(f"Вход в {APP_NAME}")
         self.resize(560, 520)
@@ -138,6 +139,40 @@ class LoginDialog(QDialog):
         root.addLayout(buttons)
 
         center_widget_on_screen(self, self.preferred_screen)
+        self.apply_theme_style()
+
+    def apply_theme_style(self):
+        if self.theme_name != "light_standard":
+            return
+
+        self.setStyleSheet("""
+            QDialog, QWidget { background-color: #f3f4f6; color: #111827; }
+            QGroupBox {
+                background-color: #ffffff;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 8px;
+                font-weight: 700;
+            }
+            QGroupBox::title { left: 10px; padding: 0 4px; color: #111827; }
+            QLineEdit {
+                background-color: #ffffff;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                padding: 6px 8px;
+                color: #111827;
+            }
+            QPushButton {
+                background-color: #ffffff;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                padding: 6px 12px;
+                color: #111827;
+            }
+            QPushButton:hover { border-color: #93c5fd; }
+            QScrollArea { border: 1px solid #d1d5db; background-color: #ffffff; }
+        """)
 
     def accept_login(self):
         if not self.inputs:

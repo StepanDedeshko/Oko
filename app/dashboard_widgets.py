@@ -1,6 +1,7 @@
 from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QColor
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -15,6 +16,27 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from app.time_range import apply_time_range_to_url
 from app.autologin import make_zabbix_login_js
+
+
+def _resolve_web_colors():
+    app = QApplication.instance()
+    theme_name = app.property("oko_theme_name") if app else None
+    is_light = theme_name == "light_standard"
+
+    if is_light:
+        return {
+            "page_bg": "#ffffff",
+            "host_bg": "#f3f4f6",
+            "text": "#111827",
+            "border": "#d1d5db",
+        }
+
+    return {
+        "page_bg": "#0b0b0b",
+        "host_bg": "#0b0b0b",
+        "text": "#d7e8ff",
+        "border": "#0b0b0b",
+    }
 
 
 class GraphCard(QFrame):
@@ -47,12 +69,13 @@ class GraphCard(QFrame):
         self.open_button.clicked.connect(self.open_in_external_browser)
 
         self.view = QWebEngineView()
+        colors = _resolve_web_colors()
         self.view.setZoomFactor(self.zoom_factor)
-        self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
+        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
 
         self.page = QWebEnginePage(self.profile, self.view)
         try:
-            self.page.setBackgroundColor(QColor("#0b0b0b"))
+            self.page.setBackgroundColor(QColor(colors["page_bg"]))
         except Exception:
             pass
 
@@ -122,7 +145,8 @@ class GraphCard(QFrame):
             self.view.page().runJavaScript(js)
 
     def inject_fit_script(self):
-        js = r"""
+        colors = _resolve_web_colors()
+        js = """
         (function() {
             const styleId = 'dezhurka-graph-fit';
             let style = document.getElementById(styleId);
@@ -138,7 +162,7 @@ class GraphCard(QFrame):
                     padding: 0 !important;
                     overflow-x: hidden !important;
                     overflow-y: auto !important;
-                    background: #0b0b0b !important;
+                    background: __BG__ !important;
                 }
 
                 body * {
@@ -168,11 +192,12 @@ class GraphCard(QFrame):
                 }
             `;
 
-            document.body.style.background = '#0b0b0b';
-            document.documentElement.style.background = '#0b0b0b';
+            document.body.style.background = '__BG__';
+            document.documentElement.style.background = '__BG__';
             return 'OK';
         })();
         """
+        js = js.replace("__BG__", colors["page_bg"])
         self.view.page().runJavaScript(js)
 
 
@@ -189,6 +214,7 @@ class GraphsDashboard(QWidget):
         self.time_range = time_range
         self.settings = settings
         self.credentials = credentials or {}
+        self.colors = _resolve_web_colors()
         self.graph_cards = []
 
         root = QVBoxLayout(self)
@@ -203,6 +229,7 @@ class GraphsDashboard(QWidget):
         root.addWidget(scroll, stretch=1)
 
         content = QWidget()
+        content.setStyleSheet(f"background-color: {self.colors['host_bg']};")
         scroll.setWidget(content)
 
         layout = QVBoxLayout(content)
@@ -272,10 +299,11 @@ class SimplePageDashboard(QWidget):
         open_external_button.clicked.connect(self.open_current_external)
 
         self.view = QWebEngineView()
-        self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
+        colors = _resolve_web_colors()
+        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
         self.page = QWebEnginePage(profile, self.view)
         try:
-            self.page.setBackgroundColor(QColor("#0b0b0b"))
+            self.page.setBackgroundColor(QColor(colors["page_bg"]))
         except Exception:
             pass
 
@@ -358,11 +386,12 @@ class ModePagesDashboard(QWidget):
         root.addLayout(button_row)
 
         self.view = QWebEngineView()
-        self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
+        colors = _resolve_web_colors()
+        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
 
         self.page = QWebEnginePage(profile, self.view)
         try:
-            self.page.setBackgroundColor(QColor("#0b0b0b"))
+            self.page.setBackgroundColor(QColor(colors["page_bg"]))
         except Exception:
             pass
 
@@ -395,11 +424,12 @@ class ModePagesDashboard(QWidget):
         self.load_current_mode()
 
     def load_current_mode(self):
+        colors = _resolve_web_colors()
         url = self.get_current_url()
         if not url:
-            self.view.setHtml("""
+            self.view.setHtml(f"""
                 <html>
-                <body style="background:#0b0b0b;color:#d7e8ff;font-family:sans-serif;padding:24px;">
+                <body style="background:{colors['page_bg']};color:{colors['text']};font-family:sans-serif;padding:24px;">
                     <h2>Ссылка режима не задана</h2>
                     <p>Открой config.json и укажи URL для выбранного режима:</p>
                     <pre>FacePay → Сработки → modes → url</pre>
