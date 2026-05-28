@@ -1,6 +1,8 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -14,9 +16,19 @@ from PySide6.QtWidgets import (
 )
 
 from app.app_info import APP_NAME
-from app.config import save_config
+from app.config import CONFIG_PATH, enabled_zabbix_instances, import_config_file, save_config
 from app.screen_utils import center_widget_on_screen
 from app.credentials import load_saved_credentials, save_credentials
+from app.logger import get_logger
+
+FIRST_SETUP_MESSAGE = (
+    "Первичная настройка не завершена.\n"
+    "В конфигурации нет включённых Zabbix-серверов.\n\n"
+    "Для работы приложения импортируйте готовый config.json\n"
+    "или настройте подключение вручную."
+)
+FIRST_SETUP_SHORT_MESSAGE = "Первичная настройка не завершена: нет включённых Zabbix-серверов."
+GITHUB_RELEASES_URL = "https://github.com/StepanDedeshko/Oko/releases"
 
 
 class LoginDialog(QDialog):
@@ -34,9 +46,10 @@ class LoginDialog(QDialog):
         self.credentials = {}
         self.saved_credentials = load_saved_credentials()
         self.theme_name = self.config.get("settings", {}).get("theme", "mass_effect")
+        self.logger = get_logger()
 
         self.setWindowTitle(f"Вход в {APP_NAME}")
-        self.resize(560, 520)
+        self.resize(620, 560)
 
         root = QVBoxLayout(self)
 
@@ -67,10 +80,7 @@ class LoginDialog(QDialog):
         zabbix_box = QGroupBox("Zabbix")
         zabbix_layout = QVBoxLayout(zabbix_box)
 
-        for instance in self.config.get("zabbix_instances", []):
-            if not instance.get("enabled", True):
-                continue
-
+        for instance in enabled_zabbix_instances(self.config):
             zabbix_id = instance.get("id")
             name = instance.get("name", zabbix_id)
             saved = self.saved_credentials.get(zabbix_id, {})
@@ -99,9 +109,8 @@ class LoginDialog(QDialog):
             zabbix_layout.addWidget(group)
 
         if not self.inputs:
-            empty = QLabel("В config.json нет включённых Zabbix.")
-            empty.setWordWrap(True)
-            zabbix_layout.addWidget(empty)
+            self.logger.info("Первый запуск/первичная настройка: нет включённых Zabbix-серверов")
+            zabbix_layout.addWidget(self.create_first_setup_widget())
 
         form_layout.addWidget(zabbix_box)
 
@@ -141,6 +150,35 @@ class LoginDialog(QDialog):
         center_widget_on_screen(self, self.preferred_screen)
         self.apply_theme_style()
 
+    def create_first_setup_widget(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(10)
+
+        message = QLabel(FIRST_SETUP_MESSAGE)
+        message.setObjectName("firstSetupMessage")
+        message.setWordWrap(True)
+        message.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        message.setStyleSheet("font-size: 14px; font-weight: 600; line-height: 140%;")
+        layout.addWidget(message)
+
+        actions = QHBoxLayout()
+        import_button = QPushButton("Импортировать config.json")
+        open_folder_button = QPushButton("Открыть папку приложения")
+        instruction_button = QPushButton("Открыть инструкцию")
+
+        import_button.clicked.connect(self.import_config)
+        open_folder_button.clicked.connect(self.open_app_folder)
+        instruction_button.clicked.connect(self.open_instruction)
+
+        actions.addWidget(import_button)
+        actions.addWidget(open_folder_button)
+        actions.addWidget(instruction_button)
+        layout.addLayout(actions)
+
+        return widget
+
     def apply_theme_style(self):
         if self.theme_name != "light_standard":
             return
@@ -174,9 +212,50 @@ class LoginDialog(QDialog):
             QScrollArea { border: 1px solid #d1d5db; background-color: #ffffff; }
         """)
 
+    def import_config(self):
+        self.logger.info("Открыт импорт config.json")
+        selected_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импортировать config.json",
+            str(CONFIG_PATH.parent),
+            "JSON (*.json);;Все файлы (*)",
+        )
+        if not selected_path:
+            return
+
+        try:
+            import_config_file(selected_path)
+            QMessageBox.information(
+                self,
+                "Импорт config.json",
+                "config.json импортирован. Перезапустите приложение.",
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Ошибка импорта config.json",
+                f"Не удалось импортировать config.json:\n{exc}",
+            )
+
+    def open_app_folder(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(CONFIG_PATH.parent)))
+
+    def open_instruction(self):
+        instruction_path = CONFIG_PATH.parent / "README_ПЕРВАЯ_УСТАНОВКА_LINUX.md"
+        if instruction_path.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(instruction_path)))
+            return
+
+        if not QDesktopServices.openUrl(QUrl(GITHUB_RELEASES_URL)):
+            QMessageBox.information(
+                self,
+                "Первичная настройка",
+                FIRST_SETUP_MESSAGE,
+            )
+
     def accept_login(self):
         if not self.inputs:
-            QMessageBox.warning(self, "Ошибка", "В config.json нет включённых Zabbix.")
+            QMessageBox.warning(self, "Первичная настройка", FIRST_SETUP_SHORT_MESSAGE)
             return
 
         for zabbix_id, widgets in self.inputs.items():

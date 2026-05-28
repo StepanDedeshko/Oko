@@ -71,6 +71,8 @@ def main():
     splash.show()
     app.processEvents()
     splash.wait_minimum(1400)
+    splash.close()
+    app.processEvents()
 
     login_dialog = LoginDialog(config, preferred_screen=startup_screen)
     if icon_path.exists():
@@ -89,7 +91,6 @@ def main():
 
     center_widget_on_screen(window, login_screen)
     window.show()
-    splash.close()
 
     def startup_update_check():
         try:

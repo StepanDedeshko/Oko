@@ -1,5 +1,9 @@
 import json
+import shutil
+from datetime import datetime
 from pathlib import Path
+
+from app.logger import get_logger
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 CONFIG_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "config.example.json"
@@ -55,3 +59,41 @@ def load_config():
 def save_config(config):
     with CONFIG_PATH.open("w", encoding="utf-8") as file:
         json.dump(config, file, ensure_ascii=False, indent=2)
+
+
+def enabled_zabbix_instances(config):
+    return [
+        instance
+        for instance in config.get("zabbix_instances", [])
+        if instance.get("enabled", True)
+    ]
+
+
+def import_config_file(source_path):
+    """
+    Импортирует выбранный пользователем JSON как рабочий config.json.
+
+    Содержимое конфигурации не логируется. Перед заменой текущего config.json
+    создаётся backup вида config.json.before_import_YYYYMMDD_HHMMSS.
+    """
+    logger = get_logger()
+    source_path = Path(source_path)
+
+    try:
+        with source_path.open("r", encoding="utf-8") as file:
+            json.load(file)
+
+        backup_path = None
+        if CONFIG_PATH.exists():
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = CONFIG_PATH.with_name(f"config.json.before_import_{timestamp}")
+            shutil.copy2(CONFIG_PATH, backup_path)
+
+        if source_path.resolve() != CONFIG_PATH.resolve():
+            shutil.copy2(source_path, CONFIG_PATH)
+
+        logger.info("config.json импортирован")
+        return backup_path
+    except Exception:
+        logger.exception("Ошибка импорта config.json")
+        raise
