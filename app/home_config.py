@@ -595,7 +595,8 @@ class HomePageWidget(QWidget):
         tabs.addTab(ProductsWidget(self.config), "Продукты и страницы")
         tabs.addTab(ThemeWidget(self.config), "Тема")
         tabs.addTab(NotesWidget(self.config), "Заметки")
-        tabs.addTab(UpdateWidget(self.config, request_application_restart), "Обновление")
+        self.update_widget = UpdateWidget(self.config, request_application_restart)
+        tabs.addTab(self.update_widget, "Обновление")
         root.addWidget(tabs, stretch=1)
 
         footer = QLabel(f"Версия: {APP_VERSION}\n{APP_DESCRIPTION}")
@@ -610,6 +611,13 @@ class HomePageWidget(QWidget):
     def open_duty(self):
         if self.open_duty_callback:
             self.open_duty_callback()
+
+    def check_for_updates(self, interactive=False, auto_start_install=False):
+        if hasattr(self, "update_widget") and self.update_widget:
+            self.update_widget.check_for_updates(
+                interactive=interactive,
+                auto_start_install=auto_start_install,
+            )
 
     def fade_in(self):
         try:

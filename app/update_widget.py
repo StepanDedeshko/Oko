@@ -140,6 +140,7 @@ class UpdateWidget(QWidget):
         self.release_worker.failed.connect(lambda error: self.on_release_check_failed(error, interactive))
         self.release_worker.finished.connect(self.release_thread.quit)
         self.release_worker.failed.connect(self.release_thread.quit)
+        self.release_thread.finished.connect(self.release_worker.deleteLater)
         self.release_thread.finished.connect(self.release_thread.deleteLater)
         self.release_thread.start()
 
@@ -233,6 +234,7 @@ class UpdateWidget(QWidget):
         self.update_worker.failed.connect(self.on_update_failed)
         self.update_worker.finished.connect(self.update_thread.quit)
         self.update_worker.failed.connect(self.update_thread.quit)
+        self.update_thread.finished.connect(self.update_worker.deleteLater)
         self.update_thread.finished.connect(self.update_thread.deleteLater)
         self.update_thread.start()
 
