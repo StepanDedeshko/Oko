@@ -1,8 +1,11 @@
 import os
+import re
 import shutil
 import subprocess
 import tempfile
+import urllib.request
 import zipfile
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +15,8 @@ from app.config_migrator import patch_config_file
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+UPDATE_SCRIPT = PROJECT_ROOT / "UPDATE_OKO.sh"
+LATEST_RELEASE_API_URL = "https://api.github.com/repos/StepanDedeshko/Oko/releases/latest"
 
 
 def _find_project_root_in_zip(extract_dir: Path) -> Path:
@@ -196,3 +201,80 @@ def apply_update_from_zip(parent_widget=None):
             "Ошибка обновления",
             f"Не удалось применить обновление:\n\n{error}"
         )
+
+
+def download_and_install_update(update_url: str):
+    if not update_url:
+        raise RuntimeError("Укажи URL архива обновления.")
+
+    if not UPDATE_SCRIPT.exists():
+        raise RuntimeError("Не найден UPDATE_OKO.sh в корне проекта.")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        archive_path = Path(tmp) / "update_archive.zip"
+        urllib.request.urlretrieve(update_url, archive_path)
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(UPDATE_SCRIPT),
+                "--archive",
+                str(archive_path),
+                "--no-run-prompt",
+            ],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        stdout_text = (result.stdout or "").strip()
+        stderr_text = (result.stderr or "").strip()
+
+        if result.returncode != 0:
+            details = (
+                "UPDATE_OKO.sh завершился с ошибкой.\n\n"
+                f"Код возврата: {result.returncode}\n\n"
+                f"STDOUT:\n{stdout_text or '(empty)'}\n\n"
+                f"STDERR:\n{stderr_text or '(empty)'}"
+            )
+            raise RuntimeError(details)
+
+        return stdout_text, stderr_text
+
+
+def normalize_version_to_tuple(version_text: str):
+    cleaned = (version_text or "").strip().lower()
+    if cleaned.startswith("v"):
+        cleaned = cleaned[1:]
+    cleaned = re.sub(r"\[.*?\]", "", cleaned).strip()
+    numbers = re.findall(r"\d+", cleaned)
+    if not numbers:
+        return ()
+    return tuple(int(x) for x in numbers)
+
+
+def fetch_latest_release_info():
+    request = urllib.request.Request(
+        LATEST_RELEASE_API_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "Oko-App-Updater",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        payload = response.read().decode("utf-8")
+    data = json.loads(payload)
+
+    tag_name = data.get("tag_name", "")
+    assets = data.get("assets", []) or []
+    update_asset_url = ""
+    for asset in assets:
+        if asset.get("name") == "update.zip":
+            update_asset_url = asset.get("browser_download_url", "")
+            break
+
+    return {
+        "tag_name": tag_name,
+        "update_asset_url": update_asset_url,
+    }

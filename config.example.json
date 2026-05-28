@@ -1,0 +1,31 @@
+{
+  "_comment": "Шаблон конфигурации Око. Скопируйте в config.json при первом запуске.",
+  "settings": {
+    "theme": "mass_effect",
+    "home_notes": "",
+    "default_time_range": "1h",
+    "check_updates_on_startup": true
+  },
+  "time_ranges": [
+    {"title": "1ч", "value": "1h"},
+    {"title": "6ч", "value": "6h"},
+    {"title": "24ч", "value": "24h"}
+  ],
+  "zabbix_instances": [],
+  "products": [],
+  "loading_screen": {
+    "enabled": true,
+    "show_after_login": true,
+    "duration_ms": 7000
+  },
+  "duty_mode": {
+    "otrs_login_enabled": false,
+    "otrs_login": "",
+    "otrs_password": "",
+    "otrs_auto_submit_login": false,
+    "expected_ticket_subject": "Проверка Zabbix (Важных IT-сервисов)"
+  },
+  "app": {
+    "name": "Око"
+  }
+}

@@ -10,6 +10,7 @@ _backups/
 .vscode/
 *.desktop
 credentials.json
+config.json
 *.zip
 *.tar.gz
 *.tgz

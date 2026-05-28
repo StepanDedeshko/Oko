@@ -29,6 +29,7 @@ from app.config import save_config
 from app.credentials import load_saved_credentials, save_credentials, clear_saved_credentials
 from app.theme import get_available_themes
 from app.app_info import APP_NAME, APP_VERSION, APP_DESCRIPTION
+from app.update_widget import UpdateWidget
 
 
 def clone(value):
@@ -564,6 +565,8 @@ class NotesWidget(QWidget):
         QMessageBox.information(self, "Заметки", "Сохранено.")
 
 
+
+
 class HomePageWidget(QWidget):
     def __init__(self, config, open_duty_callback=None, parent=None):
         super().__init__(parent)
@@ -592,6 +595,8 @@ class HomePageWidget(QWidget):
         tabs.addTab(ProductsWidget(self.config), "Продукты и страницы")
         tabs.addTab(ThemeWidget(self.config), "Тема")
         tabs.addTab(NotesWidget(self.config), "Заметки")
+        self.update_widget = UpdateWidget(self.config, request_application_restart)
+        tabs.addTab(self.update_widget, "Обновление")
         root.addWidget(tabs, stretch=1)
 
         footer = QLabel(f"Версия: {APP_VERSION}\n{APP_DESCRIPTION}")
@@ -606,6 +611,13 @@ class HomePageWidget(QWidget):
     def open_duty(self):
         if self.open_duty_callback:
             self.open_duty_callback()
+
+    def check_for_updates(self, interactive=False, auto_start_install=False):
+        if hasattr(self, "update_widget") and self.update_widget:
+            self.update_widget.check_for_updates(
+                interactive=interactive,
+                auto_start_install=auto_start_install,
+            )
 
     def fade_in(self):
         try:

@@ -2,9 +2,47 @@ import json
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+CONFIG_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "config.example.json"
+
+
+def _default_config():
+    return {
+        "_comment": "Автосозданный минимальный config.json для Око.",
+        "settings": {
+            "theme": "mass_effect",
+            "home_notes": "",
+            "default_time_range": "1h",
+            "check_updates_on_startup": True,
+        },
+        "time_ranges": [
+            {"title": "1ч", "value": "1h"},
+            {"title": "6ч", "value": "6h"},
+            {"title": "24ч", "value": "24h"},
+        ],
+        "zabbix_instances": [],
+        "products": [],
+        "loading_screen": {
+            "enabled": True,
+            "show_after_login": True,
+            "duration_ms": 7000,
+        },
+        "duty_mode": {
+            "otrs_login_enabled": False,
+            "otrs_login": "",
+            "otrs_password": "",
+            "otrs_auto_submit_login": False,
+            "expected_ticket_subject": "Проверка Zabbix (Важных IT-сервисов)",
+        },
+        "app": {"name": "Око"},
+    }
 
 
 def load_config():
+    if not CONFIG_PATH.exists():
+        if CONFIG_EXAMPLE_PATH.exists():
+            CONFIG_PATH.write_text(CONFIG_EXAMPLE_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        else:
+            save_config(_default_config())
     with CONFIG_PATH.open("r", encoding="utf-8") as file:
         return json.load(file)
 
