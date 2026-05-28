@@ -105,6 +105,15 @@ if [ -f "$USER_CONFIG" ]; then
     cp "$USER_CONFIG" "$SAVED_CONFIG"
 fi
 
+LEGACY_DIRS=("DEZHURKA" "DEZHURKA_LOGIN_FIX")
+for legacy_dir in "${LEGACY_DIRS[@]}"; do
+    legacy_path="$APP_DIR/$legacy_dir"
+    if [ -d "$legacy_path" ]; then
+        echo "Удаляю устаревшую папку: $legacy_dir"
+        rm -rf "$legacy_path"
+    fi
+done
+
 echo "Обновляю файлы приложения..."
 rsync -a --delete \
     --exclude ".git" \
