@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 clear
 echo "ОБНОВЛЕНИЕ ОКО"
@@ -73,10 +73,19 @@ case "$ARCHIVE_PATH" in
         ;;
 esac
 
-NEW_ROOT="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+if [ -f "$TMP_DIR/main.py" ] && [ -d "$TMP_DIR/app" ]; then
+    NEW_ROOT="$TMP_DIR"
+else
+    NEW_ROOT="$(find "$TMP_DIR" -mindepth 1 -type f -name "main.py" -printf "%h\n" | while read -r d; do
+        if [ -d "$d/app" ]; then
+            echo "$d"
+            break
+        fi
+    done)"
+fi
 
-if [ -z "$NEW_ROOT" ]; then
-    echo "Ошибка: в архиве не найдена папка приложения."
+if [ -z "${NEW_ROOT:-}" ]; then
+    echo "Ошибка: в архиве не найдена папка проекта с main.py и app/."
     read -p "Нажмите Enter для выхода..."
     exit 1
 fi
@@ -90,8 +99,6 @@ fi
 
 echo "Сохраняю пользовательские настройки..."
 USER_CONFIG="$APP_DIR/config.json"
-USER_VENV="$APP_DIR/.venv"
-
 SAVED_CONFIG=""
 if [ -f "$USER_CONFIG" ]; then
     SAVED_CONFIG="$TMP_DIR/config.json.saved"
@@ -100,8 +107,11 @@ fi
 
 echo "Обновляю файлы приложения..."
 rsync -a --delete \
+    --exclude ".git" \
     --exclude ".venv" \
     --exclude "_backups" \
+    --exclude "__pycache__" \
+    --exclude "config.json" \
     "$NEW_ROOT/" "$APP_DIR/"
 
 if [ -n "$SAVED_CONFIG" ]; then
@@ -122,9 +132,25 @@ echo "Обновляю зависимости..."
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
+echo "Диагностика после обновления..."
+grep -n "APP_VERSION" app/app_info.py
+test -f app/update_widget.py
+grep -n "from app.update_widget import UpdateWidget" app/home_config.py
+grep -n "def check_for_updates" app/home_config.py
+
+if [ ! -f app/update_widget.py ]; then
+    echo "Ошибка: app/update_widget.py отсутствует после обновления."
+    exit 1
+fi
+
+if ! grep -q "from app.update_widget import UpdateWidget" app/home_config.py; then
+    echo "Ошибка: app/home_config.py не импортирует UpdateWidget из app.update_widget."
+    exit 1
+fi
+
 echo "Проверяю Python-файлы..."
-python -m py_compile main.py
-find app -name "*.py" -print0 | xargs -0 -n1 python -m py_compile
+python3 -m py_compile main.py
+find app -name "*.py" -print0 | xargs -0 -n1 python3 -m py_compile
 
 bash ./CREATE_DESKTOP_SHORTCUT.sh --no-pause || true
 
