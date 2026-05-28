@@ -14,7 +14,29 @@ echo "Текущая папка приложения:"
 echo "$APP_DIR"
 echo ""
 
-read -p "Путь к архиву новой версии (.zip или .tar.gz): " ARCHIVE_PATH
+ARCHIVE_PATH=""
+NO_RUN_PROMPT=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --archive)
+            ARCHIVE_PATH="$2"
+            shift 2
+            ;;
+        --no-run-prompt)
+            NO_RUN_PROMPT=1
+            shift
+            ;;
+        *)
+            echo "Неизвестный аргумент: $1"
+            exit 1
+            ;;
+    esac
+done
+
+if [ -z "$ARCHIVE_PATH" ]; then
+    read -p "Путь к архиву новой версии (.zip или .tar.gz): " ARCHIVE_PATH
+fi
 ARCHIVE_PATH="${ARCHIVE_PATH/#\~/$HOME}"
 
 if [ ! -f "$ARCHIVE_PATH" ]; then
@@ -111,6 +133,10 @@ echo "Обновление завершено."
 echo "Резервная копия предыдущей версии:"
 echo "$BACKUP_DIR"
 echo ""
+
+if [ "$NO_RUN_PROMPT" = "1" ]; then
+    exit 0
+fi
 
 read -p "Запустить Око сейчас? [Y/n]: " RUN_NOW
 RUN_NOW="${RUN_NOW:-Y}"
