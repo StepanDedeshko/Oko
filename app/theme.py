@@ -3,6 +3,26 @@ from PySide6.QtWidgets import QApplication
 
 
 THEMES = {
+    "light_standard": {
+        "label": "Светлая стандартная",
+        "bg_main": "#f3f4f6",
+        "bg_panel": "#ffffff",
+        "bg_panel2": "#eef2f7",
+        "bg_card": "#ffffff",
+        "bg_card2": "#f9fafb",
+        "bg_field": "#ffffff",
+        "text": "#111827",
+        "text_soft": "#4b5563",
+        "text_title": "#111827",
+        "accent": "#3b82f6",
+        "accent2": "#2563eb",
+        "danger": "#dc2626",
+        "danger_bg": "#fef2f2",
+        "scroll": "#d1d5db",
+        "selected": "#dbeafe",
+        "hud_text": "#374151",
+        "border_dark": "#d1d5db",
+    },
     "simple_dark": {
         "label": "Simple Dark",
         "bg_main": "#121212",
