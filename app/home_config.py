@@ -360,14 +360,10 @@ class ProductCardWidget(QGroupBox):
         self.index = index
         self.on_open = on_open
         self.on_delete = on_delete
-        self.setTitle("Продукт")
 
         root = QVBoxLayout(self)
-        self.name_label = QLabel()
-        self.name_label.setObjectName("CardTitle")
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
-        root.addWidget(self.name_label)
         root.addWidget(self.status_label)
 
         buttons = QHBoxLayout()
@@ -385,7 +381,7 @@ class ProductCardWidget(QGroupBox):
         name = self.product.get("name") or f"Продукт {self.index + 1}"
         enabled = "включён" if self.product.get("enabled", True) else "выключен"
         pages_count = len(self.product.get("dashboards", []) or [])
-        self.name_label.setText(name)
+        self.setTitle(name)
         self.status_label.setText(f"Статус: {enabled}\nСтраниц: {pages_count}")
 
     def open_requested(self):
