@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QScrollArea,
+    QSizePolicy,
     QPushButton,
     QStackedWidget,
     QTextEdit,
@@ -763,11 +764,13 @@ class ProfileWidget(QWidget):
         otrs_credentials = load_otrs_credentials(self.config)
 
         root = QVBoxLayout(self)
+        root.setSpacing(10)
         title = QLabel("Профиль и доступы")
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
         otrs_box = QGroupBox("ОТРС")
+        otrs_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         otrs_layout = QFormLayout(otrs_box)
 
         self.enabled = QCheckBox("Подставлять сохранённые доступы ОТРС")
@@ -790,6 +793,7 @@ class ProfileWidget(QWidget):
         root.addWidget(otrs_box)
 
         zbx_box = QGroupBox("Zabbix")
+        zbx_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         zbx_layout = QVBoxLayout(zbx_box)
 
         zbx_hint = QLabel("Сохранённые доступы Zabbix.")
@@ -806,6 +810,7 @@ class ProfileWidget(QWidget):
             saved = self.saved_zabbix_credentials.get(zabbix_id, {})
 
             group = QGroupBox(name)
+            group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
             form = QFormLayout(group)
 
             login_input = QLineEdit(saved.get("login", ""))
@@ -847,6 +852,7 @@ class ProfileWidget(QWidget):
         buttons.addStretch()
 
         root.addLayout(buttons)
+        root.addStretch(1)
 
     def save(self):
         duty = self.config.setdefault("duty_mode", {})

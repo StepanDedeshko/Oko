@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -183,13 +184,84 @@ class DutyModeSettingsWidget(QWidget):
         self.config = config
         self.on_saved_callback = on_saved_callback
         self.trigger_items = deepcopy(self.duty_triggers_settings().get("items", []))
+        self.section_indexes = {}
 
         root = QVBoxLayout(self)
+        root.setSpacing(10)
 
-        title = QLabel("Настройки режима дежурства")
+        title = QLabel("Настройки дежурки")
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack, stretch=1)
+
+        self.menu_index = self.stack.addWidget(self.create_menu_page())
+        self.add_section_page("Основное", self.build_general_section)
+        self.add_section_page("ОТРС", self.build_otrs_section)
+        self.add_section_page("Графики", self.build_graphs_section)
+        self.add_section_page("Триггеры", self.build_triggers_ui)
+        self.add_section_page("Пороги", self.build_thresholds_ui)
+
+        buttons = QHBoxLayout()
+
+        save_button = QPushButton("Сохранить")
+        save_button.clicked.connect(self.save)
+
+        buttons.addWidget(save_button)
+        buttons.addStretch()
+        root.addLayout(buttons)
+
+        self.load_graphs()
+        self.reload_trigger_list()
+
+    def create_menu_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+
+        hint = QLabel("Выберите раздел настроек дежурки.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        for section_name in ["Основное", "ОТРС", "Графики", "Триггеры", "Пороги"]:
+            button = QPushButton(section_name)
+            button.setMinimumHeight(56)
+            button.clicked.connect(lambda checked=False, name=section_name: self.open_section(name))
+            layout.addWidget(button)
+
+        layout.addStretch(1)
+        return page
+
+    def add_section_page(self, section_name, builder):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+
+        back = QPushButton("← Назад к настройкам дежурки")
+        back.clicked.connect(self.open_menu)
+        layout.addWidget(back)
+
+        title = QLabel(section_name)
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+
+        builder(layout)
+
+        if section_name not in {"Графики", "Триггеры"}:
+            layout.addStretch(1)
+
+        self.section_indexes[section_name] = self.stack.addWidget(page)
+
+    def open_menu(self):
+        self.stack.setCurrentIndex(self.menu_index)
+
+    def open_section(self, section_name):
+        index = self.section_indexes.get(section_name)
+        if index is not None:
+            self.stack.setCurrentIndex(index)
+
+    def build_general_section(self, root):
         self.enabled_checkbox = QCheckBox("Включить режим дежурства")
         self.enabled_checkbox.setChecked(self.settings().get("enabled", False))
         root.addWidget(self.enabled_checkbox)
@@ -223,6 +295,11 @@ class DutyModeSettingsWidget(QWidget):
         sound_row.addWidget(clear_sound)
         root.addLayout(sound_row)
 
+    def build_otrs_section(self, root):
+        access_hint = QLabel("Логин и пароль ОТРС настраиваются в разделе «Профиль».")
+        access_hint.setWordWrap(True)
+        root.addWidget(access_hint)
+
         otrs_row = QHBoxLayout()
         otrs_row.addWidget(QLabel("URL создания задачи ОТРС:"))
 
@@ -243,34 +320,17 @@ class DutyModeSettingsWidget(QWidget):
         subject_row.addWidget(self.expected_subject_input, stretch=1)
         root.addLayout(subject_row)
 
-        access_hint = QLabel("Доступы к ОТРС и Zabbix настраиваются в разделе «Профиль».")
-        access_hint.setWordWrap(True)
-        root.addWidget(access_hint)
-
         self.otrs_auto_submit_checkbox = QCheckBox("Автоматически нажимать кнопку «Вход»")
         self.otrs_auto_submit_checkbox.setChecked(self.settings().get("otrs_auto_submit_login", False))
         root.addWidget(self.otrs_auto_submit_checkbox)
 
+    def build_graphs_section(self, root):
         hint = QLabel("Выбери графики, которые должны открываться при дежурной проверке.")
         hint.setWordWrap(True)
         root.addWidget(hint)
 
         self.graph_list = QListWidget()
         root.addWidget(self.graph_list, stretch=1)
-
-        self.build_triggers_ui(root)
-
-        buttons = QHBoxLayout()
-
-        save_button = QPushButton("Сохранить")
-        save_button.clicked.connect(self.save)
-
-        buttons.addWidget(save_button)
-        buttons.addStretch()
-        root.addLayout(buttons)
-
-        self.load_graphs()
-        self.reload_trigger_list()
 
     def settings(self):
         settings = self.config.setdefault("duty_mode", {})
@@ -288,13 +348,27 @@ class DutyModeSettingsWidget(QWidget):
         return ensure_duty_triggers_defaults(self.config)
 
     def build_triggers_ui(self, root):
-        group = QGroupBox("Триггеры дежурства source → target")
-        layout = QVBoxLayout(group)
-
         self.triggers_enabled_checkbox = QCheckBox("Включить триггеры дежурства")
         self.triggers_enabled_checkbox.setChecked(self.duty_triggers_settings().get("enabled", True))
-        layout.addWidget(self.triggers_enabled_checkbox)
+        root.addWidget(self.triggers_enabled_checkbox)
 
+        self.trigger_list = QListWidget()
+        root.addWidget(self.trigger_list, stretch=1)
+
+        trigger_buttons = QHBoxLayout()
+        add_button = QPushButton("Добавить триггер")
+        edit_button = QPushButton("Редактировать триггер")
+        delete_button = QPushButton("Удалить триггер")
+        add_button.clicked.connect(self.add_trigger)
+        edit_button.clicked.connect(self.edit_trigger)
+        delete_button.clicked.connect(self.delete_trigger)
+        trigger_buttons.addWidget(add_button)
+        trigger_buttons.addWidget(edit_button)
+        trigger_buttons.addWidget(delete_button)
+        trigger_buttons.addStretch()
+        root.addLayout(trigger_buttons)
+
+    def build_thresholds_ui(self, root):
         thresholds = QFormLayout()
         trigger_settings = self.duty_triggers_settings()
         self.day_start_input = QLineEdit(trigger_settings.get("day_start", "06:00"))
@@ -316,25 +390,7 @@ class DutyModeSettingsWidget(QWidget):
         thresholds.addRow("Ночной порог, минут:", self.night_threshold_input)
         thresholds.addRow("Начало ночного окна тишины mode_1:", self.mode1_silence_start_input)
         thresholds.addRow("Конец ночного окна тишины mode_1:", self.mode1_silence_end_input)
-        layout.addLayout(thresholds)
-
-        self.trigger_list = QListWidget()
-        layout.addWidget(self.trigger_list)
-
-        trigger_buttons = QHBoxLayout()
-        add_button = QPushButton("Добавить триггер")
-        edit_button = QPushButton("Редактировать триггер")
-        delete_button = QPushButton("Удалить триггер")
-        add_button.clicked.connect(self.add_trigger)
-        edit_button.clicked.connect(self.edit_trigger)
-        delete_button.clicked.connect(self.delete_trigger)
-        trigger_buttons.addWidget(add_button)
-        trigger_buttons.addWidget(edit_button)
-        trigger_buttons.addWidget(delete_button)
-        trigger_buttons.addStretch()
-        layout.addLayout(trigger_buttons)
-
-        root.addWidget(group)
+        root.addLayout(thresholds)
 
     def graph_id(self, product_name, dashboard_name, index, graph):
         return graph.get("id") or f"{product_name}::{dashboard_name}::{index}::{graph.get('title', '')}"
