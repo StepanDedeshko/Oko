@@ -30,12 +30,80 @@ except Exception:
     QMediaPlayer = None
 
 from app.autologin import make_zabbix_login_js
-from app.config import save_config
+from app.config import ensure_duty_triggers_defaults, save_config
 from app.duty_settings import DutyModeSettingsWidget
+from app.duty_triggers import evaluate_stagnation_trigger
+from app.logger import get_logger
 from app.time_range import apply_time_range_to_url
 
 
 MSK = timezone(timedelta(hours=3))
+
+
+DUTY_TRIGGER_STATUS_MESSAGES = {
+    "OK": "Сработки поступают все в пределах нормы",
+    "ALERT": "Обнаружено отсутствие сработок",
+    "NO_DATA": "Нет данных для проверки сработок",
+    "PARSE_ERROR": "Не удалось прочитать данные проверки сработок",
+    "SOURCE_NOT_FOUND": "Источник данных для проверки не найден",
+    "TARGET_NOT_FOUND": "Целевой график для проверки не найден",
+}
+
+
+def normalize_lookup_text(value):
+    return " ".join(str(value or "").split()).casefold()
+
+
+def find_dashboard_by_product_section(config, product_name, section_name):
+    """Find a dashboard config by product and section names."""
+    target_product = normalize_lookup_text(product_name)
+    target_section = normalize_lookup_text(section_name)
+    if not target_product or not target_section:
+        return None
+
+    for product in config.get("products", []):
+        if normalize_lookup_text(product.get("name", "")) != target_product:
+            continue
+        for dashboard in product.get("dashboards", []):
+            if normalize_lookup_text(dashboard.get("name", "")) == target_section:
+                return dashboard
+    return None
+
+
+def _mode_pages_source_url(dashboard, trigger_mode):
+    modes = dashboard.get("modes", []) or []
+    mode_index_by_name = {
+        "mode_1": 0,
+        "mode_2": 1,
+    }
+    preferred_index = mode_index_by_name.get(str(trigger_mode or "").strip())
+
+    if preferred_index is not None and preferred_index < len(modes):
+        return str(modes[preferred_index].get("url", "") or "").strip()
+
+    for mode in modes:
+        url = str(mode.get("url", "") or "").strip()
+        if url:
+            return url
+    return ""
+
+
+def build_dashboard_source_url(dashboard, time_range, trigger_mode=""):
+    if not dashboard:
+        return ""
+
+    if dashboard.get("type") == "mode_pages":
+        url = _mode_pages_source_url(dashboard, trigger_mode)
+    else:
+        url = ""
+        for key in ("url", "open_url", "zabbix_url", "external_url"):
+            url = str(dashboard.get(key, "") or "").strip()
+            if url:
+                break
+
+    if url and dashboard.get("use_time_range", True):
+        return apply_time_range_to_url(url, time_range)
+    return url
 
 
 class DutyNotificationDialog(QDialog):
@@ -1615,12 +1683,19 @@ class DutyGraphCard(QFrame):
 
 
 class DutyModeWidget(QWidget):
-    def __init__(self, config, profiles, credentials=None, parent=None):
+    def __init__(self, config, profiles, credentials=None, graph_card_finder=None, source_view_finder=None, parent=None):
         super().__init__(parent)
 
         self.config = config
         self.profiles = profiles
         self.credentials = credentials or {}
+        self.graph_card_finder = graph_card_finder
+        self.source_view_finder = source_view_finder
+        self.logger = get_logger()
+        self.hidden_trigger_views = []
+        self.duty_trigger_queue = []
+        self.duty_trigger_running = False
+        self.duty_trigger_stats = {"total": 0, "ok": 0, "alert": 0, "errors": 0}
         self.check_graphs = []
         self.cards = []
 
@@ -1657,6 +1732,9 @@ class DutyModeWidget(QWidget):
         notify_now_button = QPushButton("Показать уведомление сейчас")
         notify_now_button.clicked.connect(lambda: self.show_notification("Нужно произвести проверку графиков."))
 
+        check_triggers_button = QPushButton("Проверить триггеры")
+        check_triggers_button.clicked.connect(self.run_duty_triggers_check)
+
         header.addWidget(title)
         header.addStretch()
         header.addWidget(self.msk_time_label)
@@ -1664,6 +1742,7 @@ class DutyModeWidget(QWidget):
         header.addWidget(create_duty_task_button)
         header.addWidget(attach_task_button)
         header.addWidget(settings_button)
+        header.addWidget(check_triggers_button)
         header.addWidget(notify_now_button)
 
         root.addLayout(header)
@@ -1922,6 +2001,278 @@ class DutyModeWidget(QWidget):
         hint.setWordWrap(True)
         self.cards_layout.addWidget(hint)
         self.cards_layout.addStretch(1)
+
+    def _trigger_display_name(self, trigger):
+        return str(trigger.get("display_name") or trigger.get("id") or "Триггер").strip()
+
+    def _trigger_log_context(self, trigger):
+        return {
+            "id": trigger.get("id", ""),
+            "display_name": trigger.get("display_name", ""),
+            "source_product": trigger.get("source_product", ""),
+            "source_section": trigger.get("source_section", ""),
+            "target_product": trigger.get("target_product", ""),
+            "target_section": trigger.get("target_section", ""),
+            "target_graph_title": trigger.get("target_graph_title", ""),
+        }
+
+    def _status_message(self, status, result=None, trigger=None):
+        status = str(status or "").upper()
+        if result and str(result.get("message", "") or "").strip():
+            if status in {"OK", "ALERT"}:
+                return str(result.get("message", "")).strip()
+        if status == "OK" and trigger:
+            return str(trigger.get("ok_text") or DUTY_TRIGGER_STATUS_MESSAGES["OK"]).strip()
+        return DUTY_TRIGGER_STATUS_MESSAGES.get(status, "Статус проверки сработок недоступен")
+
+    def _find_target_card(self, trigger):
+        if not self.graph_card_finder:
+            return None
+        return self.graph_card_finder(
+            trigger.get("target_product", ""),
+            trigger.get("target_section", ""),
+            trigger.get("target_graph_title", ""),
+        )
+
+    def _set_target_status(self, trigger, status, message):
+        card = self._find_target_card(trigger)
+        if card is None:
+            self.logger.warning(
+                "Duty trigger target not found: status=TARGET_NOT_FOUND context=%s",
+                self._trigger_log_context(trigger),
+            )
+            self.status_label.setText(
+                "Проверка триггеров выполнена, но один из целевых графиков не найден. "
+                "Открой нужный раздел или проверь настройки триггеров."
+            )
+            return False
+        card.set_duty_trigger_status(status, message)
+        return True
+
+    def _build_trigger_result_log(self, trigger, result, status):
+        return {
+            **self._trigger_log_context(trigger),
+            "status": status,
+            "duration_minutes": result.get("duration_minutes") if isinstance(result, dict) else None,
+            "from_time": result.get("from_time") if isinstance(result, dict) else None,
+            "to_time": result.get("to_time") if isinstance(result, dict) else None,
+        }
+
+    def run_duty_triggers_check(self):
+        trigger_settings = ensure_duty_triggers_defaults(self.config)
+        if not trigger_settings.get("enabled", True):
+            self.status_label.setText("Проверка триггеров отключена в настройках.")
+            self.logger.info("Duty triggers check skipped: disabled")
+            return
+
+        enabled_triggers = [
+            trigger for trigger in trigger_settings.get("items", [])
+            if trigger.get("enabled", True)
+        ]
+        self.logger.info("Duty triggers check started: enabled_count=%s", len(enabled_triggers))
+        self.status_label.setText(f"Запущена проверка триггеров: {len(enabled_triggers)} шт.")
+
+        if not enabled_triggers:
+            return
+
+        self.duty_trigger_queue = list(enabled_triggers)
+        self.duty_trigger_stats = {"total": len(enabled_triggers), "ok": 0, "alert": 0, "errors": 0}
+        self.duty_trigger_running = True
+        self._run_next_duty_trigger()
+
+    def _run_next_duty_trigger(self):
+        if not self.duty_trigger_queue:
+            stats = self.duty_trigger_stats
+            self.duty_trigger_running = False
+            self.status_label.setText(
+                "Проверка триггеров завершена: "
+                f"OK={stats['ok']}, ALERT={stats['alert']}, ошибки={stats['errors']}."
+            )
+            self.logger.info("Duty triggers check finished: stats=%s", stats)
+            return
+
+        trigger = self.duty_trigger_queue.pop(0)
+        self._run_single_duty_trigger(trigger)
+
+    def _run_single_duty_trigger(self, trigger):
+        self.logger.info(
+            "Duty trigger started: context=%s",
+            self._trigger_log_context(trigger),
+        )
+        dashboard = find_dashboard_by_product_section(
+            self.config,
+            trigger.get("source_product", ""),
+            trigger.get("source_section", ""),
+        )
+        if not dashboard:
+            self.logger.warning(
+                "Duty trigger source not found: id=%s display_name=%s source_product=%s source_section=%s",
+                trigger.get("id", ""),
+                trigger.get("display_name", ""),
+                trigger.get("source_product", ""),
+                trigger.get("source_section", ""),
+            )
+            self._finish_trigger_without_html(trigger, "SOURCE_NOT_FOUND")
+            return
+
+        source_url = build_dashboard_source_url(
+            dashboard,
+            self.config.get("settings", {}).get("default_time_range", "1h"),
+            trigger.get("mode", ""),
+        )
+        if not source_url:
+            self.logger.warning(
+                "Duty trigger source URL not found: id=%s display_name=%s source_product=%s source_section=%s",
+                trigger.get("id", ""),
+                trigger.get("display_name", ""),
+                trigger.get("source_product", ""),
+                trigger.get("source_section", ""),
+            )
+            self._finish_trigger_without_html(trigger, "SOURCE_NOT_FOUND")
+            return
+
+        self.logger.info(
+            "Duty trigger source found: id=%s display_name=%s source_product=%s source_section=%s has_url=%s",
+            trigger.get("id", ""),
+            trigger.get("display_name", ""),
+            trigger.get("source_product", ""),
+            trigger.get("source_section", ""),
+            bool(source_url),
+        )
+
+        existing_view = self.source_view_finder(
+            trigger.get("source_product", ""),
+            trigger.get("source_section", ""),
+        ) if self.source_view_finder else None
+        if existing_view is not None:
+            current_source_url = existing_view.url().toString().strip()
+            source_matches_requested_mode = (
+                dashboard.get("type") != "mode_pages"
+                or current_source_url == source_url
+            )
+            if current_source_url and source_matches_requested_mode:
+                self.logger.info("Duty trigger reads HTML from existing WebView: id=%s", trigger.get("id", ""))
+                existing_view.page().toHtml(lambda html, t=trigger: self._after_duty_trigger_html(t, html))
+                return
+            if current_source_url and dashboard.get("type") == "mode_pages":
+                self.logger.info(
+                    "Duty trigger source mode is not open; using hidden WebView: id=%s mode=%s",
+                    trigger.get("id", ""),
+                    trigger.get("mode", ""),
+                )
+
+        self._load_hidden_source_view(trigger, dashboard, source_url)
+
+    def _load_hidden_source_view(self, trigger, dashboard, source_url):
+        zabbix_id = dashboard.get("zabbix_id")
+        profile = self.profiles.get(zabbix_id)
+        if profile is None:
+            self.logger.warning(
+                "Duty trigger source profile not found: id=%s zabbix_id=%s",
+                trigger.get("id", ""),
+                zabbix_id,
+            )
+            self._finish_trigger_without_html(trigger, "SOURCE_NOT_FOUND")
+            return
+
+        view = QWebEngineView(self)
+        view.setVisible(False)
+        page = QWebEnginePage(profile, view)
+        view.setPage(page)
+        self.hidden_trigger_views.append(view)
+
+        def on_loaded(ok, v=view, t=trigger, zid=zabbix_id):
+            if not ok:
+                self.logger.warning("Duty trigger hidden source load failed: id=%s", t.get("id", ""))
+                self._cleanup_hidden_view(v)
+                self._finish_trigger_without_html(t, "SOURCE_NOT_FOUND")
+                return
+
+            js = make_zabbix_login_js(
+                self.credentials.get(zid, {}).get("login", ""),
+                self.credentials.get(zid, {}).get("password", ""),
+            )
+            if js:
+                v.page().runJavaScript(js)
+            QTimer.singleShot(1500, lambda v=v, t=t: v.page().toHtml(lambda html: self._after_hidden_duty_trigger_html(v, t, html)))
+
+        view.loadFinished.connect(on_loaded)
+        view.load(QUrl(source_url))
+
+    def _cleanup_hidden_view(self, view):
+        if view in self.hidden_trigger_views:
+            self.hidden_trigger_views.remove(view)
+        view.deleteLater()
+
+    def _after_hidden_duty_trigger_html(self, view, trigger, html):
+        self._cleanup_hidden_view(view)
+        self._after_duty_trigger_html(trigger, html)
+
+    def _finish_trigger_without_html(self, trigger, status):
+        message = self._status_message(status, trigger=trigger)
+        target_found = self._set_target_status(trigger, status, message)
+        if status == "TARGET_NOT_FOUND" or not target_found:
+            final_status = "TARGET_NOT_FOUND"
+        else:
+            final_status = status
+        self.duty_trigger_stats["errors"] += 1
+        self.logger.warning(
+            "Duty trigger finished without HTML: %s target_found=%s html_received=False",
+            self._build_trigger_result_log(trigger, {}, final_status),
+            target_found,
+        )
+        QTimer.singleShot(0, self._run_next_duty_trigger)
+
+    def _after_duty_trigger_html(self, trigger, html):
+        html = html or ""
+        self.logger.info(
+            "Duty trigger HTML received: id=%s display_name=%s html_received=%s",
+            trigger.get("id", ""),
+            trigger.get("display_name", ""),
+            bool(html),
+        )
+        if not html.strip():
+            result = {"status": "NO_DATA", "message": DUTY_TRIGGER_STATUS_MESSAGES["NO_DATA"]}
+        else:
+            trigger_settings = ensure_duty_triggers_defaults(self.config)
+            result = evaluate_stagnation_trigger(
+                html,
+                metric_title=trigger.get("metric_title", ""),
+                mode=trigger.get("mode", "mode_1"),
+                ok_text=trigger.get("ok_text", DUTY_TRIGGER_STATUS_MESSAGES["OK"]),
+                alert_template=trigger.get("alert_template", "С {from_time} по {to_time} отсутствуют сработки."),
+                day_start=trigger_settings.get("day_start", "06:00"),
+                day_end=trigger_settings.get("day_end", "00:00"),
+                day_threshold_minutes=int(trigger_settings.get("day_threshold_minutes", 90)),
+                night_threshold_minutes=int(trigger_settings.get("night_threshold_minutes", 180)),
+                mode1_night_silence_start=trigger_settings.get("mode1_night_silence_start", "01:00"),
+                mode1_night_silence_end=trigger_settings.get("mode1_night_silence_end", "05:30"),
+            )
+
+        status = str(result.get("status", "NO_DATA") or "NO_DATA").upper()
+        if status == "NO_DATA":
+            result["message"] = DUTY_TRIGGER_STATUS_MESSAGES["NO_DATA"]
+        elif status == "PARSE_ERROR":
+            result["message"] = DUTY_TRIGGER_STATUS_MESSAGES["PARSE_ERROR"]
+        message = self._status_message(status, result=result, trigger=trigger)
+        target_found = self._set_target_status(trigger, status, message)
+
+        if status == "OK":
+            self.duty_trigger_stats["ok"] += 1
+        elif status == "ALERT":
+            self.duty_trigger_stats["alert"] += 1
+        else:
+            self.duty_trigger_stats["errors"] += 1
+        if not target_found:
+            self.duty_trigger_stats["errors"] += 1
+
+        self.logger.info(
+            "Duty trigger finished: %s target_found=%s html_received=%s",
+            self._build_trigger_result_log(trigger, result, status if target_found else "TARGET_NOT_FOUND"),
+            target_found,
+            bool(html.strip()),
+        )
+        QTimer.singleShot(0, self._run_next_duty_trigger)
 
     def start_check(self):
         if self.skip_timer.isActive():
