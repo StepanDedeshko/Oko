@@ -4,7 +4,6 @@ import re
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -17,13 +16,13 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from app.config import default_trigger_item, ensure_duty_triggers_defaults, save_config
 from app.logger import get_logger
+from app.safe_widgets import NoWheelComboBox, NoWheelSpinBox
 
 
 TRIGGER_MODES = {
@@ -35,10 +34,11 @@ TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 class DutyTriggerEditDialog(QDialog):
-    def __init__(self, trigger=None, parent=None):
+    def __init__(self, trigger=None, parent=None, config=None):
         super().__init__(parent)
         self.setWindowTitle("Триггер дежурства")
         self.trigger = deepcopy(trigger) if trigger else default_trigger_item()
+        self.config = config or {}
 
         root = QVBoxLayout(self)
         form = QFormLayout()
@@ -47,13 +47,21 @@ class DutyTriggerEditDialog(QDialog):
         self.enabled_checkbox = QCheckBox("Триггер включён")
         self.enabled_checkbox.setChecked(self.trigger.get("enabled", True))
         self.display_name_input = QLineEdit(self.trigger.get("display_name", ""))
-        self.source_product_input = QLineEdit(self.trigger.get("source_product", ""))
-        self.source_section_input = QLineEdit(self.trigger.get("source_section", ""))
-        self.metric_title_input = QLineEdit(self.trigger.get("metric_title", ""))
-        self.target_product_input = QLineEdit(self.trigger.get("target_product", ""))
-        self.target_section_input = QLineEdit(self.trigger.get("target_section", ""))
-        self.target_graph_title_input = QLineEdit(self.trigger.get("target_graph_title", ""))
-        self.mode_combo = QComboBox()
+        self.source_product_input = self.create_combo_line([p.get("name", "") for p in self.config.get("products", [])], self.trigger.get("source_product", ""))
+        self.source_section_input = self.create_combo_line([], self.trigger.get("source_section", ""))
+        self.metric_title_input = self.create_combo_line([], self.trigger.get("metric_title", ""))
+        self.target_product_input = self.create_combo_line([p.get("name", "") for p in self.config.get("products", [])], self.trigger.get("target_product", ""))
+        self.target_section_input = self.create_combo_line([], self.trigger.get("target_section", ""))
+        self.target_graph_title_input = self.create_combo_line([], self.trigger.get("target_graph_title", ""))
+        self.source_product_input.currentTextChanged.connect(lambda: self.refresh_section_combo(self.source_product_input, self.source_section_input, self.metric_title_input))
+        self.source_section_input.currentTextChanged.connect(lambda: self.refresh_graph_combo(self.source_product_input, self.source_section_input, self.metric_title_input))
+        self.target_product_input.currentTextChanged.connect(lambda: self.refresh_section_combo(self.target_product_input, self.target_section_input, self.target_graph_title_input))
+        self.target_section_input.currentTextChanged.connect(lambda: self.refresh_graph_combo(self.target_product_input, self.target_section_input, self.target_graph_title_input))
+        self.refresh_section_combo(self.source_product_input, self.source_section_input, self.metric_title_input, self.trigger.get("source_section", ""))
+        self.refresh_graph_combo(self.source_product_input, self.source_section_input, self.metric_title_input, self.trigger.get("metric_title", ""))
+        self.refresh_section_combo(self.target_product_input, self.target_section_input, self.target_graph_title_input, self.trigger.get("target_section", ""))
+        self.refresh_graph_combo(self.target_product_input, self.target_section_input, self.target_graph_title_input, self.trigger.get("target_graph_title", ""))
+        self.mode_combo = NoWheelComboBox()
         for mode, label in TRIGGER_MODES.items():
             self.mode_combo.addItem(label, mode)
         mode_index = self.mode_combo.findData(self.trigger.get("mode", "mode_1"))
@@ -84,17 +92,73 @@ class DutyTriggerEditDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
+    def create_combo_line(self, values, current):
+        combo = NoWheelComboBox()
+        combo.setEditable(True)
+        seen = set()
+        for value in values:
+            value = str(value or "").strip()
+            if value and value not in seen:
+                combo.addItem(value)
+                seen.add(value)
+        combo.setCurrentText(str(current or ""))
+        return combo
+
+    def combo_text(self, combo):
+        return combo.currentText().strip()
+
+    def find_product(self, name):
+        for product in self.config.get("products", []):
+            if product.get("name", "") == name:
+                return product
+        return None
+
+    def find_dashboard(self, product_name, section_name):
+        product = self.find_product(product_name)
+        if not product:
+            return None
+        for dashboard in product.get("dashboards", []):
+            if dashboard.get("name", "") == section_name:
+                return dashboard
+        return None
+
+    def refresh_section_combo(self, product_combo, section_combo, graph_combo, current=None):
+        selected = current if current is not None else section_combo.currentText()
+        section_combo.blockSignals(True)
+        section_combo.clear()
+        product = self.find_product(product_combo.currentText())
+        if product:
+            for dashboard in product.get("dashboards", []):
+                section_combo.addItem(dashboard.get("name", ""))
+        section_combo.setCurrentText(str(selected or ""))
+        section_combo.blockSignals(False)
+        self.refresh_graph_combo(product_combo, section_combo, graph_combo)
+
+    def refresh_graph_combo(self, product_combo, section_combo, graph_combo, current=None):
+        selected = current if current is not None else graph_combo.currentText()
+        graph_combo.blockSignals(True)
+        graph_combo.clear()
+        dashboard = self.find_dashboard(product_combo.currentText(), section_combo.currentText())
+        if dashboard:
+            for graph in dashboard.get("graphs", []) or []:
+                graph_combo.addItem(graph.get("title", ""))
+            for mode in dashboard.get("modes", []) or []:
+                if isinstance(mode, dict):
+                    graph_combo.addItem(mode.get("name", ""))
+        graph_combo.setCurrentText(str(selected or ""))
+        graph_combo.blockSignals(False)
+
     def result_trigger(self):
         return {
             "id": self.id_input.text().strip(),
             "enabled": self.enabled_checkbox.isChecked(),
             "display_name": self.display_name_input.text().strip(),
-            "source_product": self.source_product_input.text().strip(),
-            "source_section": self.source_section_input.text().strip(),
-            "metric_title": self.metric_title_input.text().strip(),
-            "target_product": self.target_product_input.text().strip(),
-            "target_section": self.target_section_input.text().strip(),
-            "target_graph_title": self.target_graph_title_input.text().strip(),
+            "source_product": self.combo_text(self.source_product_input),
+            "source_section": self.combo_text(self.source_section_input),
+            "metric_title": self.combo_text(self.metric_title_input),
+            "target_product": self.combo_text(self.target_product_input),
+            "target_section": self.combo_text(self.target_section_input),
+            "target_graph_title": self.combo_text(self.target_graph_title_input),
             "mode": self.mode_combo.currentData(),
             "ok_text": self.ok_text_input.text().strip(),
             "alert_template": self.alert_template_input.text().strip(),
@@ -133,7 +197,7 @@ class DutyModeSettingsWidget(QWidget):
         row = QHBoxLayout()
         row.addWidget(QLabel("Повтор после пропуска, минут:"))
 
-        self.skip_minutes = QSpinBox()
+        self.skip_minutes = NoWheelSpinBox()
         self.skip_minutes.setMinimum(1)
         self.skip_minutes.setMaximum(120)
         self.skip_minutes.setValue(int(self.settings().get("skip_minutes", 5)))
@@ -259,11 +323,11 @@ class DutyModeSettingsWidget(QWidget):
         trigger_settings = self.duty_triggers_settings()
         self.day_start_input = QLineEdit(trigger_settings.get("day_start", "06:00"))
         self.day_end_input = QLineEdit(trigger_settings.get("day_end", "00:00"))
-        self.day_threshold_input = QSpinBox()
+        self.day_threshold_input = NoWheelSpinBox()
         self.day_threshold_input.setMinimum(1)
         self.day_threshold_input.setMaximum(24 * 60)
         self.day_threshold_input.setValue(int(trigger_settings.get("day_threshold_minutes", 90)))
-        self.night_threshold_input = QSpinBox()
+        self.night_threshold_input = NoWheelSpinBox()
         self.night_threshold_input.setMinimum(1)
         self.night_threshold_input.setMaximum(24 * 60)
         self.night_threshold_input.setValue(int(trigger_settings.get("night_threshold_minutes", 180)))
@@ -378,7 +442,7 @@ class DutyModeSettingsWidget(QWidget):
 
     def add_trigger(self):
         trigger = default_trigger_item(self.next_trigger_id(), "mode_1")
-        dialog = DutyTriggerEditDialog(trigger, self)
+        dialog = DutyTriggerEditDialog(trigger, self, self.config)
         if dialog.exec() != QDialog.Accepted:
             return
         self.trigger_items.append(dialog.result_trigger())
@@ -390,7 +454,7 @@ class DutyModeSettingsWidget(QWidget):
         if index is None:
             QMessageBox.information(self, "Триггеры дежурства", "Выберите триггер для редактирования.")
             return
-        dialog = DutyTriggerEditDialog(self.trigger_items[index], self)
+        dialog = DutyTriggerEditDialog(self.trigger_items[index], self, self.config)
         if dialog.exec() != QDialog.Accepted:
             return
         self.trigger_items[index] = dialog.result_trigger()
