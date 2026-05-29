@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import re
 
-from PySide6.QtCore import QTimer, QUrl, Qt
+from PySide6.QtCore import QTimer, QUrl, QUrlQuery, Qt
 from PySide6.QtGui import QDesktopServices, QColor
 from PySide6.QtWidgets import (
     QDialog,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -104,6 +105,22 @@ def build_dashboard_source_url(dashboard, time_range, trigger_mode=""):
     if url and dashboard.get("use_time_range", True):
         return apply_time_range_to_url(url, time_range)
     return url
+
+
+def add_duty_trigger_cache_buster(url, timestamp_ms=None):
+    """Add a manual duty trigger cache-buster without discarding existing query params."""
+    qurl = QUrl(str(url or "").strip())
+    if not qurl.isValid() or not qurl.toString():
+        return str(url or "").strip()
+
+    if timestamp_ms is None:
+        timestamp_ms = int(datetime.now().timestamp() * 1000)
+
+    query = QUrlQuery(qurl)
+    query.removeQueryItem("_oko_trigger_check_ts")
+    query.addQueryItem("_oko_trigger_check_ts", str(timestamp_ms))
+    qurl.setQuery(query)
+    return qurl.toString()
 
 
 class DutyNotificationDialog(QDialog):
@@ -1616,20 +1633,27 @@ class DutyGraphCard(QFrame):
 
         self.setObjectName("GraphCard")
         self.setMinimumHeight(430)
+        self.setMinimumWidth(0)
         self.setFrameShape(QFrame.StyledPanel)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(4, 4, 4, 4)
-        root.setSpacing(4)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.setSpacing(6)
 
         title = QLabel(graph_config.get("title", "График"))
         title.setObjectName("PageTitle")
         title.setWordWrap(True)
+        title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         open_button = QPushButton("Открыть в Zabbix")
         open_button.clicked.connect(self.open_external)
+        open_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         self.view = QWebEngineView()
+        self.view.setMinimumWidth(0)
+        self.view.setMinimumHeight(360)
+        self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.view.setZoomFactor(0.85)
         self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
 
@@ -1642,11 +1666,63 @@ class DutyGraphCard(QFrame):
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_loaded)
 
+        self.duty_trigger_status_label = QLabel("")
+        self.duty_trigger_status_label.setObjectName("DutyTriggerStatus")
+        self.duty_trigger_status_label.setWordWrap(True)
+        self.duty_trigger_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.duty_trigger_status_label.setVisible(False)
+        self.duty_trigger_status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
         root.addWidget(title)
         root.addWidget(open_button)
         root.addWidget(self.view, stretch=1)
+        root.addWidget(self.duty_trigger_status_label)
 
         self.load()
+
+    def set_duty_trigger_status(self, status: str, message: str):
+        status = str(status or "").strip().upper()
+        message = str(message or "").strip()
+        fallback_messages = {
+            "OK": DUTY_TRIGGER_STATUS_MESSAGES["OK"],
+            "ALERT": DUTY_TRIGGER_STATUS_MESSAGES["ALERT"],
+            "NO_DATA": DUTY_TRIGGER_STATUS_MESSAGES["NO_DATA"],
+            "PARSE_ERROR": DUTY_TRIGGER_STATUS_MESSAGES["PARSE_ERROR"],
+            "SOURCE_NOT_FOUND": DUTY_TRIGGER_STATUS_MESSAGES["SOURCE_NOT_FOUND"],
+            "TARGET_NOT_FOUND": DUTY_TRIGGER_STATUS_MESSAGES["TARGET_NOT_FOUND"],
+        }
+        icons = {
+            "OK": "✓",
+            "ALERT": "⚠",
+            "NO_DATA": "ℹ",
+            "PARSE_ERROR": "⚠",
+            "SOURCE_NOT_FOUND": "⚠",
+            "TARGET_NOT_FOUND": "⚠",
+        }
+        colors = {
+            "OK": ("#166534", "#dcfce7", "#22c55e"),
+            "ALERT": ("#7f1d1d", "#fee2e2", "#ef4444"),
+            "NO_DATA": ("#1e3a8a", "#dbeafe", "#60a5fa"),
+            "PARSE_ERROR": ("#78350f", "#fef3c7", "#f59e0b"),
+            "SOURCE_NOT_FOUND": ("#78350f", "#fef3c7", "#f59e0b"),
+            "TARGET_NOT_FOUND": ("#78350f", "#fef3c7", "#f59e0b"),
+        }
+        text = message or fallback_messages.get(status, "Статус проверки сработок недоступен")
+        icon = icons.get(status, "ℹ")
+        text_color, bg_color, border_color = colors.get(status, ("#374151", "#f3f4f6", "#9ca3af"))
+        self.duty_trigger_status_label.setText(f"{icon} {text}")
+        self.duty_trigger_status_label.setStyleSheet(
+            "padding: 8px 10px;"
+            "border-radius: 6px;"
+            f"color: {text_color};"
+            f"background-color: {bg_color};"
+            f"border: 1px solid {border_color};"
+        )
+        self.duty_trigger_status_label.setVisible(True)
+
+    def clear_duty_trigger_status(self):
+        self.duty_trigger_status_label.clear()
+        self.duty_trigger_status_label.setVisible(False)
 
     def build_url(self):
         url = self.graph_config.get("url", "")
@@ -1757,11 +1833,15 @@ class DutyModeWidget(QWidget):
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         root.addWidget(self.scroll, stretch=1)
 
         self.content = QWidget()
+        self.content.setMinimumWidth(0)
+        self.content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         self.cards_layout = QVBoxLayout(self.content)
-        self.cards_layout.setContentsMargins(4, 4, 4, 4)
+        self.cards_layout.setContentsMargins(6, 6, 6, 6)
         self.cards_layout.setSpacing(10)
         self.scroll.setWidget(self.content)
 
@@ -1943,7 +2023,8 @@ class DutyModeWidget(QWidget):
             if self.skip_timer.isActive():
                 self.skip_timer.stop()
                 self.status_label.setText("Отложенный таймер отменён: проверка начата вручную.")
-            self.start_check()
+            if self.start_check():
+                self.run_duty_triggers_check()
         elif dialog.result_action == "skip":
             minutes = int(self.get_settings().get("skip_minutes", 5))
             self.status_label.setText(f"Проверка отложена на {minutes} минут.")
@@ -2002,6 +2083,35 @@ class DutyModeWidget(QWidget):
         self.cards_layout.addWidget(hint)
         self.cards_layout.addStretch(1)
 
+    def render_check_graph_cards(self):
+        self.load_check_graphs()
+        self.clear_cards()
+
+        if not self.check_graphs:
+            self.render_empty_hint()
+            return False
+
+        for item in self.check_graphs:
+            profile = self.profiles.get(item.get("zabbix_id"))
+            if not profile:
+                label = QLabel(f"Не найден Zabbix profile: {item.get('zabbix_id')}")
+                label.setWordWrap(True)
+                label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                self.cards_layout.addWidget(label)
+                continue
+
+            card = DutyGraphCard(
+                graph_config=item["graph"],
+                profile=profile,
+                credentials=self.credentials.get(item.get("zabbix_id"), {}),
+                time_range=self.config.get("settings", {}).get("default_time_range", "1h"),
+            )
+            self.cards.append(card)
+            self.cards_layout.addWidget(card, stretch=0)
+
+        self.cards_layout.addStretch(1)
+        return bool(self.cards)
+
     def _trigger_display_name(self, trigger):
         return str(trigger.get("display_name") or trigger.get("id") or "Триггер").strip()
 
@@ -2025,7 +2135,18 @@ class DutyModeWidget(QWidget):
             return str(trigger.get("ok_text") or DUTY_TRIGGER_STATUS_MESSAGES["OK"]).strip()
         return DUTY_TRIGGER_STATUS_MESSAGES.get(status, "Статус проверки сработок недоступен")
 
-    def _find_target_card(self, trigger):
+    def _find_duty_mode_target_card(self, trigger):
+        target_title = normalize_lookup_text(trigger.get("target_graph_title", ""))
+        if not target_title:
+            return None
+
+        for card in self.cards:
+            graph_title = normalize_lookup_text(card.graph_config.get("title", ""))
+            if graph_title == target_title:
+                return card
+        return None
+
+    def _find_fallback_target_card(self, trigger):
         if not self.graph_card_finder:
             return None
         return self.graph_card_finder(
@@ -2034,20 +2155,43 @@ class DutyModeWidget(QWidget):
             trigger.get("target_graph_title", ""),
         )
 
+    def _clear_duty_trigger_statuses(self):
+        for card in self.cards:
+            if hasattr(card, "clear_duty_trigger_status"):
+                card.clear_duty_trigger_status()
+
     def _set_target_status(self, trigger, status, message):
-        card = self._find_target_card(trigger)
-        if card is None:
-            self.logger.warning(
-                "Duty trigger target not found: status=TARGET_NOT_FOUND context=%s",
-                self._trigger_log_context(trigger),
+        card = self._find_duty_mode_target_card(trigger)
+        if card is not None:
+            card.set_duty_trigger_status(status, message)
+            self.logger.info(
+                "Duty trigger rendered in duty mode graph card: id=%s display_name=%s status=%s target_found=True",
+                trigger.get("id", ""),
+                trigger.get("display_name", ""),
+                status,
             )
-            self.status_label.setText(
-                "Проверка триггеров выполнена, но один из целевых графиков не найден. "
-                "Открой нужный раздел или проверь настройки триггеров."
+            return True
+
+        fallback_card = self._find_fallback_target_card(trigger)
+        if fallback_card is not None:
+            fallback_card.set_duty_trigger_status(status, message)
+            self.logger.info(
+                "Duty trigger rendered in fallback graph card: id=%s display_name=%s status=%s target_found=True",
+                trigger.get("id", ""),
+                trigger.get("display_name", ""),
+                status,
             )
-            return False
-        card.set_duty_trigger_status(status, message)
-        return True
+            return True
+
+        self.logger.warning(
+            "Duty trigger target not found: status=TARGET_NOT_FOUND context=%s",
+            self._trigger_log_context(trigger),
+        )
+        self.status_label.setText(
+            "Проверка триггеров выполнена, но один из целевых графиков не найден. "
+            "Открой нужный раздел или проверь настройки триггеров."
+        )
+        return False
 
     def _build_trigger_result_log(self, trigger, result, status):
         return {
@@ -2059,6 +2203,10 @@ class DutyModeWidget(QWidget):
         }
 
     def run_duty_triggers_check(self):
+        if self.duty_trigger_running:
+            self.status_label.setText("Проверка триггеров уже выполняется.")
+            return
+
         trigger_settings = ensure_duty_triggers_defaults(self.config)
         if not trigger_settings.get("enabled", True):
             self.status_label.setText("Проверка триггеров отключена в настройках.")
@@ -2069,10 +2217,15 @@ class DutyModeWidget(QWidget):
             trigger for trigger in trigger_settings.get("items", [])
             if trigger.get("enabled", True)
         ]
-        self.logger.info("Duty triggers check started: enabled_count=%s", len(enabled_triggers))
+        self.logger.info("Duty trigger manual check started: enabled_count=%s", len(enabled_triggers))
         self.status_label.setText(f"Запущена проверка триггеров: {len(enabled_triggers)} шт.")
 
+        if not self.cards:
+            self.render_check_graph_cards()
+        self._clear_duty_trigger_statuses()
+
         if not enabled_triggers:
+            self.logger.info("Duty triggers check finished: stats=%s", {"total": 0, "ok": 0, "alert": 0, "errors": 0})
             return
 
         self.duty_trigger_queue = list(enabled_triggers)
@@ -2131,37 +2284,17 @@ class DutyModeWidget(QWidget):
             self._finish_trigger_without_html(trigger, "SOURCE_NOT_FOUND")
             return
 
+        fresh_source_url = add_duty_trigger_cache_buster(source_url)
         self.logger.info(
-            "Duty trigger source found: id=%s display_name=%s source_product=%s source_section=%s has_url=%s",
+            "Duty trigger source fresh load requested: id=%s display_name=%s source_product=%s source_section=%s has_url=%s",
             trigger.get("id", ""),
             trigger.get("display_name", ""),
             trigger.get("source_product", ""),
             trigger.get("source_section", ""),
-            bool(source_url),
+            bool(fresh_source_url),
         )
 
-        existing_view = self.source_view_finder(
-            trigger.get("source_product", ""),
-            trigger.get("source_section", ""),
-        ) if self.source_view_finder else None
-        if existing_view is not None:
-            current_source_url = existing_view.url().toString().strip()
-            source_matches_requested_mode = (
-                dashboard.get("type") != "mode_pages"
-                or current_source_url == source_url
-            )
-            if current_source_url and source_matches_requested_mode:
-                self.logger.info("Duty trigger reads HTML from existing WebView: id=%s", trigger.get("id", ""))
-                existing_view.page().toHtml(lambda html, t=trigger: self._after_duty_trigger_html(t, html))
-                return
-            if current_source_url and dashboard.get("type") == "mode_pages":
-                self.logger.info(
-                    "Duty trigger source mode is not open; using hidden WebView: id=%s mode=%s",
-                    trigger.get("id", ""),
-                    trigger.get("mode", ""),
-                )
-
-        self._load_hidden_source_view(trigger, dashboard, source_url)
+        self._load_hidden_source_view(trigger, dashboard, fresh_source_url)
 
     def _load_hidden_source_view(self, trigger, dashboard, source_url):
         zabbix_id = dashboard.get("zabbix_id")
@@ -2194,8 +2327,19 @@ class DutyModeWidget(QWidget):
             )
             if js:
                 v.page().runJavaScript(js)
+            self.logger.info(
+                "Duty trigger waiting before HTML read: id=%s display_name=%s delay_ms=1500",
+                t.get("id", ""),
+                t.get("display_name", ""),
+            )
             QTimer.singleShot(1500, lambda v=v, t=t: v.page().toHtml(lambda html: self._after_hidden_duty_trigger_html(v, t, html)))
 
+        self.logger.info(
+            "Duty trigger hidden WebView loading source: id=%s display_name=%s has_cache_buster=%s",
+            trigger.get("id", ""),
+            trigger.get("display_name", ""),
+            "_oko_trigger_check_ts=" in source_url,
+        )
         view.loadFinished.connect(on_loaded)
         view.load(QUrl(source_url))
 
@@ -2278,37 +2422,16 @@ class DutyModeWidget(QWidget):
         if self.skip_timer.isActive():
             self.skip_timer.stop()
 
-        self.load_check_graphs()
-        self.clear_cards()
-
-        if not self.check_graphs:
-            self.render_empty_hint()
+        if not self.render_check_graph_cards():
             QMessageBox.warning(
                 self,
                 "Режим дежурства",
                 "Не выбраны графики для проверки. Нажми «Настроить режим дежурства»."
             )
-            return
+            return False
 
         self.status_label.setText("Идёт проверка графиков.")
-
-        for item in self.check_graphs:
-            profile = self.profiles.get(item.get("zabbix_id"))
-            if not profile:
-                label = QLabel(f"Не найден Zabbix profile: {item.get('zabbix_id')}")
-                self.cards_layout.addWidget(label)
-                continue
-
-            card = DutyGraphCard(
-                graph_config=item["graph"],
-                profile=profile,
-                credentials=self.credentials.get(item.get("zabbix_id"), {}),
-                time_range=self.config.get("settings", {}).get("default_time_range", "1h")
-            )
-            self.cards.append(card)
-            self.cards_layout.addWidget(card)
-
-        self.cards_layout.addStretch(1)
+        return True
 
     def success_check(self):
         if self.skip_timer.isActive():
