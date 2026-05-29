@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QScrollArea,
+    QSizePolicy,
     QPushButton,
     QStackedWidget,
     QTextEdit,
@@ -22,11 +23,12 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.credentials import load_saved_credentials, save_credentials, clear_saved_credentials
+from app.credentials import OTRS_CREDENTIALS_KEY, LEGACY_OTRS_CREDENTIALS_KEY, load_otrs_credentials, load_saved_credentials, save_credentials
 from app.theme import get_available_themes
 from app.app_info import APP_NAME, APP_VERSION, APP_DESCRIPTION
 from app.update_widget import UpdateWidget
 from app.diagnostics_widget import DiagnosticsWidget
+from app.duty_settings import DutyModeSettingsWidget
 from app.safe_widgets import NoWheelComboBox
 
 
@@ -42,8 +44,6 @@ def ensure_home_defaults(config):
 
     duty = config.setdefault("duty_mode", {})
     duty.setdefault("otrs_login_enabled", False)
-    duty.setdefault("otrs_login", "")
-    duty.setdefault("otrs_password", "")
     duty.setdefault("otrs_auto_submit_login", False)
     duty.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
     return config
@@ -756,40 +756,44 @@ class ProfileWidget(QWidget):
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
-        self.saved_zabbix_credentials = load_saved_credentials()
+        self.saved_credentials = load_saved_credentials()
+        self.saved_zabbix_credentials = self.saved_credentials
         self.zabbix_inputs = {}
 
         duty = self.config.setdefault("duty_mode", {})
+        otrs_credentials = load_otrs_credentials(self.config)
 
         root = QVBoxLayout(self)
+        root.setSpacing(10)
         title = QLabel("Профиль и доступы")
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
         otrs_box = QGroupBox("ОТРС")
+        otrs_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         otrs_layout = QFormLayout(otrs_box)
 
-        self.enabled = QCheckBox("Сохранять и подставлять логин/пароль ОТРС")
+        self.enabled = QCheckBox("Подставлять сохранённые доступы ОТРС")
         self.enabled.setChecked(duty.get("otrs_login_enabled", False))
 
-        self.login = QLineEdit(duty.get("otrs_login", ""))
-        self.password = QLineEdit(duty.get("otrs_password", ""))
+        self.login = QLineEdit(otrs_credentials.get("login", ""))
+        self.login.setPlaceholderText("Логин ОТРС")
+        self.password = QLineEdit(otrs_credentials.get("password", ""))
         self.password.setEchoMode(QLineEdit.Password)
+        self.password.setPlaceholderText("Пароль ОТРС")
 
-        self.auto = QCheckBox("Автоматически нажимать «Вход»")
-        self.auto.setChecked(duty.get("otrs_auto_submit_login", False))
-
-        self.subject = QLineEdit(duty.get("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)"))
+        otrs_hint = QLabel("Поведенческие настройки ОТРС (URL, тема задачи, автоотправка) находятся в разделе «Настройки дежурки».")
+        otrs_hint.setWordWrap(True)
 
         otrs_layout.addRow("", self.enabled)
         otrs_layout.addRow("Логин ОТРС:", self.login)
         otrs_layout.addRow("Пароль ОТРС:", self.password)
-        otrs_layout.addRow("", self.auto)
-        otrs_layout.addRow("Ожидаемая тема задачи:", self.subject)
+        otrs_layout.addRow("", otrs_hint)
 
         root.addWidget(otrs_box)
 
         zbx_box = QGroupBox("Zabbix")
+        zbx_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         zbx_layout = QVBoxLayout(zbx_box)
 
         zbx_hint = QLabel("Сохранённые доступы Zabbix.")
@@ -806,6 +810,7 @@ class ProfileWidget(QWidget):
             saved = self.saved_zabbix_credentials.get(zabbix_id, {})
 
             group = QGroupBox(name)
+            group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
             form = QFormLayout(group)
 
             login_input = QLineEdit(saved.get("login", ""))
@@ -847,31 +852,38 @@ class ProfileWidget(QWidget):
         buttons.addStretch()
 
         root.addLayout(buttons)
+        root.addStretch(1)
 
     def save(self):
         duty = self.config.setdefault("duty_mode", {})
         duty["otrs_login_enabled"] = self.enabled.isChecked()
-        duty["otrs_login"] = self.login.text().strip()
-        duty["otrs_password"] = self.password.text()
-        duty["otrs_auto_submit_login"] = self.auto.isChecked()
-        duty["expected_ticket_subject"] = self.subject.text().strip() or "Проверка Zabbix (Важных IT-сервисов)"
+        for legacy_key in ("otrs_" + "login", "otrs_" + "password"):
+            duty.pop(legacy_key, None)
 
-        zabbix_credentials = {}
+        credentials = load_saved_credentials()
+        credentials.pop(LEGACY_OTRS_CREDENTIALS_KEY, None)
+        credentials[OTRS_CREDENTIALS_KEY] = {
+            "login": self.login.text().strip(),
+            "password": self.password.text(),
+        }
 
         for zabbix_id, widgets in self.zabbix_inputs.items():
-            zabbix_credentials[zabbix_id] = {
+            credentials[zabbix_id] = {
                 "login": widgets["login"].text().strip(),
                 "password": widgets["password"].text(),
             }
 
-        if zabbix_credentials:
-            save_credentials(zabbix_credentials)
-
+        save_credentials(credentials)
         save_config(self.config)
         QMessageBox.information(self, "Профиль", "Доступы сохранены.")
 
     def clear_zabbix_credentials(self):
-        clear_saved_credentials()
+        credentials = load_saved_credentials()
+
+        for zabbix_id in self.zabbix_inputs:
+            credentials.pop(zabbix_id, None)
+
+        save_credentials(credentials)
 
         for widgets in self.zabbix_inputs.values():
             widgets["login"].clear()
@@ -966,6 +978,7 @@ class AppSettingsWidget(QWidget):
 
         self.add_section("Профиль", ProfileWidget(self.config))
         self.add_section("Продукты и страницы", ProductsWidget(self.config))
+        self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config))
         self.add_section("Тема", ThemeWidget(self.config))
         self.add_section("Заметки", NotesWidget(self.config))
         self.update_widget = UpdateWidget(self.config, request_application_restart)
@@ -998,6 +1011,7 @@ class HomePageWidget(QWidget):
     SETTINGS_SECTIONS = [
         "Профиль",
         "Продукты и страницы",
+        "Настройки дежурки",
         "Тема",
         "Заметки",
         "Обновление",
