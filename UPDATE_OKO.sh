@@ -1,7 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-clear
+if command -v clear >/dev/null 2>&1 && [ -n "${TERM:-}" ]; then
+    clear || true
+fi
 echo "ОБНОВЛЕНИЕ ОКО"
 echo ""
 
