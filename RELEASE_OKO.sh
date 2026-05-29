@@ -44,14 +44,38 @@ OUT_ZIP="$HOME/Загрузки/update.zip"
 mkdir -p "$(dirname "$OUT_ZIP")"
 rm -f "$OUT_ZIP"
 
-zip -r "$OUT_ZIP" . \
-  -x "*.git*" \
-  -x ".venv/*" \
-  -x "*/__pycache__/*" \
-  -x "*.pyc" \
-  -x "_backups/*" \
-  -x "config.json" \
-  -x "update.zip"
+EXCLUDE_PATTERNS=(
+  "*.git*"
+  "logs/"
+  "logs/*"
+  "./logs/"
+  "./logs/*"
+  "__pycache__/"
+  "__pycache__/*"
+  "./__pycache__/"
+  "./__pycache__/*"
+  "*/__pycache__/"
+  "*/__pycache__/*"
+  "*.pyc"
+  "_backups/"
+  "_backups/*"
+  "./_backups/"
+  "./_backups/*"
+  ".venv/"
+  ".venv/*"
+  "./.venv/"
+  "./.venv/*"
+  "config.json"
+  "./config.json"
+  "updates/"
+  "updates/*"
+  "./updates/"
+  "./updates/*"
+  "update.zip"
+  "./update.zip"
+)
+
+zip -r "$OUT_ZIP" . -x "${EXCLUDE_PATTERNS[@]}"
 
 bash ./PUBLISH_UPDATE_TO_GITHUB.sh "$TAG" "$OUT_ZIP"
 
