@@ -469,7 +469,9 @@ class MainWindow(QMainWindow):
         self.duty_mode_widget = DutyModeWidget(
             config=self.config,
             profiles=self.profiles,
-            credentials=self.credentials
+            credentials=self.credentials,
+            graph_card_finder=self.find_graph_card_by_product_section_title,
+            source_view_finder=self.find_source_view_by_product_section
         )
 
         index = self.stack.addWidget(self.duty_mode_widget)
@@ -484,6 +486,34 @@ class MainWindow(QMainWindow):
             "type": "duty_mode",
             "widget": self.duty_mode_widget,
         }]
+
+    @staticmethod
+    def _normalize_lookup_text(value):
+        return " ".join(str(value or "").split()).casefold()
+
+    def find_dashboard_widget_by_product_section(self, product_name, section_name):
+        target_product = self._normalize_lookup_text(product_name)
+        target_section = self._normalize_lookup_text(section_name)
+        for product, pages in self.product_dashboard_indexes.items():
+            if self._normalize_lookup_text(product) != target_product:
+                continue
+            for page in pages:
+                if self._normalize_lookup_text(page.get("name", "")) == target_section:
+                    return page.get("widget")
+        return None
+
+    def find_graph_card_by_product_section_title(self, product_name, section_name, graph_title):
+        widget = self.find_dashboard_widget_by_product_section(product_name, section_name)
+        if isinstance(widget, GraphsDashboard):
+            return widget.find_graph_card_by_title(graph_title)
+        return None
+
+    def find_source_view_by_product_section(self, product_name, section_name):
+        widget = self.find_dashboard_widget_by_product_section(product_name, section_name)
+        view = getattr(widget, "view", None)
+        if view is not None:
+            return view
+        return None
 
     def populate_product_combo(self):
         """

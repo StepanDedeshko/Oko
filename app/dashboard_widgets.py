@@ -1,4 +1,4 @@
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices, QColor
 from PySide6.QtWidgets import (
     QApplication,
@@ -86,8 +86,15 @@ class GraphCard(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
         layout.addWidget(self.title)
+        self.duty_trigger_status_label = QLabel("")
+        self.duty_trigger_status_label.setWordWrap(True)
+        self.duty_trigger_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.duty_trigger_status_label.setVisible(False)
+        self.duty_trigger_status_label.setObjectName("DutyTriggerStatus")
+
         layout.addWidget(self.open_button)
         layout.addWidget(self.view, stretch=1)
+        layout.addWidget(self.duty_trigger_status_label)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.reload)
@@ -125,6 +132,49 @@ class GraphCard(QFrame):
     def set_time_range(self, range_value):
         self.time_range = range_value
         self.load()
+
+    def set_duty_trigger_status(self, status: str, message: str):
+        status = str(status or "").strip().upper()
+        message = str(message or "").strip()
+        fallback_messages = {
+            "OK": "Сработки поступают все в пределах нормы",
+            "ALERT": "Обнаружено отсутствие сработок",
+            "NO_DATA": "Нет данных для проверки сработок",
+            "PARSE_ERROR": "Не удалось прочитать данные проверки сработок",
+            "SOURCE_NOT_FOUND": "Источник данных для проверки не найден",
+            "TARGET_NOT_FOUND": "Целевой график для проверки не найден",
+        }
+        icons = {
+            "OK": "✓",
+            "ALERT": "⚠",
+            "NO_DATA": "ℹ",
+            "PARSE_ERROR": "⚠",
+            "SOURCE_NOT_FOUND": "⚠",
+            "TARGET_NOT_FOUND": "⚠",
+        }
+        colors = {
+            "OK": ("#166534", "#dcfce7", "#22c55e"),
+            "ALERT": ("#7f1d1d", "#fee2e2", "#ef4444"),
+            "NO_DATA": ("#1e3a8a", "#dbeafe", "#60a5fa"),
+            "PARSE_ERROR": ("#78350f", "#fef3c7", "#f59e0b"),
+            "SOURCE_NOT_FOUND": ("#78350f", "#fef3c7", "#f59e0b"),
+            "TARGET_NOT_FOUND": ("#78350f", "#fef3c7", "#f59e0b"),
+        }
+        text = message or fallback_messages.get(status, "Статус проверки сработок недоступен")
+        icon = icons.get(status, "ℹ")
+        text_color, bg_color, border_color = colors.get(status, ("#374151", "#f3f4f6", "#9ca3af"))
+        self.duty_trigger_status_label.setText(f"{icon} {text}")
+        self.duty_trigger_status_label.setStyleSheet(
+            "QLabel#DutyTriggerStatus {"
+            f"color: {text_color}; background-color: {bg_color}; border: 1px solid {border_color};"
+            "border-radius: 6px; padding: 6px 8px; font-size: 13px;"
+            "}"
+        )
+        self.duty_trigger_status_label.setVisible(True)
+
+    def clear_duty_trigger_status(self):
+        self.duty_trigger_status_label.clear()
+        self.duty_trigger_status_label.setVisible(False)
 
     def on_load_finished(self, ok):
         if not ok:
@@ -216,6 +266,7 @@ class GraphsDashboard(QWidget):
         self.credentials = credentials or {}
         self.colors = _resolve_web_colors()
         self.graph_cards = []
+        self.graph_cards_by_title = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
@@ -258,9 +309,28 @@ class GraphsDashboard(QWidget):
                 credentials=self.credentials,
             )
             self.graph_cards.append(card)
+            normalized_title = self._normalize_graph_title(graph.get("title", ""))
+            if normalized_title and normalized_title not in self.graph_cards_by_title:
+                self.graph_cards_by_title[normalized_title] = card
             layout.addWidget(card)
 
         layout.addStretch(1)
+
+    @staticmethod
+    def _normalize_graph_title(title):
+        return " ".join(str(title or "").split()).casefold()
+
+    def find_graph_card_by_title(self, title: str):
+        normalized = self._normalize_graph_title(title)
+        if not normalized:
+            return None
+        direct = self.graph_cards_by_title.get(normalized)
+        if direct is not None:
+            return direct
+        for card in self.graph_cards:
+            if self._normalize_graph_title(card.graph_config.get("title", "")) == normalized:
+                return card
+        return None
 
     def set_time_range(self, range_value):
         self.time_range = range_value
