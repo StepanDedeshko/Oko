@@ -3,14 +3,13 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, QUrl
-from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QComboBox,
     QLabel,
     QMainWindow,
     QMessageBox,
-    QMenu,
     QPushButton,
     QStackedWidget,
     QToolBar,
@@ -21,16 +20,14 @@ from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from app.duty_mode import DutyModeWidget
-from app.home_config import HomePageWidget
+from app.home_config import AppSettingsWidget, HomePageWidget
 from app.config import save_config
 from app.dashboard_widgets import GraphsDashboard, ProblemPageDashboard, SimplePageDashboard, ModePagesDashboard
-from app.graph_settings import GraphSettingsWidget
 from app.hotkeys_widget import HotkeysWidget
 from app.system_info_widget import SystemInfoWidget
-from app.updater import apply_update_from_zip
 from app.zabbix_profile import create_profile
 from app.system_metrics import SystemMetricsProvider
-from app.theme import apply_theme, get_available_themes
+from app.theme import apply_theme
 from app.theme_logo import load_theme_logo
 from app.app_info import APP_NAME
 from app.logger import get_logger
@@ -41,13 +38,11 @@ class MainWindow(QMainWindow):
     Интерфейс без боковой шторки.
 
     Верхняя панель:
+    - Главная страница;
+    - Настройки;
     - продукт;
     - раздел;
-    - период графиков;
-    - обновление;
-    - настройки графиков;
-    - обновление приложения;
-    - полный экран.
+    - период графиков.
 
     Логика:
     выбираем продукт -> выбираем раздел -> открывается нужный экран.
@@ -187,51 +182,13 @@ class MainWindow(QMainWindow):
 
         self.time_combo.currentIndexChanged.connect(self.on_time_changed)
 
-        self.reload_button = QPushButton("Обновить")
-        self.reload_button.setToolTip("Обновить текущий раздел. Если открыт дашборд с графиками — обновятся его графики.")
-        self.reload_button.clicked.connect(self.reload_current)
+        self.home_button = QPushButton("Главная страница")
+        self.home_button.setToolTip("Открыть главную страницу")
+        self.home_button.clicked.connect(self.open_home_page)
 
         self.settings_button = QPushButton("Настройки")
-        self.settings_button.setToolTip("Настройки приложения, графиков и обновлений")
-        self.settings_menu = QMenu(self)
-
-        graph_settings_action = QAction("Настройки графиков", self)
-        graph_settings_action.triggered.connect(self.open_graph_settings)
-        self.settings_menu.addAction(graph_settings_action)
-
-        hotkeys_action = QAction("Горячие клавиши", self)
-        hotkeys_action.triggered.connect(self.open_hotkeys_settings)
-        self.settings_menu.addAction(hotkeys_action)
-
-        system_info_action = QAction("Информация о системе", self)
-        system_info_action.triggered.connect(self.open_system_info)
-        self.settings_menu.addAction(system_info_action)
-
-        update_app_action = QAction("Обновить приложение", self)
-        update_app_action.triggered.connect(lambda: apply_update_from_zip(self))
-        self.settings_menu.addAction(update_app_action)
-
-        recreate_shortcut_action = QAction("Пересоздать ярлык", self)
-        recreate_shortcut_action.triggered.connect(self.recreate_shortcut)
-        self.settings_menu.addAction(recreate_shortcut_action)
-
-        self.settings_menu.addSeparator()
-
-
-        profiles_action = QAction("Профили продуктов — позже", self)
-        profiles_action.setEnabled(False)
-        self.settings_menu.addAction(profiles_action)
-
-        self.settings_menu.addSeparator()
-
-        uninstall_action = QAction("Удалить приложение", self)
-        uninstall_action.triggered.connect(self.run_uninstaller)
-        self.settings_menu.addAction(uninstall_action)
-
-        self.settings_button.setMenu(self.settings_menu)
-
-        self.fullscreen_button = QPushButton("Полный экран F11")
-        self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
+        self.settings_button.setToolTip("Открыть настройки приложения")
+        self.settings_button.clicked.connect(self.open_graph_settings)
 
         self.theme_logo_label = QLabel()
         self.theme_logo_label.setObjectName("ThemeLogo")
@@ -248,6 +205,9 @@ class MainWindow(QMainWindow):
 
         self.toolbar.addWidget(self.theme_logo_label)
         self.toolbar.addWidget(app_title)
+        self.toolbar.addWidget(self.home_button)
+        self.toolbar.addWidget(self.settings_button)
+        self.toolbar.addSeparator()
 
         self.toolbar.addWidget(QLabel("Продукт: "))
         self.toolbar.addWidget(self.product_combo)
@@ -261,13 +221,6 @@ class MainWindow(QMainWindow):
         self.time_combo_action = self.toolbar.addWidget(self.time_combo)
         self.toolbar.addSeparator()
 
-        self.toolbar.addWidget(self.reload_button)
-        self.toolbar.addSeparator()
-
-        self.toolbar.addWidget(self.settings_button)
-        self.toolbar.addSeparator()
-
-        self.toolbar.addWidget(self.fullscreen_button)
 
     def create_shortcuts(self):
         QShortcut(QKeySequence("F11"), self).activated.connect(self.toggle_fullscreen)
@@ -316,10 +269,7 @@ class MainWindow(QMainWindow):
         self.page_has_time_buttons[self.auth_page_index] = False
 
     def create_settings_page(self):
-        settings_widget = GraphSettingsWidget(
-            config=self.config,
-            on_saved_callback=None
-        )
+        settings_widget = AppSettingsWidget(config=self.config)
 
         self.settings_page_index = self.stack.addWidget(settings_widget)
         self.page_has_time_buttons[self.settings_page_index] = False
