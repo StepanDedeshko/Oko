@@ -32,6 +32,7 @@ except Exception:
 
 from app.autologin import make_zabbix_login_js
 from app.config import ensure_duty_triggers_defaults, save_config
+from app.credentials import load_otrs_credentials
 from app.duty_settings import DutyModeSettingsWidget
 from app.duty_triggers import evaluate_stagnation_trigger
 from app.logger import get_logger
@@ -273,8 +274,9 @@ class AttachExistingTaskDialog(QDialog):
         if not settings.get("otrs_login_enabled", False):
             return
 
-        login = str(settings.get("otrs_login", "") or "")
-        password = str(settings.get("otrs_password", "") or "")
+        otrs_credentials = load_otrs_credentials(self.config)
+        login = str(otrs_credentials.get("login", "") or "")
+        password = str(otrs_credentials.get("password", "") or "")
         auto_submit = bool(settings.get("otrs_auto_submit_login", False))
 
         if not login or not password:
@@ -849,8 +851,9 @@ class OtrsCreateTaskDialog(QDialog):
         if not settings.get("otrs_login_enabled", False):
             return
 
-        login = str(settings.get("otrs_login", "") or "")
-        password = str(settings.get("otrs_password", "") or "")
+        otrs_credentials = load_otrs_credentials(self.config)
+        login = str(otrs_credentials.get("login", "") or "")
+        password = str(otrs_credentials.get("password", "") or "")
         auto_submit = bool(settings.get("otrs_auto_submit_login", False))
 
         if not login or not password:
@@ -1144,8 +1147,9 @@ class OtrsNoteDialog(QDialog):
         if not settings.get("otrs_login_enabled", False):
             return
 
-        login = str(settings.get("otrs_login", "") or "")
-        password = str(settings.get("otrs_password", "") or "")
+        otrs_credentials = load_otrs_credentials(self.config)
+        login = str(otrs_credentials.get("login", "") or "")
+        password = str(otrs_credentials.get("password", "") or "")
         auto_submit = bool(settings.get("otrs_auto_submit_login", False))
 
         if not login or not password:
@@ -1802,7 +1806,7 @@ class DutyModeWidget(QWidget):
         attach_task_button = QPushButton("Привязать задачу")
         attach_task_button.clicked.connect(self.attach_existing_task)
 
-        settings_button = QPushButton("Настроить режим дежурства")
+        settings_button = QPushButton("Настройки дежурки")
         settings_button.clicked.connect(self.open_settings)
 
         notify_now_button = QPushButton("Показать уведомление сейчас")
@@ -1876,8 +1880,6 @@ class DutyModeWidget(QWidget):
         settings.setdefault("current_ticket_url", "")
         settings.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
         settings.setdefault("otrs_login_enabled", False)
-        settings.setdefault("otrs_login", "")
-        settings.setdefault("otrs_password", "")
         settings.setdefault("otrs_auto_submit_login", False)
         settings.setdefault("graph_ids", [])
         settings.setdefault("otrs", {})

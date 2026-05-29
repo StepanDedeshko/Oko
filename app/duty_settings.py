@@ -243,30 +243,9 @@ class DutyModeSettingsWidget(QWidget):
         subject_row.addWidget(self.expected_subject_input, stretch=1)
         root.addLayout(subject_row)
 
-        self.otrs_login_enabled_checkbox = QCheckBox("Сохранять и подставлять логин/пароль ОТРС")
-        self.otrs_login_enabled_checkbox.setChecked(self.settings().get("otrs_login_enabled", False))
-        root.addWidget(self.otrs_login_enabled_checkbox)
-
-        otrs_login_row = QHBoxLayout()
-        otrs_login_row.addWidget(QLabel("Логин ОТРС:"))
-
-        self.otrs_login_input = QLineEdit()
-        self.otrs_login_input.setText(self.settings().get("otrs_login", ""))
-        self.otrs_login_input.setPlaceholderText("Логин")
-
-        otrs_login_row.addWidget(self.otrs_login_input, stretch=1)
-        root.addLayout(otrs_login_row)
-
-        otrs_password_row = QHBoxLayout()
-        otrs_password_row.addWidget(QLabel("Пароль ОТРС:"))
-
-        self.otrs_password_input = QLineEdit()
-        self.otrs_password_input.setEchoMode(QLineEdit.Password)
-        self.otrs_password_input.setText(self.settings().get("otrs_password", ""))
-        self.otrs_password_input.setPlaceholderText("Пароль")
-
-        otrs_password_row.addWidget(self.otrs_password_input, stretch=1)
-        root.addLayout(otrs_password_row)
+        access_hint = QLabel("Доступы к ОТРС и Zabbix настраиваются в разделе «Профиль».")
+        access_hint.setWordWrap(True)
+        root.addWidget(access_hint)
 
         self.otrs_auto_submit_checkbox = QCheckBox("Автоматически нажимать кнопку «Вход»")
         self.otrs_auto_submit_checkbox.setChecked(self.settings().get("otrs_auto_submit_login", False))
@@ -301,9 +280,6 @@ class DutyModeSettingsWidget(QWidget):
         settings.setdefault("sound_path", "")
         settings.setdefault("otrs_create_url", "")
         settings.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
-        settings.setdefault("otrs_login_enabled", False)
-        settings.setdefault("otrs_login", "")
-        settings.setdefault("otrs_password", "")
         settings.setdefault("otrs_auto_submit_login", False)
         settings.setdefault("graph_ids", [])
         return settings
@@ -535,9 +511,6 @@ class DutyModeSettingsWidget(QWidget):
             settings["sound_path"] = ""
         settings["otrs_create_url"] = self.otrs_create_url.text().strip()
         settings["expected_ticket_subject"] = self.expected_subject_input.text().strip() or "Проверка Zabbix (Важных IT-сервисов)"
-        settings["otrs_login_enabled"] = self.otrs_login_enabled_checkbox.isChecked()
-        settings["otrs_login"] = self.otrs_login_input.text().strip()
-        settings["otrs_password"] = self.otrs_password_input.text()
         settings["otrs_auto_submit_login"] = self.otrs_auto_submit_checkbox.isChecked()
         settings["graph_ids"] = self.selected_graph_ids()
 

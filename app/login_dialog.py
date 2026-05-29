@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from app.app_info import APP_NAME
 from app.config import CONFIG_PATH, enabled_zabbix_instances, import_config_file, save_config
 from app.screen_utils import center_widget_on_screen
-from app.credentials import load_saved_credentials, save_credentials
+from app.credentials import OTRS_CREDENTIALS_KEY, LEGACY_OTRS_CREDENTIALS_KEY, load_otrs_credentials, load_saved_credentials, save_credentials
 from app.logger import get_logger
 
 FIRST_SETUP_MESSAGE = (
@@ -116,18 +116,19 @@ class LoginDialog(QDialog):
 
         # ОТРС
         duty = self.config.setdefault("duty_mode", {})
+        otrs_credentials = load_otrs_credentials(self.config)
 
         otrs_box = QGroupBox("ОТРС")
         otrs_form = QFormLayout(otrs_box)
 
         self.otrs_login = QLineEdit()
         self.otrs_login.setPlaceholderText("Логин ОТРС")
-        self.otrs_login.setText(duty.get("otrs_login", ""))
+        self.otrs_login.setText(otrs_credentials.get("login", ""))
 
         self.otrs_password = QLineEdit()
         self.otrs_password.setPlaceholderText("Пароль ОТРС")
         self.otrs_password.setEchoMode(QLineEdit.Password)
-        self.otrs_password.setText(duty.get("otrs_password", ""))
+        self.otrs_password.setText(otrs_credentials.get("password", ""))
 
         otrs_form.addRow("Логин:", self.otrs_login)
         otrs_form.addRow("Пароль:", self.otrs_password)
@@ -277,10 +278,17 @@ class LoginDialog(QDialog):
 
         duty = self.config.setdefault("duty_mode", {})
         duty["otrs_login_enabled"] = True
-        duty["otrs_login"] = self.otrs_login.text().strip()
-        duty["otrs_password"] = self.otrs_password.text()
+        for legacy_key in ("otrs_" + "login", "otrs_" + "password"):
+            duty.pop(legacy_key, None)
 
-        save_credentials(self.credentials)
+        credentials = load_saved_credentials()
+        credentials.update(self.credentials)
+        credentials.pop(LEGACY_OTRS_CREDENTIALS_KEY, None)
+        credentials[OTRS_CREDENTIALS_KEY] = {
+            "login": self.otrs_login.text().strip(),
+            "password": self.otrs_password.text(),
+        }
+        save_credentials(credentials)
         save_config(self.config)
 
         self.accept()

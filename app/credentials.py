@@ -8,6 +8,43 @@ CREDENTIALS_DIR = Path.home() / ".config" / "zabbix_duty_panel"
 CREDENTIALS_FILE = CREDENTIALS_DIR / "credentials.json"
 
 
+OTRS_CREDENTIALS_KEY = "otrs"
+LEGACY_OTRS_CREDENTIALS_KEY = "__otrs__"
+
+
+def load_otrs_credentials(config=None) -> dict:
+    """Load OTRS credentials from the shared credentials store.
+
+    Older builds stored OTRS login/password in ``config["duty_mode"]``.
+    Those values are used only as a compatibility fallback so existing users
+    still see their credentials in Profile and autologin keeps working until
+    they save them into the credentials file.
+    """
+    credentials = load_saved_credentials()
+    saved = credentials.get(OTRS_CREDENTIALS_KEY) or credentials.get(LEGACY_OTRS_CREDENTIALS_KEY, {})
+    login = saved.get("login", "")
+    password = saved.get("password", "")
+
+    if (login or password) or not config:
+        return {"login": login, "password": password}
+
+    duty = config.get("duty_mode", {}) if isinstance(config, dict) else {}
+    return {
+        "login": str(duty.get("otrs_login", "") or ""),
+        "password": str(duty.get("otrs_password", "") or ""),
+    }
+
+
+def save_otrs_credentials(login: str, password: str):
+    credentials = load_saved_credentials()
+    credentials.pop(LEGACY_OTRS_CREDENTIALS_KEY, None)
+    credentials[OTRS_CREDENTIALS_KEY] = {
+        "login": login or "",
+        "password": password or "",
+    }
+    save_credentials(credentials)
+
+
 def _encode(value: str) -> str:
     """
     Это не полноценное шифрование, а простое скрытие от случайного просмотра.
