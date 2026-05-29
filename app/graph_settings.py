@@ -1,6 +1,5 @@
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -14,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
+from app.safe_widgets import NoWheelComboBox
 
 
 class GraphSettingsWidget(QWidget):
@@ -44,8 +44,8 @@ class GraphSettingsWidget(QWidget):
 
         selector_layout = QHBoxLayout()
 
-        self.product_combo = QComboBox()
-        self.dashboard_combo = QComboBox()
+        self.product_combo = NoWheelComboBox()
+        self.dashboard_combo = NoWheelComboBox()
 
         self.product_combo.currentIndexChanged.connect(self.reload_dashboards_combo)
         self.dashboard_combo.currentIndexChanged.connect(self.load_graphs)
