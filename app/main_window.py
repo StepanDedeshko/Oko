@@ -186,10 +186,6 @@ class MainWindow(QMainWindow):
         self.home_button.setToolTip("Открыть главную страницу")
         self.home_button.clicked.connect(self.open_home_page)
 
-        self.settings_button = QPushButton("Настройки")
-        self.settings_button.setToolTip("Открыть настройки приложения")
-        self.settings_button.clicked.connect(self.open_graph_settings)
-
         self.theme_logo_label = QLabel()
         self.theme_logo_label.setObjectName("ThemeLogo")
         self.theme_logo_label.setFixedSize(34, 34)
@@ -206,7 +202,6 @@ class MainWindow(QMainWindow):
         self.toolbar.addWidget(self.theme_logo_label)
         self.toolbar.addWidget(app_title)
         self.toolbar.addWidget(self.home_button)
-        self.toolbar.addWidget(self.settings_button)
         self.toolbar.addSeparator()
 
         self.toolbar.addWidget(QLabel("Продукт: "))
@@ -397,7 +392,9 @@ class MainWindow(QMainWindow):
         """
         self.home_page_widget = HomePageWidget(
             config=self.config,
-            open_duty_callback=self.open_duty_page
+            open_duty_callback=self.open_duty_page,
+            open_settings_callback=self.open_settings_section,
+            update_check_callback=self.check_for_updates_from_settings
         )
 
         self.home_page_index = self.stack.addWidget(self.home_page_widget)
@@ -553,9 +550,25 @@ class MainWindow(QMainWindow):
         self.time_combo_action.setVisible(visible)
 
     def open_graph_settings(self):
+        self.open_settings_section("Продукты и страницы")
+
+    def open_settings_section(self, section_name=None):
         if self.settings_page_index is not None:
+            widget = self.stack.widget(self.settings_page_index)
+            if section_name and hasattr(widget, "open_section"):
+                widget.open_section(section_name)
             self.stack.setCurrentIndex(self.settings_page_index)
             self.set_time_selector_visible(False)
+
+    def check_for_updates_from_settings(self, interactive=False, auto_start_install=False):
+        if self.settings_page_index is None:
+            return
+        widget = self.stack.widget(self.settings_page_index)
+        if hasattr(widget, "check_for_updates"):
+            widget.check_for_updates(
+                interactive=interactive,
+                auto_start_install=auto_start_install,
+            )
 
     def inject_login(self, view, creds):
         login = creds.get("login", "")
