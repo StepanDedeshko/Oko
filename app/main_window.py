@@ -186,10 +186,6 @@ class MainWindow(QMainWindow):
         self.home_button.setToolTip("Открыть главную страницу")
         self.home_button.clicked.connect(self.open_home_page)
 
-        self.settings_button = QPushButton("Настройки")
-        self.settings_button.setToolTip("Открыть настройки приложения")
-        self.settings_button.clicked.connect(self.open_graph_settings)
-
         self.theme_logo_label = QLabel()
         self.theme_logo_label.setObjectName("ThemeLogo")
         self.theme_logo_label.setFixedSize(34, 34)
@@ -206,7 +202,6 @@ class MainWindow(QMainWindow):
         self.toolbar.addWidget(self.theme_logo_label)
         self.toolbar.addWidget(app_title)
         self.toolbar.addWidget(self.home_button)
-        self.toolbar.addWidget(self.settings_button)
         self.toolbar.addSeparator()
 
         self.toolbar.addWidget(QLabel("Продукт: "))
