@@ -362,11 +362,16 @@ class ProductCardWidget(QGroupBox):
         self.on_delete = on_delete
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(8, 6, 8, 6)
+        root.setSpacing(6)
+
         self.status_label = QLabel()
-        self.status_label.setWordWrap(True)
+        self.status_label.setWordWrap(False)
         root.addWidget(self.status_label)
 
         buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(8)
         open_button = QPushButton("Открыть")
         open_button.clicked.connect(self.open_requested)
         delete_button = QPushButton("Удалить")
