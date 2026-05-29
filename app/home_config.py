@@ -7,18 +7,16 @@ from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit,
+    QScrollArea,
     QPushButton,
-    QTabWidget,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -102,271 +100,400 @@ def ask_restart_required(parent=None, reason=None):
     return request_application_restart(parent=parent, reason=reason)
 
 
-class PageEditorDialog(QDialog):
-    def __init__(self, page=None, parent=None):
+
+PAGE_TYPES = [
+    ("graphs_grid", "graphs_grid"),
+    ("problems_page", "problems_page"),
+    ("dashboard_page", "dashboard_page"),
+    ("mode_pages", "mode_pages"),
+]
+URL_PAGE_TYPES = {"problems_page", "dashboard_page"}
+
+
+def normalize_item_list(items, title_key, default_prefix):
+    """
+    Приводит старые списки строк и новые списки объектов к виду для UI.
+    В config сохраняем обычные dict-объекты, чтобы старые настройки продолжали читаться.
+    """
+    result = []
+    for index, item in enumerate(items or []):
+        if isinstance(item, str):
+            result.append({title_key: f"{default_prefix} {index + 1}", "url": item})
+        elif isinstance(item, dict):
+            normalized = clone(item)
+            normalized.setdefault(title_key, item.get("name") or item.get("title") or f"{default_prefix} {index + 1}")
+            normalized.setdefault("url", "")
+            result.append(normalized)
+    return result
+
+
+
+class GraphInlineRow(QWidget):
+    def __init__(self, graph=None, index=0, on_delete=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Страница")
-        self.resize(780, 620)
-        self.page = clone(page or {"name": "", "type": "simple_page", "url": "", "zabbix_id": "zbx_product_1", "enabled": True})
+        self.original_graph = clone(graph or {})
+        self.on_delete = on_delete
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(8, 6, 8, 6)
+        root.setSpacing(8)
+
+        label = QLabel(f"График {index + 1}")
+        label.setMinimumWidth(72)
+        self.enabled = QCheckBox("Включён")
+        self.enabled.setChecked(self.original_graph.get("enabled", True))
+        self.title = QLineEdit(self.original_graph.get("title", ""))
+        self.title.setPlaceholderText("Название графика")
+        self.url = QLineEdit(self.original_graph.get("url", ""))
+        self.url.setPlaceholderText("URL графика")
+        self.open_url = QLineEdit(
+            self.original_graph.get("open_url")
+            or self.original_graph.get("zabbix_url")
+            or self.original_graph.get("external_url")
+            or ""
+        )
+        self.open_url.setPlaceholderText("URL открытия в Zabbix")
+        delete = QPushButton("Удалить график")
+        delete.clicked.connect(self.delete_requested)
+
+        root.addWidget(label)
+        root.addWidget(self.title, stretch=2)
+        root.addWidget(self.url, stretch=3)
+        root.addWidget(self.open_url, stretch=3)
+        root.addWidget(self.enabled)
+        root.addWidget(delete)
+
+    def delete_requested(self):
+        if self.on_delete:
+            self.on_delete(self)
+
+    def value(self):
+        graph = clone(self.original_graph)
+        graph.update({
+            "enabled": self.enabled.isChecked(),
+            "title": self.title.text().strip(),
+            "url": self.url.text().strip(),
+        })
+        open_url = self.open_url.text().strip()
+        if open_url:
+            graph["open_url"] = open_url
+        else:
+            graph.pop("open_url", None)
+        graph.setdefault("use_time_range", self.original_graph.get("use_time_range", True))
+        return graph
+
+
+class ModeInlineRow(QWidget):
+    def __init__(self, mode=None, index=0, on_delete=None, parent=None):
+        super().__init__(parent)
+        self.original_mode = clone(mode or {}) if isinstance(mode, dict) else {"url": str(mode or "")}
+        self.on_delete = on_delete
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(8, 6, 8, 6)
+        root.setSpacing(8)
+
+        label = QLabel(f"Режим {index + 1}")
+        label.setMinimumWidth(72)
+        self.name = QLineEdit(self.original_mode.get("name") or self.original_mode.get("title") or f"Режим {index + 1}")
+        self.name.setPlaceholderText("Название режима")
+        self.url = QLineEdit(self.original_mode.get("url", ""))
+        self.url.setPlaceholderText("URL режима")
+        delete = QPushButton("Удалить режим")
+        delete.clicked.connect(self.delete_requested)
+
+        root.addWidget(label)
+        root.addWidget(self.name, stretch=2)
+        root.addWidget(self.url, stretch=5)
+        root.addWidget(delete)
+
+    def delete_requested(self):
+        if self.on_delete:
+            self.on_delete(self)
+
+    def value(self):
+        mode = clone(self.original_mode)
+        mode.update({
+            "name": self.name.text().strip(),
+            "url": self.url.text().strip(),
+        })
+        return mode
+
+
+class PageCardWidget(QGroupBox):
+    def __init__(self, page=None, zabbix_ids=None, index=0, on_delete=None, parent=None):
+        super().__init__(parent)
+        self.original_page = clone(page or {"name": "", "type": "dashboard_page", "url": "", "zabbix_id": "zbx_product_1", "enabled": True})
+        self.graph_rows = []
+        self.mode_rows = []
+        self.on_delete = on_delete
+        self.setTitle(f"Страница {index + 1}")
 
         root = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.name_input = QLineEdit(self.page.get("name", ""))
+        self.name = QLineEdit(self.original_page.get("name", ""))
+        self.name.setPlaceholderText("Название страницы")
+        self.enabled = QCheckBox("Включена")
+        self.enabled.setChecked(self.original_page.get("enabled", True))
         self.type_combo = QComboBox()
-        self.type_combo.addItem("Графики Zabbix", "graphs_grid")
-        self.type_combo.addItem("Проблемы", "problems_page")
-        self.type_combo.addItem("Страница с режимами", "mode_pages")
-        self.type_combo.addItem("Простая страница/ссылка", "simple_page")
+        for label, value in PAGE_TYPES:
+            self.type_combo.addItem(label, value)
+        page_type = self.original_page.get("type", "dashboard_page")
+        if page_type == "simple_page":
+            page_type = "dashboard_page"
+        type_index = self.type_combo.findData(page_type)
+        self.type_combo.setCurrentIndex(max(0, type_index))
 
-        idx = self.type_combo.findData(self.page.get("type", "simple_page"))
-        if idx >= 0:
-            self.type_combo.setCurrentIndex(idx)
+        self.zabbix_id = QComboBox()
+        self.zabbix_id.setEditable(True)
+        for zabbix_id in zabbix_ids or []:
+            self.zabbix_id.addItem(zabbix_id)
+        self.zabbix_id.setCurrentText(self.original_page.get("zabbix_id", "zbx_product_1"))
 
-        self.zabbix_id_input = QLineEdit(self.page.get("zabbix_id", "zbx_product_1"))
-        self.url_input = QLineEdit(self.page.get("url", ""))
+        self.url_label = QLabel("URL:")
+        self.url = QLineEdit(self.original_page.get("url", ""))
+        self.url.setPlaceholderText("URL страницы")
+        delete = QPushButton("Удалить страницу")
+        delete.clicked.connect(self.delete_requested)
 
-        form.addRow("Название:", self.name_input)
-        form.addRow("Тип:", self.type_combo)
-        form.addRow("Zabbix profile:", self.zabbix_id_input)
-        form.addRow("URL:", self.url_input)
+        form.addRow("Название страницы:", self.name)
+        form.addRow("Состояние:", self.enabled)
+        form.addRow("Тип страницы:", self.type_combo)
+        form.addRow("Профиль Zabbix:", self.zabbix_id)
+        form.addRow(self.url_label, self.url)
+        form.addRow("", delete)
         root.addLayout(form)
 
-        self.graphs_editor = QPlainTextEdit()
-        self.graphs_editor.setPlaceholderText("Для графиков: каждая строка\\nНазвание | URL")
-        self.graphs_editor.setPlainText(self.items_to_text(self.page.get("graphs", []), "title"))
-        root.addWidget(QLabel("Графики / ссылки:"))
-        root.addWidget(self.graphs_editor, stretch=1)
+        self.graphs_group = QGroupBox("Графики")
+        graphs_root = QVBoxLayout(self.graphs_group)
+        graph_buttons = QHBoxLayout()
+        add_graph = QPushButton("Добавить график")
+        add_graph.clicked.connect(self.add_graph)
+        graph_buttons.addWidget(add_graph)
+        graph_buttons.addStretch()
+        graphs_root.addLayout(graph_buttons)
+        self.graphs_layout = QVBoxLayout()
+        graphs_root.addLayout(self.graphs_layout)
+        root.addWidget(self.graphs_group)
 
-        self.modes_editor = QPlainTextEdit()
-        self.modes_editor.setPlaceholderText("Для страницы с режимами: каждая строка\\nНазвание режима | URL")
-        self.modes_editor.setPlainText(self.items_to_text(self.page.get("modes", []), "name"))
-        root.addWidget(QLabel("Режимы:"))
-        root.addWidget(self.modes_editor, stretch=1)
+        self.modes_group = QGroupBox("Режимы")
+        modes_root = QVBoxLayout(self.modes_group)
+        mode_buttons = QHBoxLayout()
+        add_mode = QPushButton("Добавить режим")
+        add_mode.clicked.connect(self.add_mode)
+        mode_buttons.addWidget(add_mode)
+        mode_buttons.addStretch()
+        modes_root.addLayout(mode_buttons)
+        self.modes_layout = QVBoxLayout()
+        modes_root.addLayout(self.modes_layout)
+        root.addWidget(self.modes_group)
 
-        row = QHBoxLayout()
-        save = QPushButton("Сохранить")
-        save.clicked.connect(self.accept_page)
-        cancel = QPushButton("Отмена")
-        cancel.clicked.connect(self.reject)
-        row.addWidget(save)
-        row.addWidget(cancel)
-        row.addStretch()
-        root.addLayout(row)
+        for graph in normalize_item_list(self.original_page.get("graphs", []), "title", "График"):
+            self.add_graph(graph)
+        for mode in normalize_item_list(self.original_page.get("modes", []), "name", "Режим"):
+            self.add_mode(mode)
 
-    def items_to_text(self, items, key):
-        return "\\n".join(f"{item.get(key, '')} | {item.get('url', '')}" for item in (items or []))
+        self.type_combo.currentIndexChanged.connect(self.update_type_fields)
+        self.update_type_fields()
 
-    def parse_items(self, text, key):
-        result = []
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if "|" in line:
-                title, url = line.split("|", 1)
-            else:
-                title, url = line, ""
-            item = {key: title.strip(), "url": url.strip()}
-            if key == "title":
-                item["use_time_range"] = True
-            result.append(item)
-        return result
+    def delete_requested(self):
+        if self.on_delete:
+            self.on_delete(self)
 
-    def accept_page(self):
-        name = self.name_input.text().strip()
-        if not name:
-            QMessageBox.warning(self, "Страница", "Укажи название страницы.")
+    def add_graph(self, graph=None):
+        row = GraphInlineRow(graph, len(self.graph_rows), self.remove_graph, self)
+        self.graph_rows.append(row)
+        self.graphs_layout.addWidget(row)
+
+    def remove_graph(self, row):
+        if QMessageBox.question(self, "Удалить график", "Удалить этот график?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
+        self.graph_rows.remove(row)
+        row.deleteLater()
 
+    def add_mode(self, mode=None):
+        row = ModeInlineRow(mode, len(self.mode_rows), self.remove_mode, self)
+        self.mode_rows.append(row)
+        self.modes_layout.addWidget(row)
+
+    def remove_mode(self, row):
+        if QMessageBox.question(self, "Удалить режим", "Удалить этот режим?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.mode_rows.remove(row)
+        row.deleteLater()
+
+    def update_type_fields(self):
         page_type = self.type_combo.currentData()
-        page = {
-            "name": name,
-            "type": page_type,
-            "enabled": True,
-            "zabbix_id": self.zabbix_id_input.text().strip() or "zbx_product_1",
-        }
+        self.graphs_group.setVisible(page_type == "graphs_grid")
+        self.modes_group.setVisible(page_type == "mode_pages")
+        show_url = page_type in URL_PAGE_TYPES
+        self.url_label.setVisible(show_url)
+        self.url.setVisible(show_url)
 
-        url = self.url_input.text().strip()
-        if url:
-            page["url"] = url
+    def value(self):
+        page = clone(self.original_page)
+        page.update({
+            "name": self.name.text().strip(),
+            "enabled": self.enabled.isChecked(),
+            "type": self.type_combo.currentData(),
+            "zabbix_id": self.zabbix_id.currentText().strip() or "zbx_product_1",
+        })
+        if self.type_combo.currentData() in URL_PAGE_TYPES:
+            url = self.url.text().strip()
+            if url:
+                page["url"] = url
+            else:
+                page.pop("url", None)
 
-        if page_type == "graphs_grid":
-            page["graphs"] = self.parse_items(self.graphs_editor.toPlainText(), "title")
-        elif page_type == "mode_pages":
-            page["modes"] = self.parse_items(self.modes_editor.toPlainText(), "name")
-
-        self.page = page
-        self.accept()
+        if self.type_combo.currentData() == "graphs_grid":
+            page["graphs"] = [row.value() for row in self.graph_rows if row.value().get("title") or row.value().get("url")]
+        if self.type_combo.currentData() == "mode_pages":
+            page["modes"] = [row.value() for row in self.mode_rows if row.value().get("name") or row.value().get("url")]
+        return page
 
 
-class ProductEditorDialog(QDialog):
-    def __init__(self, config, product_index=None, parent=None):
+class ProductCardWidget(QGroupBox):
+    def __init__(self, product=None, zabbix_ids=None, index=0, on_delete=None, parent=None):
         super().__init__(parent)
-        self.config = config
-        self.product_index = product_index
-        self.setWindowTitle("Продукт")
-        self.resize(720, 520)
-
-        if product_index is None:
-            self.product = {"name": "", "dashboards": []}
-        else:
-            self.product = clone(config.get("products", [])[product_index])
+        self.original_product = clone(product or {"name": "", "enabled": True, "dashboards": []})
+        self.zabbix_ids = zabbix_ids or []
+        self.page_cards = []
+        self.on_delete = on_delete
+        self.setTitle(f"Продукт {index + 1}")
 
         root = QVBoxLayout(self)
-        self.name_input = QLineEdit(self.product.get("name", ""))
-        root.addWidget(QLabel("Название продукта:"))
-        root.addWidget(self.name_input)
+        form = QFormLayout()
+        self.name = QLineEdit(self.original_product.get("name", ""))
+        self.name.setPlaceholderText("Название продукта")
+        self.enabled = QCheckBox("Включён")
+        self.enabled.setChecked(self.original_product.get("enabled", True))
+        form.addRow("Название продукта:", self.name)
+        form.addRow("Состояние:", self.enabled)
+        root.addLayout(form)
 
-        self.pages_list = QListWidget()
-        root.addWidget(QLabel("Страницы:"))
-        root.addWidget(self.pages_list, stretch=1)
+        buttons = QHBoxLayout()
+        add_page = QPushButton("Добавить страницу")
+        add_page.clicked.connect(self.add_page)
+        delete = QPushButton("Удалить продукт")
+        delete.clicked.connect(self.delete_requested)
+        buttons.addWidget(add_page)
+        buttons.addStretch()
+        buttons.addWidget(delete)
+        root.addLayout(buttons)
 
-        row = QHBoxLayout()
-        add = QPushButton("Добавить страницу")
-        add.clicked.connect(self.add_page)
-        edit = QPushButton("Изменить")
-        edit.clicked.connect(self.edit_page)
-        delete = QPushButton("Удалить")
-        delete.clicked.connect(self.delete_page)
-        row.addWidget(add)
-        row.addWidget(edit)
-        row.addWidget(delete)
-        row.addStretch()
-        root.addLayout(row)
+        self.pages_layout = QVBoxLayout()
+        root.addLayout(self.pages_layout)
 
-        bottom = QHBoxLayout()
-        save = QPushButton("Сохранить продукт")
-        save.clicked.connect(self.save_product)
-        cancel = QPushButton("Отмена")
-        cancel.clicked.connect(self.reject)
-        bottom.addWidget(save)
-        bottom.addWidget(cancel)
-        bottom.addStretch()
-        root.addLayout(bottom)
+        for page in self.original_product.get("dashboards", []) or []:
+            self.add_page(page)
 
-        self.refresh()
+    def delete_requested(self):
+        if self.on_delete:
+            self.on_delete(self)
 
-    def refresh(self):
-        self.pages_list.clear()
-        for i, page in enumerate(self.product.get("dashboards", [])):
-            item = QListWidgetItem(f"{page.get('name', 'Без названия')} [{page.get('type', '')}]")
-            item.setData(Qt.UserRole, i)
-            self.pages_list.addItem(item)
+    def add_page(self, page=None):
+        card = PageCardWidget(page, self.zabbix_ids, len(self.page_cards), self.remove_page, self)
+        self.page_cards.append(card)
+        self.pages_layout.addWidget(card)
 
-    def selected_index(self):
-        item = self.pages_list.currentItem()
-        return None if not item else item.data(Qt.UserRole)
-
-    def add_page(self):
-        dialog = PageEditorDialog(parent=self)
-        if dialog.exec() == QDialog.Accepted:
-            self.product.setdefault("dashboards", []).append(dialog.page)
-            self.refresh()
-
-    def edit_page(self):
-        index = self.selected_index()
-        if index is None:
-            QMessageBox.warning(self, "Страница", "Выбери страницу.")
+    def remove_page(self, card):
+        if QMessageBox.question(self, "Удалить страницу", "Удалить эту страницу?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        dialog = PageEditorDialog(self.product["dashboards"][index], parent=self)
-        if dialog.exec() == QDialog.Accepted:
-            self.product["dashboards"][index] = dialog.page
-            self.refresh()
+        self.page_cards.remove(card)
+        card.deleteLater()
 
-    def delete_page(self):
-        index = self.selected_index()
-        if index is None:
-            QMessageBox.warning(self, "Страница", "Выбери страницу.")
-            return
-        del self.product["dashboards"][index]
-        self.refresh()
-
-    def save_product(self):
-        name = self.name_input.text().strip()
-        if not name:
-            QMessageBox.warning(self, "Продукт", "Укажи название продукта.")
-            return
-
-        self.product["name"] = name
-        products = self.config.setdefault("products", [])
-        if self.product_index is None:
-            products.append(self.product)
-        else:
-            products[self.product_index] = self.product
-        save_config(self.config)
-        self.accept()
+    def value(self):
+        product = clone(self.original_product)
+        product.update({
+            "name": self.name.text().strip(),
+            "enabled": self.enabled.isChecked(),
+            "dashboards": [card.value() for card in self.page_cards],
+        })
+        return product
 
 
 class ProductsWidget(QWidget):
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
+        self.product_cards = []
+        self.zabbix_ids = [instance.get("id", "") for instance in self.config.get("zabbix_instances", []) if instance.get("id")]
 
         root = QVBoxLayout(self)
-        top = QHBoxLayout()
+        header = QHBoxLayout()
         title = QLabel("Продукты и страницы")
         title.setObjectName("PageTitle")
         add = QPushButton("Добавить продукт")
         add.clicked.connect(self.add_product)
-        edit = QPushButton("Изменить")
-        edit.clicked.connect(self.edit_product)
-        delete = QPushButton("Удалить")
-        delete.clicked.connect(self.delete_product)
-        top.addWidget(title)
-        top.addStretch()
-        top.addWidget(add)
-        top.addWidget(edit)
-        top.addWidget(delete)
-        root.addLayout(top)
+        save = QPushButton("Сохранить")
+        save.clicked.connect(self.save)
+        header.addWidget(title)
+        header.addStretch()
+        header.addWidget(add)
+        header.addWidget(save)
+        root.addLayout(header)
 
-        self.list_widget = QListWidget()
-        root.addWidget(self.list_widget, stretch=1)
-
-        hint = QLabel("После изменения продуктов и страниц перезапусти приложение, чтобы меню полностью пересобралось.")
+        hint = QLabel("Настраивай продукты, страницы, графики и режимы прямо в карточках. Нерелевантные блоки скрываются по выбранному типу страницы.")
         hint.setWordWrap(True)
         root.addWidget(hint)
-        self.refresh()
 
-    def refresh(self):
-        self.list_widget.clear()
-        for i, product in enumerate(self.config.get("products", [])):
-            count = len(product.get("dashboards", []))
-            item = QListWidgetItem(f"{product.get('name', 'Без названия')} — страниц: {count}")
-            item.setData(Qt.UserRole, i)
-            self.list_widget.addItem(item)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        root.addWidget(scroll, stretch=1)
 
-    def selected_index(self):
-        item = self.list_widget.currentItem()
-        return None if not item else item.data(Qt.UserRole)
+        self.container = QWidget()
+        self.products_layout = QVBoxLayout(self.container)
+        self.products_layout.setSpacing(14)
+        scroll.setWidget(self.container)
 
-    def add_product(self):
-        dialog = ProductEditorDialog(self.config, None, self)
-        if dialog.exec() == QDialog.Accepted:
-            self.refresh()
-            request_application_restart(self, "Изменены продукты или страницы. Меню и страницы пересобираются при запуске.")
-            request_application_restart(self, "Изменены продукты или страницы. Меню и страницы пересобираются при запуске.")
+        for product in self.config.get("products", []) or []:
+            self.add_product(product)
+        self.products_layout.addStretch(1)
 
-    def edit_product(self):
-        index = self.selected_index()
-        if index is None:
-            QMessageBox.warning(self, "Продукт", "Выбери продукт.")
+    def add_product(self, product=None):
+        if self.products_layout.count() and self.products_layout.itemAt(self.products_layout.count() - 1).spacerItem():
+            self.products_layout.takeAt(self.products_layout.count() - 1)
+        card = ProductCardWidget(product, self.zabbix_ids, len(self.product_cards), self.remove_product, self)
+        self.product_cards.append(card)
+        self.products_layout.addWidget(card)
+        self.products_layout.addStretch(1)
+
+    def remove_product(self, card):
+        name = card.name.text().strip() or "Без названия"
+        if QMessageBox.question(self, "Удалить продукт", f"Удалить продукт «{name}»?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        dialog = ProductEditorDialog(self.config, index, self)
-        if dialog.exec() == QDialog.Accepted:
-            self.refresh()
+        self.product_cards.remove(card)
+        card.deleteLater()
 
-    def delete_product(self):
-        index = self.selected_index()
-        if index is None:
-            QMessageBox.warning(self, "Продукт", "Выбери продукт.")
+    def validate(self, products):
+        errors = []
+        for product_index, product in enumerate(products, start=1):
+            if not product.get("name", "").strip():
+                errors.append(f"Продукт {product_index}: укажи название продукта.")
+            for page_index, page in enumerate(product.get("dashboards", []), start=1):
+                if not page.get("name", "").strip():
+                    errors.append(f"Продукт {product_index}, страница {page_index}: укажи название страницы.")
+                if page.get("type") == "graphs_grid":
+                    for graph_index, graph in enumerate(page.get("graphs", []), start=1):
+                        if not graph.get("title", "").strip() or not graph.get("url", "").strip():
+                            errors.append(f"Продукт {product_index}, страница {page_index}, график {graph_index}: нужны название и URL.")
+                if page.get("type") == "mode_pages":
+                    for mode_index, mode in enumerate(page.get("modes", []), start=1):
+                        if not mode.get("name", "").strip() or not mode.get("url", "").strip():
+                            errors.append(f"Продукт {product_index}, страница {page_index}, режим {mode_index}: нужны название и URL.")
+        return errors
+
+    def save(self):
+        products = [card.value() for card in self.product_cards]
+        errors = self.validate(products)
+        if errors:
+            QMessageBox.warning(self, "Продукты и страницы", "\n".join(errors))
             return
-        answer = QMessageBox.question(self, "Удалить", "Удалить продукт?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if answer == QMessageBox.Yes:
-            del self.config["products"][index]
-            save_config(self.config)
-            self.refresh()
-            request_application_restart(self, "Изменены продукты или страницы. Меню и страницы пересобираются при запуске.")
+        self.config["products"] = products
+        save_config(self.config)
+        QMessageBox.information(self, "Продукты и страницы", "Настройки сохранены. После изменения структуры перезапусти приложение, чтобы меню пересобралось.")
+        request_application_restart(self, "Изменены продукты или страницы. Меню и страницы пересобираются при запуске.")
 
 
 class ProfileWidget(QWidget):
@@ -567,12 +694,66 @@ class NotesWidget(QWidget):
 
 
 
+class AppSettingsWidget(QWidget):
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = ensure_home_defaults(config)
+        self.section_indexes = {}
+
+        root = QVBoxLayout(self)
+        self.title = QLabel("Настройки")
+        self.title.setObjectName("PageTitle")
+        root.addWidget(self.title)
+
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack, stretch=1)
+
+        self.add_section("Профиль", ProfileWidget(self.config))
+        self.add_section("Продукты и страницы", ProductsWidget(self.config))
+        self.add_section("Тема", ThemeWidget(self.config))
+        self.add_section("Заметки", NotesWidget(self.config))
+        self.update_widget = UpdateWidget(self.config, request_application_restart)
+        self.add_section("Обновление", self.update_widget)
+        self.add_section("Режим разработчика", DiagnosticsWidget(self.config))
+
+        self.open_section("Продукты и страницы")
+
+    def add_section(self, section_name, widget):
+        self.section_indexes[section_name] = self.stack.addWidget(widget)
+
+    def open_section(self, section_name):
+        index = self.section_indexes.get(section_name)
+        if index is None:
+            index = self.section_indexes.get("Продукты и страницы", 0)
+            section_name = "Продукты и страницы"
+        self.stack.setCurrentIndex(index)
+        self.title.setText(section_name)
+
+    def check_for_updates(self, interactive=False, auto_start_install=False):
+        if hasattr(self, "update_widget") and self.update_widget:
+            self.update_widget.check_for_updates(
+                interactive=interactive,
+                auto_start_install=auto_start_install,
+            )
+
+
 
 class HomePageWidget(QWidget):
-    def __init__(self, config, open_duty_callback=None, parent=None):
+    SETTINGS_SECTIONS = [
+        "Профиль",
+        "Продукты и страницы",
+        "Тема",
+        "Заметки",
+        "Обновление",
+        "Режим разработчика",
+    ]
+
+    def __init__(self, config, open_duty_callback=None, open_settings_callback=None, update_check_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         self.open_duty_callback = open_duty_callback
+        self.open_settings_callback = open_settings_callback
+        self.update_check_callback = update_check_callback
 
         root = QVBoxLayout(self)
 
@@ -580,9 +761,19 @@ class HomePageWidget(QWidget):
         title.setObjectName("HomeTitle")
         root.addWidget(title)
 
-        subtitle = QLabel("Главная страница: профиль, доступы, продукты, страницы, тема и заметки.")
+        subtitle = QLabel("Главная страница-меню: выбери нужный раздел настроек или перейди в режим дежурства.")
         subtitle.setWordWrap(True)
         root.addWidget(subtitle)
+
+        grid = QGridLayout()
+        grid.setSpacing(14)
+        for index, section_name in enumerate(self.SETTINGS_SECTIONS):
+            button = QPushButton(section_name)
+            button.setMinimumHeight(96)
+            button.setToolTip(f"Открыть раздел «{section_name}»")
+            button.clicked.connect(lambda checked=False, name=section_name: self.open_settings_section(name))
+            grid.addWidget(button, index // 3, index % 3)
+        root.addLayout(grid)
 
         row = QHBoxLayout()
         duty = QPushButton("Перейти в режим дежурства")
@@ -590,16 +781,7 @@ class HomePageWidget(QWidget):
         row.addWidget(duty)
         row.addStretch()
         root.addLayout(row)
-
-        tabs = QTabWidget()
-        tabs.addTab(ProfileWidget(self.config), "Профиль")
-        tabs.addTab(ProductsWidget(self.config), "Продукты и страницы")
-        tabs.addTab(ThemeWidget(self.config), "Тема")
-        tabs.addTab(NotesWidget(self.config), "Заметки")
-        self.update_widget = UpdateWidget(self.config, request_application_restart)
-        tabs.addTab(self.update_widget, "Обновление")
-        tabs.addTab(DiagnosticsWidget(self.config), "Диагностика")
-        root.addWidget(tabs, stretch=1)
+        root.addStretch(1)
 
         footer = QLabel(f"Версия: {APP_VERSION}\n{APP_DESCRIPTION}")
         footer.setObjectName("AppFooter")
@@ -610,13 +792,17 @@ class HomePageWidget(QWidget):
 
         self.fade_in()
 
+    def open_settings_section(self, section_name):
+        if self.open_settings_callback:
+            self.open_settings_callback(section_name)
+
     def open_duty(self):
         if self.open_duty_callback:
             self.open_duty_callback()
 
     def check_for_updates(self, interactive=False, auto_start_install=False):
-        if hasattr(self, "update_widget") and self.update_widget:
-            self.update_widget.check_for_updates(
+        if self.update_check_callback:
+            self.update_check_callback(
                 interactive=interactive,
                 auto_start_install=auto_start_install,
             )
