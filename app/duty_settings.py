@@ -1,13 +1,20 @@
+from copy import deepcopy
+import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -15,15 +22,103 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config import save_config
+from app.config import default_trigger_item, ensure_duty_triggers_defaults, save_config
+from app.logger import get_logger
+
+
+TRIGGER_MODES = {
+    "mode_1": "Правило проверки 1",
+    "mode_2": "Правило проверки 2",
+}
+
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+class DutyTriggerEditDialog(QDialog):
+    def __init__(self, trigger=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Триггер дежурства")
+        self.trigger = deepcopy(trigger) if trigger else default_trigger_item()
+
+        root = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.id_input = QLineEdit(self.trigger.get("id", ""))
+        self.enabled_checkbox = QCheckBox("Триггер включён")
+        self.enabled_checkbox.setChecked(self.trigger.get("enabled", True))
+        self.display_name_input = QLineEdit(self.trigger.get("display_name", ""))
+        self.source_product_input = QLineEdit(self.trigger.get("source_product", ""))
+        self.source_section_input = QLineEdit(self.trigger.get("source_section", ""))
+        self.metric_title_input = QLineEdit(self.trigger.get("metric_title", ""))
+        self.target_product_input = QLineEdit(self.trigger.get("target_product", ""))
+        self.target_section_input = QLineEdit(self.trigger.get("target_section", ""))
+        self.target_graph_title_input = QLineEdit(self.trigger.get("target_graph_title", ""))
+        self.mode_combo = QComboBox()
+        for mode, label in TRIGGER_MODES.items():
+            self.mode_combo.addItem(label, mode)
+        mode_index = self.mode_combo.findData(self.trigger.get("mode", "mode_1"))
+        self.mode_combo.setCurrentIndex(max(0, mode_index))
+        self.ok_text_input = QLineEdit(self.trigger.get("ok_text", ""))
+        self.alert_template_input = QLineEdit(self.trigger.get("alert_template", ""))
+
+        form.addRow("ID:", self.id_input)
+        form.addRow("Состояние:", self.enabled_checkbox)
+        form.addRow("Название:", self.display_name_input)
+        form.addRow("Продукт-источник:", self.source_product_input)
+        form.addRow("Раздел/страница-источник:", self.source_section_input)
+        form.addRow("Название метрики:", self.metric_title_input)
+        form.addRow("Целевой продукт:", self.target_product_input)
+        form.addRow("Целевой раздел:", self.target_section_input)
+        form.addRow("Целевой график:", self.target_graph_title_input)
+        form.addRow("Режим:", self.mode_combo)
+        form.addRow("Текст нормы:", self.ok_text_input)
+        form.addRow("Шаблон тревоги:", self.alert_template_input)
+        root.addLayout(form)
+
+        hint = QLabel("Поля source/target можно оставить пустыми на этапе настройки. Триггер не будет готов к работе до полной привязки source → target.")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def result_trigger(self):
+        return {
+            "id": self.id_input.text().strip(),
+            "enabled": self.enabled_checkbox.isChecked(),
+            "display_name": self.display_name_input.text().strip(),
+            "source_product": self.source_product_input.text().strip(),
+            "source_section": self.source_section_input.text().strip(),
+            "metric_title": self.metric_title_input.text().strip(),
+            "target_product": self.target_product_input.text().strip(),
+            "target_section": self.target_section_input.text().strip(),
+            "target_graph_title": self.target_graph_title_input.text().strip(),
+            "mode": self.mode_combo.currentData(),
+            "ok_text": self.ok_text_input.text().strip(),
+            "alert_template": self.alert_template_input.text().strip(),
+        }
+
+    def accept(self):
+        trigger = self.result_trigger()
+        errors = validate_trigger(trigger)
+        if errors:
+            QMessageBox.warning(self, "Триггер дежурства", "\n".join(errors))
+            return
+        super().accept()
 
 
 class DutyModeSettingsWidget(QWidget):
     def __init__(self, config, on_saved_callback=None):
         super().__init__()
 
+        self.logger = get_logger()
+        self.logger.info("Открыты настройки триггеров дежурства")
+
         self.config = config
         self.on_saved_callback = on_saved_callback
+        self.trigger_items = deepcopy(self.duty_triggers_settings().get("items", []))
 
         root = QVBoxLayout(self)
 
@@ -120,6 +215,8 @@ class DutyModeSettingsWidget(QWidget):
         self.graph_list = QListWidget()
         root.addWidget(self.graph_list, stretch=1)
 
+        self.build_triggers_ui(root)
+
         buttons = QHBoxLayout()
 
         save_button = QPushButton("Сохранить")
@@ -130,6 +227,7 @@ class DutyModeSettingsWidget(QWidget):
         root.addLayout(buttons)
 
         self.load_graphs()
+        self.reload_trigger_list()
 
     def settings(self):
         settings = self.config.setdefault("duty_mode", {})
@@ -145,6 +243,58 @@ class DutyModeSettingsWidget(QWidget):
         settings.setdefault("otrs_auto_submit_login", False)
         settings.setdefault("graph_ids", [])
         return settings
+
+    def duty_triggers_settings(self):
+        return ensure_duty_triggers_defaults(self.config)
+
+    def build_triggers_ui(self, root):
+        group = QGroupBox("Триггеры дежурства source → target")
+        layout = QVBoxLayout(group)
+
+        self.triggers_enabled_checkbox = QCheckBox("Включить триггеры дежурства")
+        self.triggers_enabled_checkbox.setChecked(self.duty_triggers_settings().get("enabled", True))
+        layout.addWidget(self.triggers_enabled_checkbox)
+
+        thresholds = QFormLayout()
+        trigger_settings = self.duty_triggers_settings()
+        self.day_start_input = QLineEdit(trigger_settings.get("day_start", "06:00"))
+        self.day_end_input = QLineEdit(trigger_settings.get("day_end", "00:00"))
+        self.day_threshold_input = QSpinBox()
+        self.day_threshold_input.setMinimum(1)
+        self.day_threshold_input.setMaximum(24 * 60)
+        self.day_threshold_input.setValue(int(trigger_settings.get("day_threshold_minutes", 90)))
+        self.night_threshold_input = QSpinBox()
+        self.night_threshold_input.setMinimum(1)
+        self.night_threshold_input.setMaximum(24 * 60)
+        self.night_threshold_input.setValue(int(trigger_settings.get("night_threshold_minutes", 180)))
+        self.mode1_silence_start_input = QLineEdit(trigger_settings.get("mode1_night_silence_start", "01:00"))
+        self.mode1_silence_end_input = QLineEdit(trigger_settings.get("mode1_night_silence_end", "05:30"))
+
+        thresholds.addRow("Начало дня (HH:MM):", self.day_start_input)
+        thresholds.addRow("Конец дня (HH:MM):", self.day_end_input)
+        thresholds.addRow("Дневной порог, минут:", self.day_threshold_input)
+        thresholds.addRow("Ночной порог, минут:", self.night_threshold_input)
+        thresholds.addRow("Начало ночного окна тишины mode_1:", self.mode1_silence_start_input)
+        thresholds.addRow("Конец ночного окна тишины mode_1:", self.mode1_silence_end_input)
+        layout.addLayout(thresholds)
+
+        self.trigger_list = QListWidget()
+        layout.addWidget(self.trigger_list)
+
+        trigger_buttons = QHBoxLayout()
+        add_button = QPushButton("Добавить триггер")
+        edit_button = QPushButton("Редактировать триггер")
+        delete_button = QPushButton("Удалить триггер")
+        add_button.clicked.connect(self.add_trigger)
+        edit_button.clicked.connect(self.edit_trigger)
+        delete_button.clicked.connect(self.delete_trigger)
+        trigger_buttons.addWidget(add_button)
+        trigger_buttons.addWidget(edit_button)
+        trigger_buttons.addWidget(delete_button)
+        trigger_buttons.addStretch()
+        layout.addLayout(trigger_buttons)
+
+        root.addWidget(group)
 
     def graph_id(self, product_name, dashboard_name, index, graph):
         return graph.get("id") or f"{product_name}::{dashboard_name}::{index}::{graph.get('title', '')}"
@@ -179,6 +329,16 @@ class DutyModeSettingsWidget(QWidget):
             item.setCheckState(Qt.Checked if graph_id in selected else Qt.Unchecked)
             self.graph_list.addItem(item)
 
+    def reload_trigger_list(self):
+        self.trigger_list.clear()
+        for index, trigger in enumerate(self.trigger_items):
+            name = trigger.get("display_name") or trigger.get("id") or f"Триггер {index + 1}"
+            mode_label = TRIGGER_MODES.get(trigger.get("mode"), trigger.get("mode", ""))
+            state = "вкл" if trigger.get("enabled", True) else "выкл"
+            item = QListWidgetItem(f"{name} — {mode_label} — {state}")
+            item.setData(Qt.UserRole, index)
+            self.trigger_list.addItem(item)
+
     def choose_sound(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -203,7 +363,106 @@ class DutyModeSettingsWidget(QWidget):
 
         return ids
 
+    def selected_trigger_index(self):
+        item = self.trigger_list.currentItem()
+        if item is None:
+            return None
+        return item.data(Qt.UserRole)
+
+    def next_trigger_id(self):
+        existing = {trigger.get("id") for trigger in self.trigger_items}
+        number = len(self.trigger_items) + 1
+        while f"trigger_{number}" in existing:
+            number += 1
+        return f"trigger_{number}"
+
+    def add_trigger(self):
+        trigger = default_trigger_item(self.next_trigger_id(), "mode_1")
+        dialog = DutyTriggerEditDialog(trigger, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.trigger_items.append(dialog.result_trigger())
+        self.reload_trigger_list()
+        self.logger.info("Добавлен триггер дежурства: %s", self.trigger_items[-1].get("id"))
+
+    def edit_trigger(self):
+        index = self.selected_trigger_index()
+        if index is None:
+            QMessageBox.information(self, "Триггеры дежурства", "Выберите триггер для редактирования.")
+            return
+        dialog = DutyTriggerEditDialog(self.trigger_items[index], self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.trigger_items[index] = dialog.result_trigger()
+        self.reload_trigger_list()
+        self.trigger_list.setCurrentRow(index)
+        self.logger.info("Изменён триггер дежурства: %s", self.trigger_items[index].get("id"))
+
+    def delete_trigger(self):
+        index = self.selected_trigger_index()
+        if index is None:
+            QMessageBox.information(self, "Триггеры дежурства", "Выберите триггер для удаления.")
+            return
+        trigger_id = self.trigger_items[index].get("id")
+        reply = QMessageBox.question(
+            self,
+            "Триггеры дежурства",
+            f"Удалить триггер «{trigger_id}»?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.trigger_items.pop(index)
+        self.reload_trigger_list()
+        self.logger.info("Удалён триггер дежурства: %s", trigger_id)
+
+    def validate_triggers_settings(self):
+        errors = []
+        time_fields = {
+            "начало дня": self.day_start_input.text().strip(),
+            "конец дня": self.day_end_input.text().strip(),
+            "начало ночного окна тишины mode_1": self.mode1_silence_start_input.text().strip(),
+            "конец ночного окна тишины mode_1": self.mode1_silence_end_input.text().strip(),
+        }
+        for label, value in time_fields.items():
+            if not TIME_RE.match(value):
+                errors.append(f"Поле «{label}» должно быть в формате HH:MM.")
+
+        if int(self.day_threshold_input.value()) <= 0:
+            errors.append("Дневной порог должен быть больше 0.")
+        if int(self.night_threshold_input.value()) <= 0:
+            errors.append("Ночной порог должен быть больше 0.")
+
+        for index, trigger in enumerate(self.trigger_items, start=1):
+            for error in validate_trigger(trigger):
+                errors.append(f"Триггер {index}: {error}")
+
+        return errors
+
     def save(self):
+        trigger_errors = self.validate_triggers_settings()
+        if trigger_errors:
+            QMessageBox.warning(self, "Триггеры дежурства", "\n".join(trigger_errors))
+            return
+
+        incomplete = [
+            trigger.get("id", "")
+            for trigger in self.trigger_items
+            if not all([
+                trigger.get("source_product", "").strip(),
+                trigger.get("source_section", "").strip(),
+                trigger.get("target_product", "").strip(),
+                trigger.get("target_section", "").strip(),
+                trigger.get("target_graph_title", "").strip(),
+            ])
+        ]
+        if incomplete:
+            QMessageBox.information(
+                self,
+                "Триггеры дежурства",
+                "Некоторые триггеры сохранены без полной привязки source → target и не будут готовы к работе до заполнения всех полей.",
+            )
+
         settings = self.settings()
         settings["enabled"] = self.enabled_checkbox.isChecked()
         settings["skip_minutes"] = int(self.skip_minutes.value())
@@ -218,9 +477,31 @@ class DutyModeSettingsWidget(QWidget):
         settings["otrs_auto_submit_login"] = self.otrs_auto_submit_checkbox.isChecked()
         settings["graph_ids"] = self.selected_graph_ids()
 
+        trigger_settings = self.duty_triggers_settings()
+        trigger_settings["enabled"] = self.triggers_enabled_checkbox.isChecked()
+        trigger_settings["day_start"] = self.day_start_input.text().strip()
+        trigger_settings["day_end"] = self.day_end_input.text().strip()
+        trigger_settings["day_threshold_minutes"] = int(self.day_threshold_input.value())
+        trigger_settings["night_threshold_minutes"] = int(self.night_threshold_input.value())
+        trigger_settings["mode1_night_silence_start"] = self.mode1_silence_start_input.text().strip()
+        trigger_settings["mode1_night_silence_end"] = self.mode1_silence_end_input.text().strip()
+        trigger_settings["items"] = deepcopy(self.trigger_items)
+
         save_config(self.config)
+        self.logger.info("Сохранены настройки триггеров дежурства")
 
         QMessageBox.information(self, "Режим дежурства", "Настройки сохранены.")
 
         if self.on_saved_callback:
             self.on_saved_callback()
+
+
+def validate_trigger(trigger):
+    errors = []
+    if not trigger.get("id", "").strip():
+        errors.append("ID должен быть непустым.")
+    if not trigger.get("metric_title", "").strip():
+        errors.append("Название метрики должно быть непустым.")
+    if trigger.get("mode") not in TRIGGER_MODES:
+        errors.append("Режим должен быть mode_1 или mode_2.")
+    return errors
