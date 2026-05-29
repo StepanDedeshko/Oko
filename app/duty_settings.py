@@ -4,7 +4,6 @@ import re
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -17,13 +16,13 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from app.config import default_trigger_item, ensure_duty_triggers_defaults, save_config
 from app.logger import get_logger
+from app.safe_widgets import NoWheelComboBox, NoWheelSpinBox
 
 
 TRIGGER_MODES = {
@@ -62,7 +61,7 @@ class DutyTriggerEditDialog(QDialog):
         self.refresh_graph_combo(self.source_product_input, self.source_section_input, self.metric_title_input, self.trigger.get("metric_title", ""))
         self.refresh_section_combo(self.target_product_input, self.target_section_input, self.target_graph_title_input, self.trigger.get("target_section", ""))
         self.refresh_graph_combo(self.target_product_input, self.target_section_input, self.target_graph_title_input, self.trigger.get("target_graph_title", ""))
-        self.mode_combo = QComboBox()
+        self.mode_combo = NoWheelComboBox()
         for mode, label in TRIGGER_MODES.items():
             self.mode_combo.addItem(label, mode)
         mode_index = self.mode_combo.findData(self.trigger.get("mode", "mode_1"))
@@ -94,7 +93,7 @@ class DutyTriggerEditDialog(QDialog):
         root.addWidget(buttons)
 
     def create_combo_line(self, values, current):
-        combo = QComboBox()
+        combo = NoWheelComboBox()
         combo.setEditable(True)
         seen = set()
         for value in values:
@@ -198,7 +197,7 @@ class DutyModeSettingsWidget(QWidget):
         row = QHBoxLayout()
         row.addWidget(QLabel("Повтор после пропуска, минут:"))
 
-        self.skip_minutes = QSpinBox()
+        self.skip_minutes = NoWheelSpinBox()
         self.skip_minutes.setMinimum(1)
         self.skip_minutes.setMaximum(120)
         self.skip_minutes.setValue(int(self.settings().get("skip_minutes", 5)))
@@ -324,11 +323,11 @@ class DutyModeSettingsWidget(QWidget):
         trigger_settings = self.duty_triggers_settings()
         self.day_start_input = QLineEdit(trigger_settings.get("day_start", "06:00"))
         self.day_end_input = QLineEdit(trigger_settings.get("day_end", "00:00"))
-        self.day_threshold_input = QSpinBox()
+        self.day_threshold_input = NoWheelSpinBox()
         self.day_threshold_input.setMinimum(1)
         self.day_threshold_input.setMaximum(24 * 60)
         self.day_threshold_input.setValue(int(trigger_settings.get("day_threshold_minutes", 90)))
-        self.night_threshold_input = QSpinBox()
+        self.night_threshold_input = NoWheelSpinBox()
         self.night_threshold_input.setMinimum(1)
         self.night_threshold_input.setMaximum(24 * 60)
         self.night_threshold_input.setValue(int(trigger_settings.get("night_threshold_minutes", 180)))

@@ -6,9 +6,7 @@ import sys
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -29,6 +27,7 @@ from app.theme import get_available_themes
 from app.app_info import APP_NAME, APP_VERSION, APP_DESCRIPTION
 from app.update_widget import UpdateWidget
 from app.diagnostics_widget import DiagnosticsWidget
+from app.safe_widgets import NoWheelComboBox
 
 
 def clone(value):
@@ -221,12 +220,13 @@ class ModeInlineRow(QWidget):
 
 
 class PageCardWidget(QGroupBox):
-    def __init__(self, page=None, zabbix_ids=None, index=0, on_delete=None, parent=None):
+    def __init__(self, page=None, zabbix_ids=None, index=0, on_delete=None, parent=None, show_related=True):
         super().__init__(parent)
         self.original_page = clone(page or {"name": "", "type": "dashboard_page", "url": "", "zabbix_id": "zbx_product_1", "enabled": True})
         self.graph_rows = []
         self.mode_rows = []
         self.on_delete = on_delete
+        self.show_related = show_related
         self.setTitle(f"Страница {index + 1}")
 
         root = QVBoxLayout(self)
@@ -236,7 +236,7 @@ class PageCardWidget(QGroupBox):
         self.name.setPlaceholderText("Название страницы")
         self.enabled = QCheckBox("Включена")
         self.enabled.setChecked(self.original_page.get("enabled", True))
-        self.type_combo = QComboBox()
+        self.type_combo = NoWheelComboBox()
         for label, value in PAGE_TYPES:
             self.type_combo.addItem(label, value)
         page_type = self.original_page.get("type", "dashboard_page")
@@ -245,7 +245,7 @@ class PageCardWidget(QGroupBox):
         type_index = self.type_combo.findData(page_type)
         self.type_combo.setCurrentIndex(max(0, type_index))
 
-        self.zabbix_id = QComboBox()
+        self.zabbix_id = NoWheelComboBox()
         self.zabbix_id.setEditable(True)
         for zabbix_id in zabbix_ids or []:
             self.zabbix_id.addItem(zabbix_id)
@@ -325,8 +325,8 @@ class PageCardWidget(QGroupBox):
 
     def update_type_fields(self):
         page_type = self.type_combo.currentData()
-        self.graphs_group.setVisible(page_type == "graphs_grid")
-        self.modes_group.setVisible(page_type == "mode_pages")
+        self.graphs_group.setVisible(self.show_related and page_type == "graphs_grid")
+        self.modes_group.setVisible(self.show_related and page_type == "mode_pages")
         show_url = page_type in URL_PAGE_TYPES
         self.url_label.setVisible(show_url)
         self.url.setVisible(show_url)
@@ -346,65 +346,267 @@ class PageCardWidget(QGroupBox):
             else:
                 page.pop("url", None)
 
-        if self.type_combo.currentData() == "graphs_grid":
+        if self.type_combo.currentData() == "graphs_grid" and self.show_related:
             page["graphs"] = [row.value() for row in self.graph_rows if row.value().get("title") or row.value().get("url")]
-        if self.type_combo.currentData() == "mode_pages":
+        if self.type_combo.currentData() == "mode_pages" and self.show_related:
             page["modes"] = [row.value() for row in self.mode_rows if row.value().get("name") or row.value().get("url")]
         return page
 
 
 class ProductCardWidget(QGroupBox):
-    def __init__(self, product=None, zabbix_ids=None, index=0, on_delete=None, parent=None):
+    def __init__(self, product=None, index=0, on_open=None, on_delete=None, parent=None):
         super().__init__(parent)
-        self.original_product = clone(product or {"name": "", "enabled": True, "dashboards": []})
-        self.zabbix_ids = zabbix_ids or []
-        self.page_cards = []
+        self.product = product or {"name": "", "enabled": True, "dashboards": []}
+        self.index = index
+        self.on_open = on_open
         self.on_delete = on_delete
-        self.setTitle(f"Продукт {index + 1}")
+        self.setTitle("Продукт")
 
         root = QVBoxLayout(self)
-        form = QFormLayout()
-        self.name = QLineEdit(self.original_product.get("name", ""))
-        self.name.setPlaceholderText("Название продукта")
-        self.enabled = QCheckBox("Включён")
-        self.enabled.setChecked(self.original_product.get("enabled", True))
-        form.addRow("Название продукта:", self.name)
-        form.addRow("Состояние:", self.enabled)
-        root.addLayout(form)
+        self.name_label = QLabel()
+        self.name_label.setObjectName("CardTitle")
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        root.addWidget(self.name_label)
+        root.addWidget(self.status_label)
 
         buttons = QHBoxLayout()
-        add_page = QPushButton("Добавить страницу")
-        add_page.clicked.connect(self.add_page)
-        delete = QPushButton("Удалить продукт")
-        delete.clicked.connect(self.delete_requested)
-        buttons.addWidget(add_page)
+        open_button = QPushButton("Открыть")
+        open_button.clicked.connect(self.open_requested)
+        delete_button = QPushButton("Удалить")
+        delete_button.clicked.connect(self.delete_requested)
+        buttons.addWidget(open_button)
         buttons.addStretch()
-        buttons.addWidget(delete)
+        buttons.addWidget(delete_button)
         root.addLayout(buttons)
+        self.refresh()
 
-        self.pages_layout = QVBoxLayout()
-        root.addLayout(self.pages_layout)
+    def refresh(self):
+        name = self.product.get("name") or f"Продукт {self.index + 1}"
+        enabled = "включён" if self.product.get("enabled", True) else "выключен"
+        pages_count = len(self.product.get("dashboards", []) or [])
+        self.name_label.setText(name)
+        self.status_label.setText(f"Статус: {enabled}\nСтраниц: {pages_count}")
 
-        for page in self.original_product.get("dashboards", []) or []:
-            self.add_page(page)
+    def open_requested(self):
+        if self.on_open:
+            self.on_open(self.index)
 
     def delete_requested(self):
         if self.on_delete:
-            self.on_delete(self)
+            self.on_delete(self.index)
 
-    def add_page(self, page=None):
-        card = PageCardWidget(page, self.zabbix_ids, len(self.page_cards), self.remove_page, self)
+
+class PageRelationsGroup(QGroupBox):
+    def __init__(self, title, row_factory, add_label, page_card, items=None, parent=None):
+        super().__init__(title, parent)
+        self.page_card = page_card
+        self.row_factory = row_factory
+        self.rows = []
+
+        root = QVBoxLayout(self)
+        buttons = QHBoxLayout()
+        add_button = QPushButton(add_label)
+        add_button.clicked.connect(self.add_row)
+        buttons.addWidget(add_button)
+        buttons.addStretch()
+        root.addLayout(buttons)
+
+        self.rows_layout = QVBoxLayout()
+        root.addLayout(self.rows_layout)
+        for item in items or []:
+            self.add_row(item)
+
+    def add_row(self, item=None):
+        row = self.row_factory(item, len(self.rows), self.remove_row, self)
+        self.rows.append(row)
+        self.rows_layout.addWidget(row)
+
+    def remove_row(self, row):
+        if QMessageBox.question(self, "Удалить", "Удалить эту строку?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.rows.remove(row)
+        row.deleteLater()
+
+    def values(self):
+        result = []
+        for row in self.rows:
+            value = row.value()
+            if value.get("title") or value.get("name") or value.get("url"):
+                result.append(value)
+        return result
+
+
+class ProductDetailWidget(QWidget):
+    def __init__(self, product, zabbix_ids=None, on_back=None, on_save=None, parent=None):
+        super().__init__(parent)
+        self.product = clone(product or {"name": "", "enabled": True, "dashboards": []})
+        self.zabbix_ids = zabbix_ids or []
+        self.on_back = on_back
+        self.on_save = on_save
+        self.page_cards = []
+        self.graph_groups = []
+        self.mode_groups = []
+        self.current_section = "Страницы"
+
+        root = QVBoxLayout(self)
+        top = QHBoxLayout()
+        back_button = QPushButton("← Назад к продуктам")
+        back_button.clicked.connect(self.back_requested)
+        self.title_label = QLabel("Продукт")
+        self.title_label.setObjectName("PageTitle")
+        save_button = QPushButton("Сохранить")
+        save_button.clicked.connect(self.save_requested)
+        top.addWidget(back_button)
+        top.addWidget(self.title_label)
+        top.addStretch()
+        top.addWidget(save_button)
+        root.addLayout(top)
+
+        form = QFormLayout()
+        self.name = QLineEdit(self.product.get("name", ""))
+        self.name.setPlaceholderText("Название продукта")
+        self.name.textChanged.connect(self.update_title)
+        self.enabled = QCheckBox("Включён")
+        self.enabled.setChecked(self.product.get("enabled", True))
+        form.addRow("Название продукта:", self.name)
+        form.addRow("Состояние:", self.enabled)
+        root.addLayout(form)
+        self.update_title()
+
+        nav = QHBoxLayout()
+        self.pages_button = QPushButton("Страницы")
+        self.graphs_button = QPushButton("Графики")
+        self.modes_button = QPushButton("Режимы")
+        self.pages_button.clicked.connect(lambda: self.show_section("Страницы"))
+        self.graphs_button.clicked.connect(lambda: self.show_section("Графики"))
+        self.modes_button.clicked.connect(lambda: self.show_section("Режимы"))
+        nav.addWidget(self.pages_button)
+        nav.addWidget(self.graphs_button)
+        nav.addWidget(self.modes_button)
+        nav.addStretch()
+        add_page = QPushButton("Добавить страницу")
+        add_page.clicked.connect(self.add_page)
+        nav.addWidget(add_page)
+        root.addLayout(nav)
+
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack, stretch=1)
+        self.pages_page = self.make_scroll_page()
+        self.graphs_page = self.make_scroll_page()
+        self.modes_page = self.make_scroll_page()
+        self.stack.addWidget(self.pages_page["scroll"])
+        self.stack.addWidget(self.graphs_page["scroll"])
+        self.stack.addWidget(self.modes_page["scroll"])
+
+        for page in self.product.get("dashboards", []) or []:
+            self.add_page(page, rebuild=False)
+        self.rebuild_relation_sections()
+        self.show_section("Страницы")
+
+    def make_scroll_page(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(12)
+        scroll.setWidget(container)
+        return {"scroll": scroll, "container": container, "layout": layout}
+
+    def update_title(self):
+        self.title_label.setText(self.name.text().strip() or "Новый продукт")
+
+    def clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+    def add_page(self, page=None, rebuild=True):
+        if self.pages_page["layout"].count() and self.pages_page["layout"].itemAt(self.pages_page["layout"].count() - 1).spacerItem():
+            self.pages_page["layout"].takeAt(self.pages_page["layout"].count() - 1)
+        card = PageCardWidget(page, self.zabbix_ids, len(self.page_cards), self.remove_page, self, show_related=False)
+        # На вкладке «Страницы» оставляем только компактные параметры страницы.
+        card.type_combo.currentIndexChanged.connect(self.rebuild_relation_sections)
         self.page_cards.append(card)
-        self.pages_layout.addWidget(card)
+        self.pages_page["layout"].addWidget(card)
+        self.pages_page["layout"].addStretch(1)
+        if rebuild:
+            self.rebuild_relation_sections()
 
     def remove_page(self, card):
         if QMessageBox.question(self, "Удалить страницу", "Удалить эту страницу?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         self.page_cards.remove(card)
         card.deleteLater()
+        self.rebuild_relation_sections()
+
+    def sync_relations_to_pages(self):
+        for group in self.graph_groups:
+            group.page_card.original_page["graphs"] = group.values()
+        for group in self.mode_groups:
+            group.page_card.original_page["modes"] = group.values()
+
+    def rebuild_relation_sections(self):
+        self.sync_relations_to_pages()
+        self.clear_layout(self.graphs_page["layout"])
+        self.clear_layout(self.modes_page["layout"])
+        self.graph_groups = []
+        self.mode_groups = []
+
+        for page_index, page_card in enumerate(self.page_cards, start=1):
+            page = page_card.value()
+            page_name = page.get("name") or f"Страница {page_index}"
+            if page.get("type") == "graphs_grid":
+                group = PageRelationsGroup(
+                    f"{page_name} — графики",
+                    GraphInlineRow,
+                    "Добавить график",
+                    page_card,
+                    normalize_item_list(page.get("graphs", []), "title", "График"),
+                    self,
+                )
+                self.graph_groups.append(group)
+                self.graphs_page["layout"].addWidget(group)
+            if page.get("type") == "mode_pages":
+                group = PageRelationsGroup(
+                    f"{page_name} — режимы",
+                    ModeInlineRow,
+                    "Добавить режим",
+                    page_card,
+                    normalize_item_list(page.get("modes", []), "name", "Режим"),
+                    self,
+                )
+                self.mode_groups.append(group)
+                self.modes_page["layout"].addWidget(group)
+
+        if not self.graph_groups:
+            empty = QLabel("В продукте нет страниц типа graphs_grid.")
+            empty.setWordWrap(True)
+            self.graphs_page["layout"].addWidget(empty)
+        if not self.mode_groups:
+            empty = QLabel("В продукте нет страниц типа mode_pages.")
+            empty.setWordWrap(True)
+            self.modes_page["layout"].addWidget(empty)
+        self.graphs_page["layout"].addStretch(1)
+        self.modes_page["layout"].addStretch(1)
+
+    def show_section(self, section_name):
+        self.sync_relations_to_pages()
+        if section_name in {"Графики", "Режимы"}:
+            self.rebuild_relation_sections()
+        self.current_section = section_name
+        if section_name == "Страницы":
+            self.stack.setCurrentIndex(0)
+        elif section_name == "Графики":
+            self.stack.setCurrentIndex(1)
+        else:
+            self.stack.setCurrentIndex(2)
 
     def value(self):
-        product = clone(self.original_product)
+        self.sync_relations_to_pages()
+        product = clone(self.product)
         product.update({
             "name": self.name.text().strip(),
             "enabled": self.enabled.isChecked(),
@@ -412,15 +614,30 @@ class ProductCardWidget(QGroupBox):
         })
         return product
 
+    def back_requested(self):
+        if self.on_back:
+            self.on_back(self.value())
+
+    def save_requested(self):
+        if self.on_save:
+            self.on_save(self.value())
+
 
 class ProductsWidget(QWidget):
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
+        self.products = clone(self.config.get("products", []) or [])
         self.product_cards = []
+        self.current_product_index = None
         self.zabbix_ids = [instance.get("id", "") for instance in self.config.get("zabbix_instances", []) if instance.get("id")]
 
         root = QVBoxLayout(self)
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack, stretch=1)
+
+        self.list_screen = QWidget()
+        list_root = QVBoxLayout(self.list_screen)
         header = QHBoxLayout()
         title = QLabel("Продукты и страницы")
         title.setObjectName("PageTitle")
@@ -432,39 +649,75 @@ class ProductsWidget(QWidget):
         header.addStretch()
         header.addWidget(add)
         header.addWidget(save)
-        root.addLayout(header)
+        list_root.addLayout(header)
 
-        hint = QLabel("Настраивай продукты, страницы, графики и режимы прямо в карточках. Нерелевантные блоки скрываются по выбранному типу страницы.")
+        hint = QLabel("Сначала выбери продукт. Страницы, графики, режимы и URL открываются на следующем уровне.")
         hint.setWordWrap(True)
-        root.addWidget(hint)
+        list_root.addWidget(hint)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        root.addWidget(scroll, stretch=1)
+        list_root.addWidget(scroll, stretch=1)
+        self.products_container = QWidget()
+        self.products_layout = QVBoxLayout(self.products_container)
+        self.products_layout.setSpacing(12)
+        scroll.setWidget(self.products_container)
+        self.stack.addWidget(self.list_screen)
 
-        self.container = QWidget()
-        self.products_layout = QVBoxLayout(self.container)
-        self.products_layout.setSpacing(14)
-        scroll.setWidget(self.container)
+        self.detail_screen = None
+        self.rebuild_product_tiles()
 
-        for product in self.config.get("products", []) or []:
-            self.add_product(product)
+    def rebuild_product_tiles(self):
+        while self.products_layout.count():
+            item = self.products_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.product_cards = []
+        for index, product in enumerate(self.products):
+            card = ProductCardWidget(product, index, self.open_product, self.delete_product, self)
+            self.product_cards.append(card)
+            self.products_layout.addWidget(card)
         self.products_layout.addStretch(1)
 
-    def add_product(self, product=None):
-        if self.products_layout.count() and self.products_layout.itemAt(self.products_layout.count() - 1).spacerItem():
-            self.products_layout.takeAt(self.products_layout.count() - 1)
-        card = ProductCardWidget(product, self.zabbix_ids, len(self.product_cards), self.remove_product, self)
-        self.product_cards.append(card)
-        self.products_layout.addWidget(card)
-        self.products_layout.addStretch(1)
+    def add_product(self):
+        self.products.append({"name": "Новый продукт", "enabled": True, "dashboards": []})
+        self.rebuild_product_tiles()
+        self.open_product(len(self.products) - 1)
 
-    def remove_product(self, card):
-        name = card.name.text().strip() or "Без названия"
+    def delete_product(self, index):
+        product = self.products[index]
+        name = product.get("name") or f"Продукт {index + 1}"
         if QMessageBox.question(self, "Удалить продукт", f"Удалить продукт «{name}»?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        self.product_cards.remove(card)
-        card.deleteLater()
+        self.products.pop(index)
+        self.rebuild_product_tiles()
+
+    def open_product(self, index):
+        self.current_product_index = index
+        if self.detail_screen is not None:
+            self.stack.removeWidget(self.detail_screen)
+            self.detail_screen.deleteLater()
+        self.detail_screen = ProductDetailWidget(
+            self.products[index],
+            self.zabbix_ids,
+            on_back=self.return_to_products,
+            on_save=self.save_product_detail,
+            parent=self,
+        )
+        self.stack.addWidget(self.detail_screen)
+        self.stack.setCurrentWidget(self.detail_screen)
+
+    def return_to_products(self, product):
+        if self.current_product_index is not None:
+            self.products[self.current_product_index] = product
+        self.rebuild_product_tiles()
+        self.stack.setCurrentWidget(self.list_screen)
+
+    def save_product_detail(self, product):
+        if self.current_product_index is not None:
+            self.products[self.current_product_index] = product
+        self.save()
 
     def validate(self, products):
         errors = []
@@ -485,13 +738,15 @@ class ProductsWidget(QWidget):
         return errors
 
     def save(self):
-        products = [card.value() for card in self.product_cards]
-        errors = self.validate(products)
+        if self.detail_screen is not None and self.stack.currentWidget() is self.detail_screen and self.current_product_index is not None:
+            self.products[self.current_product_index] = self.detail_screen.value()
+        errors = self.validate(self.products)
         if errors:
             QMessageBox.warning(self, "Продукты и страницы", "\n".join(errors))
             return
-        self.config["products"] = products
+        self.config["products"] = clone(self.products)
         save_config(self.config)
+        self.rebuild_product_tiles()
         QMessageBox.information(self, "Продукты и страницы", "Настройки сохранены. После изменения структуры перезапусти приложение, чтобы меню пересобралось.")
         request_application_restart(self, "Изменены продукты или страницы. Меню и страницы пересобираются при запуске.")
 
@@ -640,7 +895,7 @@ class ThemeWidget(QWidget):
         hint.setWordWrap(True)
         root.addWidget(hint)
 
-        self.combo = QComboBox()
+        self.combo = NoWheelComboBox()
         for theme_name, theme_label in get_available_themes():
             self.combo.addItem(theme_label, theme_name)
 
@@ -765,22 +1020,20 @@ class HomePageWidget(QWidget):
         subtitle.setWordWrap(True)
         root.addWidget(subtitle)
 
-        grid = QGridLayout()
-        grid.setSpacing(14)
-        for index, section_name in enumerate(self.SETTINGS_SECTIONS):
+        tiles = QVBoxLayout()
+        tiles.setSpacing(10)
+        for section_name in self.SETTINGS_SECTIONS:
             button = QPushButton(section_name)
-            button.setMinimumHeight(96)
+            button.setMinimumHeight(72)
             button.setToolTip(f"Открыть раздел «{section_name}»")
             button.clicked.connect(lambda checked=False, name=section_name: self.open_settings_section(name))
-            grid.addWidget(button, index // 3, index % 3)
-        root.addLayout(grid)
+            tiles.addWidget(button)
 
-        row = QHBoxLayout()
         duty = QPushButton("Перейти в режим дежурства")
+        duty.setMinimumHeight(72)
         duty.clicked.connect(self.open_duty)
-        row.addWidget(duty)
-        row.addStretch()
-        root.addLayout(row)
+        tiles.addWidget(duty)
+        root.addLayout(tiles)
         root.addStretch(1)
 
         footer = QLabel(f"Версия: {APP_VERSION}\n{APP_DESCRIPTION}")
