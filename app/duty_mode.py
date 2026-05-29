@@ -90,11 +90,14 @@ class DutySettingsDialog(QDialog):
         self.resize(900, 700)
 
         root = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
         self.widget = DutyModeSettingsWidget(
             config=config,
             on_saved_callback=on_saved_callback
         )
-        root.addWidget(self.widget)
+        scroll.setWidget(self.widget)
+        root.addWidget(scroll)
 
 
 class AttachExistingTaskDialog(QDialog):

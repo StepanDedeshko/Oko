@@ -7,9 +7,18 @@
     "check_updates_on_startup": true
   },
   "time_ranges": [
-    {"title": "1ч", "value": "1h"},
-    {"title": "6ч", "value": "6h"},
-    {"title": "24ч", "value": "24h"}
+    {
+      "title": "1ч",
+      "value": "1h"
+    },
+    {
+      "title": "6ч",
+      "value": "6h"
+    },
+    {
+      "title": "24ч",
+      "value": "24h"
+    }
   ],
   "zabbix_instances": [],
   "products": [],
@@ -27,5 +36,44 @@
   },
   "app": {
     "name": "Око"
+  },
+  "duty_triggers": {
+    "enabled": true,
+    "items": [
+      {
+        "id": "trigger_mode_1",
+        "enabled": true,
+        "display_name": "Проверка поступления сработок",
+        "source_product": "",
+        "source_section": "",
+        "metric_title": "Кол-во всех сработок (опер. сутки)",
+        "target_product": "",
+        "target_section": "",
+        "target_graph_title": "",
+        "mode": "mode_1",
+        "ok_text": "Сработки поступают все в пределах нормы",
+        "alert_template": "С {from_time} по {to_time} отсутствуют сработки."
+      },
+      {
+        "id": "trigger_mode_2",
+        "enabled": true,
+        "display_name": "Проверка поступления сработок",
+        "source_product": "",
+        "source_section": "",
+        "metric_title": "Кол-во всех сработок (опер. сутки)",
+        "target_product": "",
+        "target_section": "",
+        "target_graph_title": "",
+        "mode": "mode_2",
+        "ok_text": "Сработки поступают все в пределах нормы",
+        "alert_template": "С {from_time} по {to_time} отсутствуют сработки."
+      }
+    ],
+    "day_start": "06:00",
+    "day_end": "00:00",
+    "day_threshold_minutes": 90,
+    "night_threshold_minutes": 180,
+    "mode1_night_silence_start": "01:00",
+    "mode1_night_silence_end": "05:30"
   }
 }
