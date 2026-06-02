@@ -65,7 +65,7 @@ class ReleaseCheckWorker(QObject):
 
 
 class UpdateWidget(QWidget):
-    def __init__(self, config, request_restart_callback, parent=None):
+    def __init__(self, config, request_restart_callback, parent=None, show_title=True):
         super().__init__(parent)
         self.config = config
         self.request_restart_callback = request_restart_callback
@@ -74,9 +74,10 @@ class UpdateWidget(QWidget):
         self.release_check_auto_start_install = False
         root = QVBoxLayout(self)
 
-        title = QLabel("Обновление")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
+        if show_title:
+            title = QLabel("Обновление")
+            title.setObjectName("PageTitle")
+            root.addWidget(title)
 
         version = QLabel(f"Текущая версия: {APP_VERSION}")
         version.setWordWrap(True)

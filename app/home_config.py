@@ -640,13 +640,10 @@ class ProductsWidget(QWidget):
         self.list_screen = QWidget()
         list_root = QVBoxLayout(self.list_screen)
         header = QHBoxLayout()
-        title = QLabel("Продукты и страницы")
-        title.setObjectName("PageTitle")
         add = QPushButton("Добавить продукт")
         add.clicked.connect(self.add_product)
         save = QPushButton("Сохранить")
         save.clicked.connect(self.save)
-        header.addWidget(title)
         header.addStretch()
         header.addWidget(add)
         header.addWidget(save)
@@ -765,9 +762,6 @@ class ProfileWidget(QWidget):
 
         root = QVBoxLayout(self)
         root.setSpacing(10)
-        title = QLabel("Профиль и доступы")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
 
         otrs_box = QGroupBox("ОТРС")
         otrs_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
@@ -900,10 +894,6 @@ class ThemeWidget(QWidget):
 
         root = QVBoxLayout(self)
 
-        title = QLabel("Тема оформления")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
-
         hint = QLabel("Все темы приложения теперь находятся здесь, на Главной странице.")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -944,9 +934,6 @@ class NotesWidget(QWidget):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         root = QVBoxLayout(self)
-        title = QLabel("Заметки")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
         self.text = QTextEdit()
         self.text.setPlainText(self.config.setdefault("settings", {}).get("home_notes", ""))
         self.text.setPlaceholderText("Рабочие заметки, ссылки, подсказки по дежурству...")
@@ -967,9 +954,6 @@ class ChangelogWidget(QWidget):
         super().__init__(parent)
 
         root = QVBoxLayout(self)
-        title = QLabel("Что нового")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
 
         self.text = QTextEdit()
         self.text.setReadOnly(True)
@@ -1004,11 +988,11 @@ class AppSettingsWidget(QWidget):
 
         self.add_section("Профиль", ProfileWidget(self.config))
         self.add_section("Продукты и страницы", ProductsWidget(self.config))
-        self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config))
+        self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config, show_title=False))
         self.add_section("Что нового", ChangelogWidget())
         self.add_section("Тема", ThemeWidget(self.config))
         self.add_section("Заметки", NotesWidget(self.config))
-        self.update_widget = UpdateWidget(self.config, request_application_restart)
+        self.update_widget = UpdateWidget(self.config, request_application_restart, show_title=False)
         self.add_section("Обновление", self.update_widget)
         self.add_section("Режим разработчика", DiagnosticsWidget(self.config))
 

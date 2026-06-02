@@ -175,7 +175,7 @@ class DutyTriggerEditDialog(QDialog):
 
 
 class DutyModeSettingsWidget(QWidget):
-    def __init__(self, config, on_saved_callback=None):
+    def __init__(self, config, on_saved_callback=None, show_title=True):
         super().__init__()
 
         self.logger = get_logger()
@@ -189,9 +189,10 @@ class DutyModeSettingsWidget(QWidget):
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
-        title = QLabel("Настройки дежурки")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
+        if show_title:
+            title = QLabel("Настройки дежурки")
+            title.setObjectName("PageTitle")
+            root.addWidget(title)
 
         self.stack = QStackedWidget()
         root.addWidget(self.stack, stretch=1)
