@@ -1793,30 +1793,35 @@ class DutyModeWidget(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        root.setSpacing(8)
 
         header = QHBoxLayout()
+        header.setSpacing(10)
 
         title = QLabel("Режим дежурства")
         title.setObjectName("PageTitle")
 
         self.msk_time_label = QLabel("")
-        self.msk_time_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.msk_time_label.setStyleSheet("font-size: 15px; font-weight: bold;")
 
-        settings_button = QPushButton("Настройки дежурки")
-        settings_button.setFlat(True)
-        settings_button.setStyleSheet("font-size: 11px; padding: 2px 6px;")
-        settings_button.clicked.connect(self.open_settings)
+        self.settings_button = QPushButton("Настройки дежурки")
+        self.settings_button.setMinimumHeight(32)
+        self.settings_button.setMinimumWidth(150)
+        self.settings_button.setStyleSheet("padding: 5px 12px;")
+        self.settings_button.clicked.connect(self.open_settings)
 
         header.addWidget(title)
         header.addStretch()
         header.addWidget(self.msk_time_label)
-        header.addWidget(settings_button)
+        header.addWidget(self.settings_button)
 
         root.addLayout(header)
 
         state_group = QGroupBox("Состояние")
         state_layout = QGridLayout(state_group)
+        state_layout.setContentsMargins(10, 8, 10, 8)
+        state_layout.setHorizontalSpacing(14)
+        state_layout.setVerticalSpacing(6)
         state_layout.setColumnStretch(1, 1)
         state_layout.setColumnStretch(3, 1)
 
@@ -1825,92 +1830,64 @@ class DutyModeWidget(QWidget):
         self.task_state_value = QLabel("")
         self.graphs_state_value = QLabel("")
 
-        state_layout.addWidget(QLabel("Дежурство:"), 0, 0)
+        state_labels = [
+            QLabel("Дежурство:"),
+            QLabel("Задача ОТРС:"),
+            QLabel("Последняя проверка:"),
+            QLabel("Графики:"),
+        ]
+        for label in state_labels:
+            label.setStyleSheet("font-weight: bold;")
+
+        state_layout.addWidget(state_labels[0], 0, 0)
         state_layout.addWidget(self.duty_state_value, 0, 1)
-        state_layout.addWidget(QLabel("Последняя проверка:"), 0, 2)
-        state_layout.addWidget(self.last_check_value, 0, 3)
-        state_layout.addWidget(QLabel("Задача ОТРС:"), 1, 0)
-        state_layout.addWidget(self.task_state_value, 1, 1)
-        state_layout.addWidget(QLabel("Графики:"), 1, 2)
+        state_layout.addWidget(state_labels[1], 0, 2)
+        state_layout.addWidget(self.task_state_value, 0, 3)
+        state_layout.addWidget(state_labels[2], 1, 0)
+        state_layout.addWidget(self.last_check_value, 1, 1)
+        state_layout.addWidget(state_labels[3], 1, 2)
         state_layout.addWidget(self.graphs_state_value, 1, 3)
         root.addWidget(state_group)
 
-        actions_group = QGroupBox("Рабочие действия")
-        actions_layout = QHBoxLayout(actions_group)
+        actions_layout = QHBoxLayout()
         actions_layout.setSpacing(8)
 
         self.enable_button = QPushButton("")
-        self.enable_button.setMinimumHeight(40)
+        self.enable_button.setMinimumHeight(38)
         self.enable_button.clicked.connect(self.toggle_enabled)
 
-        create_duty_task_button = QPushButton("Создать задачу дежурства")
-        create_duty_task_button.setMinimumHeight(40)
-        create_duty_task_button.clicked.connect(self.open_base_duty_task)
+        self.check_triggers_button = QPushButton("Проверить триггеры")
+        self.check_triggers_button.setMinimumHeight(34)
+        self.check_triggers_button.clicked.connect(self.run_duty_triggers_check)
 
-        attach_task_button = QPushButton("Привязать задачу")
-        attach_task_button.setMinimumHeight(40)
-        attach_task_button.clicked.connect(self.attach_existing_task)
-
-        check_triggers_button = QPushButton("Проверить триггеры")
-        check_triggers_button.setMinimumHeight(40)
-        check_triggers_button.clicked.connect(self.run_duty_triggers_check)
-
-        notify_now_button = QPushButton("Показать уведомление сейчас")
-        notify_now_button.setMinimumHeight(40)
-        notify_now_button.clicked.connect(lambda: self.show_notification("Нужно произвести проверку графиков."))
+        self.notify_now_button = QPushButton("Показать уведомление сейчас")
+        self.notify_now_button.setMinimumHeight(34)
+        self.notify_now_button.clicked.connect(lambda: self.show_notification("Нужно произвести проверку графиков."))
 
         actions_layout.addWidget(self.enable_button)
-        actions_layout.addWidget(create_duty_task_button)
-        actions_layout.addWidget(attach_task_button)
-        actions_layout.addWidget(check_triggers_button)
-        actions_layout.addWidget(notify_now_button)
-        root.addWidget(actions_group)
+        actions_layout.addWidget(self.check_triggers_button)
+        actions_layout.addWidget(self.notify_now_button)
+        actions_layout.addStretch()
+        root.addLayout(actions_layout)
 
-        task_group = QGroupBox("Текущая задача")
-        task_layout = QVBoxLayout(task_group)
-        self.current_task_label = QLabel("")
-        self.current_task_label.setWordWrap(True)
-        task_layout.addWidget(self.current_task_label)
-        root.addWidget(task_group)
-
-        trigger_group = QGroupBox("Проверка триггеров")
-        trigger_layout = QVBoxLayout(trigger_group)
-        self.status_label = QLabel("Проверка триггеров ещё не выполнялась. Нажмите «Проверить триггеры», чтобы запустить ручную проверку.")
+        self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
-        trigger_layout.addWidget(self.status_label)
-        root.addWidget(trigger_group)
-
-        graphs_group = QGroupBox("Графики дежурства")
-        graphs_layout = QVBoxLayout(graphs_group)
-        self.graphs_hint_label = QLabel("")
-        self.graphs_hint_label.setWordWrap(True)
-        graphs_layout.addWidget(self.graphs_hint_label)
+        self.status_label.hide()
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        graphs_layout.addWidget(self.scroll, stretch=1)
+        root.addWidget(self.scroll, stretch=1)
 
         self.content = QWidget()
         self.content.setMinimumWidth(0)
         self.content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         self.cards_layout = QVBoxLayout(self.content)
-        self.cards_layout.setContentsMargins(6, 6, 6, 6)
+        self.cards_layout.setContentsMargins(0, 4, 0, 0)
         self.cards_layout.setSpacing(10)
         self.scroll.setWidget(self.content)
 
-        root.addWidget(graphs_group, stretch=1)
-
-        bottom = QHBoxLayout()
-
-        success_button = QPushButton("Проверка выполнена")
-        success_button.clicked.connect(self.success_check)
-
-        bottom.addWidget(success_button)
-        bottom.addStretch()
-
-        root.addLayout(bottom)
 
         self.clock_timer = QTimer(self)
         self.clock_timer.timeout.connect(self.tick)
@@ -1944,63 +1921,46 @@ class DutyModeWidget(QWidget):
     def update_enable_button(self):
         enabled = self.get_settings().get("enabled", False)
         self.enable_button.setText("Выключить дежурство" if enabled else "Включить дежурство")
+        self.check_triggers_button.setVisible(not enabled)
+        self.notify_now_button.setVisible(not enabled)
         self.update_dashboard_summary()
 
     def _task_parts(self):
         settings = self.get_settings()
         number = settings.get("current_ticket_number", "").strip()
         ticket_id = settings.get("current_ticket_id", "").strip()
-        url = settings.get("current_ticket_url", "").strip()
 
         parts = []
         if number:
             parts.append(f"№{number}")
         if ticket_id:
             parts.append(f"TicketID={ticket_id}")
-        if url:
-            parts.append("ссылка сохранена")
         return parts
 
-    def _graphs_summary(self):
-        self.load_check_graphs()
-        if not self.check_graphs:
-            return (
-                "выбрано 0",
-                "Графики дежурства не выбраны. Настройте их в разделе «Настройки дежурки»."
-            )
+    def _task_summary(self):
+        parts = self._task_parts()
+        if not parts:
+            return "не привязана"
+        return "привязана, " + " / ".join(parts)
 
-        count = len(self.check_graphs)
-        titles = [item.get("title", "График") for item in self.check_graphs[:5]]
-        details = ", ".join(titles)
-        if count > len(titles):
-            details += f" и ещё {count - len(titles)}"
-        return f"выбрано {count}", f"Выбрано графиков: {count}. {details}"
+    def _graphs_count(self):
+        self.load_check_graphs()
+        return len(self.check_graphs)
 
     def update_dashboard_summary(self):
         settings = self.get_settings()
         enabled = settings.get("enabled", False)
-        task_parts = self._task_parts()
-        graphs_state, graphs_hint = self._graphs_summary()
 
         self.duty_state_value.setText("включено" if enabled else "выключено")
+        self.task_state_value.setText(self._task_summary())
         self.last_check_value.setText(
             self.last_check_at.strftime("%H:%M:%S")
             if self.last_check_at
             else "ещё не выполнялась"
         )
-        self.task_state_value.setText("привязана" if task_parts else "не привязана")
-        self.graphs_state_value.setText(graphs_state)
-        self.graphs_hint_label.setText(graphs_hint)
+        self.graphs_state_value.setText(str(self._graphs_count()))
 
     def update_task_label(self):
-        task_parts = self._task_parts()
-
-        if task_parts:
-            self.current_task_label.setText("Текущая задача дежурства: " + ", ".join(task_parts) + ".")
-        else:
-            self.current_task_label.setText(
-                "Задача дежурства не привязана. Создайте или привяжите задачу."
-            )
         self.update_dashboard_summary()
 
     def toggle_enabled(self):
@@ -2012,6 +1972,16 @@ class DutyModeWidget(QWidget):
 
         if settings["enabled"] and not was_enabled:
             self.ask_duty_task_flow()
+
+
+    def disable_for_shutdown(self):
+        settings = self.get_settings()
+        if not settings.get("enabled", False):
+            return
+
+        settings["enabled"] = False
+        save_config(self.config)
+        self.update_enable_button()
 
     def ask_duty_task_flow(self):
         """
