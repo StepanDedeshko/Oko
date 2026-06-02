@@ -962,6 +962,32 @@ class NotesWidget(QWidget):
 
 
 
+class ChangelogWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        root = QVBoxLayout(self)
+        title = QLabel("Что нового")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        self.text = QTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setPlainText(self.load_changelog())
+        root.addWidget(self.text, stretch=1)
+
+    def load_changelog(self):
+        changelog_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "CHANGELOG.md")
+        )
+        if not os.path.exists(changelog_path):
+            return "Файл CHANGELOG.md не найден."
+
+        with open(changelog_path, "r", encoding="utf-8") as changelog_file:
+            return changelog_file.read()
+
+
+
 class AppSettingsWidget(QWidget):
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -979,6 +1005,7 @@ class AppSettingsWidget(QWidget):
         self.add_section("Профиль", ProfileWidget(self.config))
         self.add_section("Продукты и страницы", ProductsWidget(self.config))
         self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config))
+        self.add_section("Что нового", ChangelogWidget())
         self.add_section("Тема", ThemeWidget(self.config))
         self.add_section("Заметки", NotesWidget(self.config))
         self.update_widget = UpdateWidget(self.config, request_application_restart)
@@ -1012,6 +1039,7 @@ class HomePageWidget(QWidget):
         "Профиль",
         "Продукты и страницы",
         "Настройки дежурки",
+        "Что нового",
         "Тема",
         "Заметки",
         "Обновление",
