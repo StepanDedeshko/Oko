@@ -625,6 +625,11 @@ class MainWindow(QMainWindow):
 
         view.page().runJavaScript(js)
 
+    def closeEvent(self, event):
+        if self.duty_mode_widget is not None:
+            self.duty_mode_widget.disable_for_shutdown()
+        super().closeEvent(event)
+
     def set_time_range(self, range_value):
         self.current_time_range = range_value
         self.config.setdefault("settings", {})["default_time_range"] = range_value
