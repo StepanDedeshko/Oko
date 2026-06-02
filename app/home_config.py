@@ -1033,6 +1033,7 @@ class HomePageWidget(QWidget):
     def __init__(self, config, open_duty_callback=None, open_settings_callback=None, update_check_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
+        self.setObjectName("HomeShell")
         self.open_duty_callback = open_duty_callback
         self.open_settings_callback = open_settings_callback
         self.update_check_callback = update_check_callback
@@ -1051,12 +1052,14 @@ class HomePageWidget(QWidget):
         tiles.setSpacing(10)
         for section_name in self.SETTINGS_SECTIONS:
             button = QPushButton(section_name)
+            button.setObjectName("SecondaryAction")
             button.setMinimumHeight(72)
             button.setToolTip(f"Открыть раздел «{section_name}»")
             button.clicked.connect(lambda checked=False, name=section_name: self.open_settings_section(name))
             tiles.addWidget(button)
 
         duty = QPushButton("Перейти в режим дежурства")
+        duty.setObjectName("PrimaryAction")
         duty.setMinimumHeight(72)
         duty.clicked.connect(self.open_duty)
         tiles.addWidget(duty)

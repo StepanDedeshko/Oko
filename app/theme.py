@@ -63,6 +63,59 @@ THEMES = {
         "hud_text": "#9fd0ff",
         "border_dark": "#0d3d78",
     },
+
+    "white_1": {
+        "label": "White-1",
+        "bg_main": "#f5faff",
+        "bg_panel": "#ffffff",
+        "bg_panel2": "#edf7ff",
+        "bg_card": "#ffffff",
+        "bg_card2": "#e7f7ff",
+        "bg_field": "#f8fcff",
+        "text": "#132238",
+        "text_soft": "#607083",
+        "text_title": "#091827",
+        "accent": "#17bce3",
+        "accent2": "#0a84d8",
+        "danger": "#e05b65",
+        "danger_bg": "#fff1f3",
+        "success": "#24b97a",
+        "success_bg": "#e9fff5",
+        "scroll": "#bed8e8",
+        "selected": "#d9f4ff",
+        "hud_text": "#28677f",
+        "border_dark": "#b9d7e7",
+        "glass": "rgba(255, 255, 255, 0.82)",
+        "glass2": "rgba(233, 248, 255, 0.72)",
+        "overlay": "rgba(247, 252, 255, 0.92)",
+        "shadow": "#d5e8f2",
+    },
+    "dark_1": {
+        "label": "Dark-1",
+        "bg_main": "#070b13",
+        "bg_panel": "#101722",
+        "bg_panel2": "#162130",
+        "bg_card": "#111a27",
+        "bg_card2": "#1b2a3a",
+        "bg_field": "#0c121c",
+        "text": "#e8f0f6",
+        "text_soft": "#9fb0c0",
+        "text_title": "#ffffff",
+        "accent": "#e14b56",
+        "accent2": "#ff6b72",
+        "danger": "#ff4f62",
+        "danger_bg": "#351018",
+        "success": "#44d39a",
+        "success_bg": "#0e2b25",
+        "scroll": "#344757",
+        "selected": "#34202a",
+        "hud_text": "#ffabb0",
+        "border_dark": "#354458",
+        "glass": "rgba(16, 23, 34, 0.82)",
+        "glass2": "rgba(27, 42, 58, 0.68)",
+        "overlay": "rgba(8, 13, 22, 0.92)",
+        "shadow": "#04070c",
+    },
     "cerberus_red": {
         "label": "Cerberus Red",
         "bg_main": "#120607",
@@ -486,8 +539,258 @@ def build_stylesheet(theme_name: str) -> str:
     QMessageBox, QFileDialog {{
         background-color: {p['bg_main']};
     }}
-    """
+    """ + _build_nextgen_stylesheet(theme_name, p)
 
+
+
+def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
+    if theme_name not in {"white_1", "dark_1"}:
+        return ""
+
+    primary_text = "#ffffff" if theme_name == "dark_1" else "#062033"
+    subtle_button_text = p["text_title"]
+    return f"""
+    QWidget {{
+        background-color: {p['bg_main']};
+    }}
+
+    QMainWindow {{
+        border: 1px solid {p['border_dark']};
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+            stop:0 {p['bg_main']}, stop:0.55 {p['bg_panel']}, stop:1 {p['bg_panel2']});
+    }}
+
+    QToolBar, QWidget#BottomHud, QStatusBar {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+            stop:0 {p['glass']}, stop:0.52 {p['glass2']}, stop:1 {p['glass']});
+        border: 1px solid {p['border_dark']};
+        border-radius: 14px;
+        padding: 10px;
+    }}
+
+    QWidget#BottomHud QLabel {{
+        border-left: 1px solid {p['border_dark']};
+        color: {p['hud_text']};
+    }}
+
+    QLabel#HomeTitle {{
+        color: {p['text_title']};
+        font-size: 28px;
+        font-weight: 800;
+        padding: 10px 4px 4px 4px;
+        letter-spacing: 1px;
+    }}
+
+    QLabel#PageTitle {{
+        color: {p['text_title']};
+        font-size: 18px;
+        font-weight: 800;
+        padding: 6px 2px;
+    }}
+
+    QLabel#ThemeLogo {{
+        background: {p['glass2']};
+        border: 1px solid {p['accent']};
+        border-radius: 12px;
+        padding: 3px;
+    }}
+
+    QFrame, QGroupBox, QWidget#GraphCard, QWidget#DutyStatePanel,
+    QWidget#GraphCheckOverlayRoot, QDialog#DutyNotificationDialog {{
+        background: {p['glass']};
+        border: 1px solid {p['border_dark']};
+        border-radius: 18px;
+    }}
+
+    QWidget#DutyModeShell, QWidget#HomeShell {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+            stop:0 {p['bg_main']}, stop:0.6 {p['bg_panel']}, stop:1 {p['bg_panel2']});
+        border-radius: 20px;
+    }}
+
+    QGroupBox {{
+        margin-top: 18px;
+        padding: 14px;
+        font-weight: 700;
+    }}
+
+    QGroupBox::title {{
+        color: {p['hud_text']};
+        background: {p['bg_main']};
+        border: 1px solid {p['border_dark']};
+        border-radius: 10px;
+        padding: 3px 10px;
+    }}
+
+    QPushButton, QToolButton {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+            stop:0 {p['glass']}, stop:1 {p['glass2']});
+        color: {subtle_button_text};
+        border: 1px solid {p['border_dark']};
+        border-radius: 14px;
+        padding: 9px 18px;
+        font-weight: 750;
+        min-height: 28px;
+    }}
+
+    QPushButton:hover, QToolButton:hover {{
+        background: {p['selected']};
+        border: 1px solid {p['accent']};
+        color: {p['text_title']};
+    }}
+
+    QPushButton:pressed, QToolButton:pressed {{
+        background: {p['accent']};
+        border: 1px solid {p['accent2']};
+        color: {primary_text};
+    }}
+
+    QPushButton:disabled, QToolButton:disabled {{
+        color: {p['text_soft']};
+        background: {p['bg_field']};
+        border: 1px solid {p['scroll']};
+    }}
+
+    QPushButton#PrimaryAction {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+            stop:0 {p['accent']}, stop:1 {p['accent2']});
+        color: {primary_text};
+        border: 1px solid {p['accent2']};
+    }}
+
+    QPushButton#DestructiveAction {{
+        background: {p['danger_bg']};
+        color: {p['danger']};
+        border: 1px solid {p['danger']};
+    }}
+
+    QLineEdit, QTextEdit, QTextBrowser, QPlainTextEdit, QComboBox, QSpinBox {{
+        background: {p['bg_field']};
+        color: {p['text_title']};
+        border: 1px solid {p['border_dark']};
+        border-radius: 13px;
+        padding: 8px 11px;
+        selection-background-color: {p['accent']};
+        selection-color: {primary_text};
+    }}
+
+    QLineEdit:focus, QTextEdit:focus, QTextBrowser:focus, QPlainTextEdit:focus,
+    QComboBox:focus, QSpinBox:focus {{
+        border: 1px solid {p['accent']};
+        background: {p['glass']};
+    }}
+
+    QListWidget, QTreeWidget, QTableWidget {{
+        background: {p['bg_field']};
+        alternate-background-color: {p['bg_panel']};
+        border: 1px solid {p['border_dark']};
+        border-radius: 14px;
+        padding: 6px;
+    }}
+
+    QListWidget::item, QTreeWidget::item {{
+        border-radius: 10px;
+        padding: 7px;
+    }}
+
+    QListWidget::item:selected, QTreeWidget::item:selected {{
+        background: {p['selected']};
+        color: {p['text_title']};
+    }}
+
+    QScrollArea {{
+        background: transparent;
+        border: 0px;
+    }}
+
+    QScrollBar:vertical, QScrollBar:horizontal {{
+        background: transparent;
+        border: 0px;
+        width: 10px;
+        height: 10px;
+        margin: 2px;
+    }}
+
+    QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+        background: {p['scroll']};
+        border-radius: 5px;
+        min-height: 34px;
+        min-width: 34px;
+    }}
+
+    QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{
+        background: {p['accent']};
+    }}
+
+    QScrollBar::add-line, QScrollBar::sub-line {{
+        width: 0px;
+        height: 0px;
+    }}
+
+    QCheckBox, QRadioButton {{
+        spacing: 9px;
+        color: {p['text']};
+        background: transparent;
+    }}
+
+    QCheckBox::indicator, QRadioButton::indicator {{
+        width: 18px;
+        height: 18px;
+        border: 1px solid {p['accent']};
+        background: {p['bg_field']};
+        border-radius: 6px;
+    }}
+
+    QRadioButton::indicator {{ border-radius: 9px; }}
+
+    QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+        background: {p['accent']};
+        border: 1px solid {p['accent2']};
+    }}
+
+    QTabWidget::pane {{
+        border: 1px solid {p['border_dark']};
+        border-radius: 14px;
+        background: {p['glass']};
+        padding: 6px;
+    }}
+
+    QTabBar::tab {{
+        background: {p['glass2']};
+        border: 1px solid {p['border_dark']};
+        border-radius: 12px;
+        padding: 9px 14px;
+        margin: 2px;
+    }}
+
+    QTabBar::tab:selected {{
+        background: {p['selected']};
+        border: 1px solid {p['accent']};
+        color: {p['text_title']};
+    }}
+
+    QProgressBar {{
+        background: {p['bg_field']};
+        border: 1px solid {p['border_dark']};
+        border-radius: 10px;
+        text-align: center;
+    }}
+
+    QProgressBar::chunk {{
+        background: {p['accent']};
+        border-radius: 9px;
+    }}
+
+    QLabel#DutyTriggerStatus {{
+        border-radius: 12px;
+        padding: 9px 12px;
+    }}
+
+    QDialog#DutyNotificationDialog {{
+        background: {p['overlay']};
+    }}
+
+    """
 
 def apply_theme(app, theme_name: str = "mass_effect"):
     if app is None:
