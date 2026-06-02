@@ -24,8 +24,8 @@ class ThemeSplash(QWidget):
 
         self.logo = QLabel()
         self.logo.setAlignment(Qt.AlignCenter)
-        logo_pixmap = load_theme_logo(self.theme, size=96)
-        if not logo_pixmap.isNull():
+        logo_pixmap = load_theme_logo(self.theme, size=96) if self.theme not in {"white_1", "dark_1"} else None
+        if logo_pixmap is not None and not logo_pixmap.isNull():
             self.logo.setPixmap(logo_pixmap)
         else:
             self.logo.setText("◈")
@@ -99,7 +99,11 @@ class ThemeSplash(QWidget):
 
     def palette(self):
         if self.theme == "light_standard":
-            return {"bg1": QColor("#f3f4f6"), "bg2": QColor("#ffffff"), "accent": QColor("#3b82f6"), "accent2": QColor("#2563eb"), "text": "#111827", "muted": "#4b5563", "border": QColor("#d1d5db")}
+            return {"bg1": QColor("#f3f4f6"), "bg2": QColor("#ffffff"), "accent": QColor("#3b82f6"), "accent2": QColor("#2563eb"), "text": "#111827", "muted": "#4b5563", "border": QColor("#d1d5db"), "progress_bg": "#ffffff"}
+        if self.theme == "white_1":
+            return {"bg1": QColor("#f5faff"), "bg2": QColor("#ffffff"), "accent": QColor("#17bce3"), "accent2": QColor("#0a84d8"), "text": "#091827", "muted": "#607083", "border": QColor("#b9d7e7"), "progress_bg": "#ffffff"}
+        if self.theme == "dark_1":
+            return {"bg1": QColor("#070b13"), "bg2": QColor("#162130"), "accent": QColor("#e14b56"), "accent2": QColor("#ff6b72"), "text": "#ffffff", "muted": "#9fb0c0", "border": QColor("#354458"), "progress_bg": "#0c121c"}
         if self.theme == "mass_effect":
             return {"bg1": QColor(8, 12, 18), "bg2": QColor(24, 36, 52), "accent": QColor(235, 59, 71), "accent2": QColor(70, 190, 255), "text": "#f2f6ff", "muted": "#9fb7cc", "border": QColor(235, 59, 71)}
         if self.theme == "cerberus_red":
@@ -130,7 +134,7 @@ class ThemeSplash(QWidget):
 
     def progress_style(self):
         p = self.palette()
-        progress_bg = "rgba(255, 255, 255, 180)" if self.theme == "light_standard" else "rgba(0, 0, 0, 70)"
+        progress_bg = p.get("progress_bg", "#101722")
         return f"""
             QProgressBar {{
                 background-color: {progress_bg};

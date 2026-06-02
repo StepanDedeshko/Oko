@@ -86,11 +86,14 @@ class GraphCard(QFrame):
 
         self.view = QWebEngineView()
         self.view.setObjectName("GraphWebView")
+        self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setZoomFactor(self.zoom_factor)
         self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 0;")
 
         self.graph_web_container = QFrame()
         self.graph_web_container.setObjectName("GraphWebContainer")
+        self.graph_web_container.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.graph_web_container.setAutoFillBackground(True)
         self.graph_web_container.setStyleSheet(
             f"QFrame#GraphWebContainer {{ background-color: {colors['page_bg']}; "
             f"border: 1px solid {colors['border']}; border-radius: 10px; }}"
@@ -398,6 +401,7 @@ class SimplePageDashboard(QWidget):
 
         self.view = QWebEngineView()
         self.view.setObjectName("GraphWebView")
+        self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         colors = _resolve_web_colors()
         self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
         self.page = QWebEnginePage(profile, self.view)
@@ -486,6 +490,7 @@ class ModePagesDashboard(QWidget):
 
         self.view = QWebEngineView()
         self.view.setObjectName("GraphWebView")
+        self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         colors = _resolve_web_colors()
         self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
 

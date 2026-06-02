@@ -604,8 +604,14 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
         border-radius: 18px;
     }}
 
-    QWidget#DutyStatePanel, QWidget#GraphCheckOverlayPanel, QDialog#DutyNotificationDialog {{
+    QWidget#DutyStatePanel, QDialog#DutyNotificationDialog {{
         background: {p['glass']};
+        border: 1px solid {p['border_dark']};
+        border-radius: 18px;
+    }}
+
+    QWidget#GraphCheckOverlayPanel {{
+        background: {p['bg_panel']};
         border: 1px solid {p['border_dark']};
         border-radius: 18px;
     }}

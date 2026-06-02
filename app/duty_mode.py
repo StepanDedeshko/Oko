@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import re
 
-from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QPropertyAnimation, QTimer, QUrl, QUrlQuery, Qt
-from PySide6.QtGui import QBrush, QDesktopServices, QColor, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, QUrl, QUrlQuery, Qt
+from PySide6.QtGui import QDesktopServices, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QGraphicsOpacityEffect,
     QTextEdit,
-    QStackedLayout,
     QVBoxLayout,
     QWidget,
     QSizePolicy,
@@ -226,116 +225,6 @@ class DutyNotificationDialog(QDialog):
         self._finish("skip")
 
 
-class HologramEyeWidget(QWidget):
-    """Painted theme hologram for the graph-check overlay; no binary assets needed."""
-
-    def __init__(self, theme_name, parent=None):
-        super().__init__(parent)
-        self.theme_name = str(theme_name or "")
-        self.phase = 0
-        self.setMinimumSize(420, 300)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-
-    def set_phase(self, phase):
-        self.phase = int(phase or 0)
-        self.update()
-
-    def _colors(self):
-        if self.theme_name == "dark_1":
-            return {
-                "accent": QColor(255, 66, 78, 210),
-                "accent2": QColor(34, 210, 235, 130),
-                "core": QColor(255, 38, 54, 180),
-                "line": QColor(255, 185, 190, 185),
-                "metal": QColor(155, 170, 185, 120),
-            }
-        return {
-            "accent": QColor(18, 190, 232, 200),
-            "accent2": QColor(10, 132, 216, 125),
-            "core": QColor(16, 196, 238, 160),
-            "line": QColor(245, 255, 255, 210),
-            "metal": QColor(130, 160, 180, 115),
-        }
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        colors = self._colors()
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(Qt.NoBrush)
-
-        width = max(1, self.width())
-        height = max(1, self.height())
-        scale = min(width / 620.0, height / 430.0)
-        bob = -10.0 + abs(40 - (self.phase % 80)) * 0.45
-
-        painter.translate(width / 2.0, height / 2.0 + bob)
-        painter.scale(scale, scale)
-        painter.translate(-310.0, -215.0)
-
-        glow = QRadialGradient(QPointF(310, 215), 210)
-        glow.setColorAt(0, QColor(colors["core"].red(), colors["core"].green(), colors["core"].blue(), 70))
-        glow.setColorAt(0.55, QColor(colors["accent"].red(), colors["accent"].green(), colors["accent"].blue(), 28))
-        glow.setColorAt(1, QColor(0, 0, 0, 0))
-        painter.setBrush(QBrush(glow))
-        painter.drawEllipse(QRectF(110, 10, 420, 420))
-
-        circuit_pen = QPen(colors["accent2"], 5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        painter.setPen(circuit_pen)
-        for y in (155, 195, 255, 295):
-            painter.drawLine(QPointF(55, y), QPointF(165, y))
-            painter.drawEllipse(QRectF(45, y - 7, 14, 14))
-        for y in (145, 305):
-            painter.drawLine(QPointF(455, y), QPointF(575, y))
-            painter.drawEllipse(QRectF(575, y - 7, 14, 14))
-
-        eye = QPainterPath()
-        eye.moveTo(70, 215)
-        eye.cubicTo(175, 75, 440, 75, 550, 215)
-        eye.cubicTo(440, 355, 175, 355, 70, 215)
-        eye_gradient = QLinearGradient(70, 80, 550, 350)
-        eye_gradient.setColorAt(0, colors["accent"])
-        eye_gradient.setColorAt(0.48, colors["metal"])
-        eye_gradient.setColorAt(1, colors["accent2"])
-        painter.setPen(QPen(QBrush(eye_gradient), 13, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        painter.drawPath(eye)
-
-        iris = QRadialGradient(QPointF(310, 215), 92)
-        iris.setColorAt(0, colors["line"])
-        iris.setColorAt(0.28, colors["core"])
-        iris.setColorAt(0.72, QColor(colors["accent"].red(), colors["accent"].green(), colors["accent"].blue(), 80))
-        iris.setColorAt(1, QColor(0, 0, 0, 0))
-        painter.setBrush(QBrush(iris))
-        painter.setPen(QPen(colors["accent"], 7))
-        painter.drawEllipse(QRectF(220, 125, 180, 180))
-
-        painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(colors["accent2"], 4, Qt.DashLine, Qt.RoundCap))
-        painter.drawEllipse(QRectF(238, 143, 144, 144))
-        painter.setPen(QPen(colors["metal"], 3))
-        painter.drawEllipse(QRectF(254, 159, 112, 112))
-
-        pulse = [
-            QPointF(226, 215),
-            QPointF(266, 215),
-            QPointF(282, 178),
-            QPointF(309, 263),
-            QPointF(335, 194),
-            QPointF(351, 215),
-            QPointF(390, 215),
-        ]
-        painter.setPen(QPen(colors["line"], 8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        for start, end in zip(pulse, pulse[1:]):
-            painter.drawLine(start, end)
-
-        painter.setPen(QPen(colors["accent"], 2, Qt.DashLine, Qt.RoundCap))
-        for radius in (118, 150, 186):
-            rect = QRectF(310 - radius, 215 - radius, radius * 2, radius * 2)
-            start_angle = int((self.phase * 3 + radius) % 360) * 16
-            painter.drawArc(rect, start_angle, 120 * 16)
-
 
 class GraphCheckOverlayDialog(QDialog):
     """Glass-like overlay for duty graph verification."""
@@ -347,8 +236,6 @@ class GraphCheckOverlayDialog(QDialog):
         self.profiles = profiles
         self.credentials = credentials or {}
         self.cards = []
-        self._animations = []
-        self._hologram_offset = 0
 
         self.setObjectName("GraphCheckOverlayDialog")
         self.setWindowTitle("Проверка графиков")
@@ -363,8 +250,6 @@ class GraphCheckOverlayDialog(QDialog):
         self.theme_name = self.config.get("settings", {}).get("theme", self.theme_name)
         self._resize_to_work_area()
 
-        self.setWindowOpacity(0.0)
-
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
 
@@ -372,26 +257,14 @@ class GraphCheckOverlayDialog(QDialog):
         panel.setObjectName("GraphCheckOverlayPanel")
         outer.addWidget(panel)
 
-        stack = QStackedLayout(panel)
-        stack.setStackingMode(QStackedLayout.StackAll)
-        stack.setContentsMargins(0, 0, 0, 0)
-
-        self.hologram = HologramEyeWidget(self.theme_name)
-        hologram_opacity = QGraphicsOpacityEffect(self.hologram)
-        hologram_opacity.setOpacity(0.18 if self.theme_name == "white_1" else 0.22)
-        self.hologram.setGraphicsEffect(hologram_opacity)
-        stack.addWidget(self.hologram)
-
-        content = QWidget()
-        content.setAttribute(Qt.WA_TranslucentBackground, True)
-        content_root = QVBoxLayout(content)
+        content_root = QVBoxLayout(panel)
         content_root.setContentsMargins(12, 12, 12, 12)
         content_root.setSpacing(8)
 
         header = QHBoxLayout()
         title = QLabel("Проверка графиков")
         title.setObjectName("PageTitle")
-        subtitle = QLabel("Основная область — выбранные графики; голограмма работает только как мягкий фон.")
+        subtitle = QLabel("Основная область — выбранные графики; декоративные слои не накладываются на рабочую зону.")
         subtitle.setWordWrap(True)
         close_button = QPushButton("Закрыть")
         close_button.setObjectName("DestructiveAction")
@@ -413,13 +286,8 @@ class GraphCheckOverlayDialog(QDialog):
         self.cards_layout.setSpacing(12)
         scroll.setWidget(body)
         content_root.addWidget(scroll, stretch=1)
-        stack.addWidget(content)
 
         self._build_cards()
-        QTimer.singleShot(0, self._fade_in)
-        self.hologram_timer = QTimer(self)
-        self.hologram_timer.timeout.connect(self._pulse_hologram)
-        self.hologram_timer.start(90)
 
     def _resize_to_work_area(self):
         screen = None
@@ -466,18 +334,6 @@ class GraphCheckOverlayDialog(QDialog):
             self.cards_layout.addWidget(card)
         self.cards_layout.addStretch(1)
 
-    def _fade_in(self):
-        animation = QPropertyAnimation(self, b"windowOpacity", self)
-        animation.setDuration(220)
-        animation.setStartValue(0.0)
-        animation.setEndValue(1.0)
-        animation.setEasingCurve(QEasingCurve.OutCubic)
-        self._animations.append(animation)
-        animation.start(QPropertyAnimation.DeleteWhenStopped)
-
-    def _pulse_hologram(self):
-        self._hologram_offset = (self._hologram_offset + 1) % 80
-        self.hologram.set_phase(self._hologram_offset)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -486,7 +342,6 @@ class GraphCheckOverlayDialog(QDialog):
         super().keyPressEvent(event)
 
     def closeEvent(self, event):
-        self.hologram_timer.stop()
         super().closeEvent(event)
 
 
@@ -1984,6 +1839,7 @@ class DutyGraphCard(QFrame):
 
         self.view = QWebEngineView()
         self.view.setObjectName("GraphWebView")
+        self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setMinimumWidth(0)
         self.view.setMinimumHeight(360)
         self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1992,6 +1848,8 @@ class DutyGraphCard(QFrame):
 
         self.graph_web_container = QFrame()
         self.graph_web_container.setObjectName("GraphWebContainer")
+        self.graph_web_container.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.graph_web_container.setAutoFillBackground(True)
         self.graph_web_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.graph_web_container.setStyleSheet(
             f"QFrame#GraphWebContainer {{ background-color: {colors['page_bg']}; "
