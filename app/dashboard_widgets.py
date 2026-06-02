@@ -67,7 +67,7 @@ class GraphCard(QFrame):
         self.credentials = credentials or {}
 
         self.setObjectName("GraphCard")
-        self.setMinimumHeight(int(min_height))
+        self.initial_view_height = max(260, min(int(min_height), 520))
         self.setFrameShape(QFrame.StyledPanel)
         colors = _resolve_web_colors()
         self.setStyleSheet(
@@ -88,6 +88,7 @@ class GraphCard(QFrame):
         self.view.setObjectName("GraphWebView")
         self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setZoomFactor(self.zoom_factor)
+        self.view.setFixedHeight(self.initial_view_height)
         self.view.setStyleSheet("background: transparent; border: 0;")
 
         self.graph_web_container = QFrame()
@@ -97,6 +98,7 @@ class GraphCard(QFrame):
         self.graph_web_container.setStyleSheet(
             "QFrame#GraphWebContainer { background: transparent; border: 0px; }"
         )
+        self.graph_web_container.setFixedHeight(self.initial_view_height)
         web_layout = QVBoxLayout(self.graph_web_container)
         web_layout.setContentsMargins(0, 0, 0, 0)
         web_layout.setSpacing(0)
@@ -117,7 +119,7 @@ class GraphCard(QFrame):
 
         layout.addWidget(self.open_button)
         web_layout.addWidget(self.view)
-        layout.addWidget(self.graph_web_container, stretch=1)
+        layout.addWidget(self.graph_web_container)
         layout.addWidget(self.duty_trigger_status_label)
 
         self.timer = QTimer(self)
@@ -209,6 +211,18 @@ class GraphCard(QFrame):
         if self.fit_graphs:
             QTimer.singleShot(500, self.inject_fit_script)
             QTimer.singleShot(1500, self.inject_fit_script)
+            QTimer.singleShot(2500, self.inject_fit_script)
+
+
+    def apply_content_height(self, height):
+        try:
+            height = int(float(height))
+        except (TypeError, ValueError):
+            return
+        height = max(220, min(height, 720))
+        self.view.setFixedHeight(height)
+        self.graph_web_container.setFixedHeight(height)
+        self.updateGeometry()
 
     def inject_auto_login(self):
         js = make_zabbix_login_js(
@@ -233,8 +247,9 @@ class GraphCard(QFrame):
                 html, body {
                     margin: 0 !important;
                     padding: 0 !important;
-                    overflow-x: hidden !important;
-                    overflow-y: auto !important;
+                    overflow: hidden !important;
+                    min-height: 0 !important;
+                    height: auto !important;
                 }
 
                 header, nav, footer, .sidebar, .header-title, .filter-container,
@@ -260,10 +275,28 @@ class GraphCard(QFrame):
                 }
             `;
 
-            return 'OK';
+            function visibleRects(selector) {
+                return Array.from(document.querySelectorAll(selector))
+                    .map((node) => node.getBoundingClientRect())
+                    .filter((rect) => rect.width > 20 && rect.height > 20);
+            }
+            let visibleUseful = visibleRects('img, svg, canvas');
+            if (!visibleUseful.length) {
+                visibleUseful = visibleRects('table');
+            }
+            if (!visibleUseful.length) {
+                visibleUseful = visibleRects('[class*=graph], [id*=graph]');
+            }
+            const bottom = visibleUseful.length
+                ? Math.max(...visibleUseful.map((rect) => rect.bottom))
+                : Math.min(document.documentElement.scrollHeight || 0, document.body.scrollHeight || 0);
+            const height = Math.max(220, Math.min(720, Math.ceil(bottom + 12)));
+            document.documentElement.style.height = height + 'px';
+            document.body.style.height = height + 'px';
+            return height;
         })();
         """
-        self.view.page().runJavaScript(js)
+        self.view.page().runJavaScript(js, self.apply_content_height)
 
 
 class GraphsDashboard(QWidget):
@@ -407,6 +440,17 @@ class SimplePageDashboard(QWidget):
         if ok:
             self.inject_auto_login()
 
+
+    def apply_content_height(self, height):
+        try:
+            height = int(float(height))
+        except (TypeError, ValueError):
+            return
+        height = max(220, min(height, 720))
+        self.view.setFixedHeight(height)
+        self.graph_web_container.setFixedHeight(height)
+        self.updateGeometry()
+
     def inject_auto_login(self):
         js = make_zabbix_login_js(
             self.credentials.get("login", ""),
@@ -520,6 +564,17 @@ class ModePagesDashboard(QWidget):
     def on_page_loaded(self, ok):
         if ok:
             self.inject_auto_login()
+
+
+    def apply_content_height(self, height):
+        try:
+            height = int(float(height))
+        except (TypeError, ValueError):
+            return
+        height = max(220, min(height, 720))
+        self.view.setFixedHeight(height)
+        self.graph_web_container.setFixedHeight(height)
+        self.updateGeometry()
 
     def inject_auto_login(self):
         js = make_zabbix_login_js(

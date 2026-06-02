@@ -329,7 +329,6 @@ class GraphCheckOverlayDialog(QDialog):
                 parent=self,
             )
             card.setObjectName("OverlayGraphCard")
-            card.setMinimumHeight(520)
             self.cards.append(card)
             self.cards_layout.addWidget(card)
         self.cards_layout.addStretch(1)
@@ -1813,7 +1812,7 @@ class DutyGraphCard(QFrame):
         self.time_range = time_range
 
         self.setObjectName("GraphCard")
-        self.setMinimumHeight(430)
+        self.initial_view_height = 430
         self.setMinimumWidth(0)
         self.setFrameShape(QFrame.StyledPanel)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
@@ -1841,8 +1840,8 @@ class DutyGraphCard(QFrame):
         self.view.setObjectName("GraphWebView")
         self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setMinimumWidth(0)
-        self.view.setMinimumHeight(360)
-        self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.view.setFixedHeight(self.initial_view_height)
+        self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.view.setZoomFactor(0.85)
         self.view.setStyleSheet("background: transparent; border: 0;")
 
@@ -1850,7 +1849,8 @@ class DutyGraphCard(QFrame):
         self.graph_web_container.setObjectName("GraphWebContainer")
         self.graph_web_container.setAttribute(Qt.WA_TranslucentBackground, False)
         self.graph_web_container.setAutoFillBackground(False)
-        self.graph_web_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.graph_web_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.graph_web_container.setFixedHeight(self.initial_view_height)
         self.graph_web_container.setStyleSheet(
             "QFrame#GraphWebContainer { background: transparent; border: 0px; }"
         )
@@ -1872,7 +1872,7 @@ class DutyGraphCard(QFrame):
         root.addWidget(title)
         root.addWidget(open_button)
         web_layout.addWidget(self.view)
-        root.addWidget(self.graph_web_container, stretch=1)
+        root.addWidget(self.graph_web_container)
         root.addWidget(self.duty_trigger_status_label)
 
         self.load()
@@ -1948,6 +1948,73 @@ class DutyGraphCard(QFrame):
         )
         if js:
             self.view.page().runJavaScript(js)
+        QTimer.singleShot(500, self.fit_content_height)
+        QTimer.singleShot(1500, self.fit_content_height)
+        QTimer.singleShot(2500, self.fit_content_height)
+
+    def fit_content_height(self):
+        js = """
+        (function() {
+            const styleId = 'oko-duty-graph-fit';
+            let style = document.getElementById(styleId);
+            if (!style) {
+                style = document.createElement('style');
+                style.id = styleId;
+                document.head.appendChild(style);
+            }
+            style.textContent = `
+                html, body {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    overflow: hidden !important;
+                    min-height: 0 !important;
+                    height: auto !important;
+                }
+                header, nav, footer, .sidebar, .header-title, .filter-container,
+                #header, #footer, #sidebar, .server-name, .menu-main {
+                    display: none !important;
+                }
+                img, svg, canvas {
+                    max-width: 100% !important;
+                    object-fit: contain !important;
+                }
+                table, tbody, tr, td, div {
+                    max-width: 100% !important;
+                    box-sizing: border-box !important;
+                }
+            `;
+            function visibleRects(selector) {
+                return Array.from(document.querySelectorAll(selector))
+                    .map((node) => node.getBoundingClientRect())
+                    .filter((rect) => rect.width > 20 && rect.height > 20);
+            }
+            let visibleUseful = visibleRects('img, svg, canvas');
+            if (!visibleUseful.length) {
+                visibleUseful = visibleRects('table');
+            }
+            if (!visibleUseful.length) {
+                visibleUseful = visibleRects('[class*=graph], [id*=graph]');
+            }
+            const bottom = visibleUseful.length
+                ? Math.max(...visibleUseful.map((rect) => rect.bottom))
+                : Math.min(document.documentElement.scrollHeight || 0, document.body.scrollHeight || 0);
+            const height = Math.max(260, Math.min(760, Math.ceil(bottom + 12)));
+            document.documentElement.style.height = height + 'px';
+            document.body.style.height = height + 'px';
+            return height;
+        })();
+        """
+        self.view.page().runJavaScript(js, self.apply_content_height)
+
+    def apply_content_height(self, height):
+        try:
+            height = int(float(height))
+        except (TypeError, ValueError):
+            return
+        height = max(260, min(height, 760))
+        self.view.setFixedHeight(height)
+        self.graph_web_container.setFixedHeight(height)
+        self.updateGeometry()
 
     def open_external(self):
         url = self.build_open_url()
