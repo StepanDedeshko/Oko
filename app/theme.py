@@ -549,6 +549,9 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
 
     primary_text = "#ffffff" if theme_name == "dark_1" else "#062033"
     subtle_button_text = p["text_title"]
+    graph_page_bg = "#ffffff" if theme_name == "white_1" else "#0b0b0b"
+    graph_card_bg = "#ffffff" if theme_name == "white_1" else "#101722"
+    graph_area_bg = "#f5faff" if theme_name == "white_1" else "#070b13"
     return f"""
     QWidget {{
         background-color: {p['bg_main']};
@@ -595,11 +598,65 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
         padding: 3px;
     }}
 
-    QFrame, QGroupBox, QWidget#GraphCard, QWidget#DutyStatePanel,
-    QWidget#GraphCheckOverlayRoot, QDialog#DutyNotificationDialog {{
+    QFrame, QGroupBox {{
+        background: {p['bg_panel']};
+        border: 1px solid {p['border_dark']};
+        border-radius: 18px;
+    }}
+
+    QWidget#DutyStatePanel, QWidget#GraphCheckOverlayPanel, QDialog#DutyNotificationDialog {{
         background: {p['glass']};
         border: 1px solid {p['border_dark']};
         border-radius: 18px;
+    }}
+
+    QWidget#GraphCard, QWidget#OverlayGraphCard, QFrame#GraphCard, QFrame#OverlayGraphCard {{
+        background: {graph_card_bg};
+        border: 1px solid {p['border_dark']};
+        border-radius: 16px;
+    }}
+
+    QLabel#GraphTitle {{
+        color: {p['text_title']};
+        background: transparent;
+        border: 0px;
+        font-size: 17px;
+        font-weight: 800;
+        padding: 6px 4px;
+    }}
+
+    QPushButton#GraphOpenButton {{
+        background: {p['bg_field']};
+        color: {p['text_title']};
+        border: 1px solid {p['accent']};
+        border-radius: 12px;
+        padding: 7px 14px;
+    }}
+
+    QPushButton#GraphOpenButton:hover {{
+        background: {p['selected']};
+        border: 1px solid {p['accent2']};
+    }}
+
+    QFrame#GraphWebContainer, QWidget#GraphWebContainer {{
+        background: {graph_page_bg};
+        border: 1px solid {p['border_dark']};
+        border-radius: 10px;
+    }}
+
+    QWebEngineView#GraphWebView {{
+        background: {graph_page_bg};
+        border: 0px;
+    }}
+
+    QScrollArea#OverlayGraphArea {{
+        background: {graph_area_bg};
+        border: 1px solid {p['border_dark']};
+        border-radius: 14px;
+    }}
+
+    QWidget#OverlayGraphContent, QWidget#OverlayGraphViewport {{
+        background: {graph_area_bg};
     }}
 
     QWidget#DutyModeShell, QWidget#HomeShell {{
@@ -700,6 +757,11 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
 
     QScrollArea {{
         background: transparent;
+        border: 0px;
+    }}
+
+    QScrollArea#GraphScrollArea {{
+        background: {graph_area_bg};
         border: 0px;
     }}
 

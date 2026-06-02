@@ -21,19 +21,29 @@ from app.autologin import make_zabbix_login_js
 def _resolve_web_colors():
     app = QApplication.instance()
     theme_name = app.property("oko_theme_name") if app else None
-    is_light = theme_name == "light_standard"
 
-    if is_light:
+    if theme_name in {"light_standard", "white_1"}:
         return {
             "page_bg": "#ffffff",
-            "host_bg": "#f3f4f6",
+            "host_bg": "#f5faff" if theme_name == "white_1" else "#f3f4f6",
+            "card_bg": "#ffffff",
             "text": "#111827",
-            "border": "#d1d5db",
+            "border": "#b9d7e7" if theme_name == "white_1" else "#d1d5db",
+        }
+
+    if theme_name == "dark_1":
+        return {
+            "page_bg": "#0b0b0b",
+            "host_bg": "#070b13",
+            "card_bg": "#101722",
+            "text": "#e8f0f6",
+            "border": "#354458",
         }
 
     return {
         "page_bg": "#0b0b0b",
         "host_bg": "#0b0b0b",
+        "card_bg": "#0b0b0b",
         "text": "#d7e8ff",
         "border": "#0b0b0b",
     }
@@ -59,19 +69,35 @@ class GraphCard(QFrame):
         self.setObjectName("GraphCard")
         self.setMinimumHeight(int(min_height))
         self.setFrameShape(QFrame.StyledPanel)
+        colors = _resolve_web_colors()
+        self.setStyleSheet(
+            f"QFrame#GraphCard {{ background-color: {colors['card_bg']}; "
+            f"border: 1px solid {colors['border']}; border-radius: 12px; }}"
+        )
 
         self.title = QLabel(graph_config.get("title", "График"))
-        self.title.setObjectName("PageTitle")
+        self.title.setObjectName("GraphTitle")
         self.title.setWordWrap(True)
 
         self.open_button = QPushButton("Открыть в Zabbix")
+        self.open_button.setObjectName("GraphOpenButton")
         self.open_button.setToolTip("Открыть этот график во внешнем браузере")
         self.open_button.clicked.connect(self.open_in_external_browser)
 
         self.view = QWebEngineView()
-        colors = _resolve_web_colors()
+        self.view.setObjectName("GraphWebView")
         self.view.setZoomFactor(self.zoom_factor)
-        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
+        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 0;")
+
+        self.graph_web_container = QFrame()
+        self.graph_web_container.setObjectName("GraphWebContainer")
+        self.graph_web_container.setStyleSheet(
+            f"QFrame#GraphWebContainer {{ background-color: {colors['page_bg']}; "
+            f"border: 1px solid {colors['border']}; border-radius: 10px; }}"
+        )
+        web_layout = QVBoxLayout(self.graph_web_container)
+        web_layout.setContentsMargins(0, 0, 0, 0)
+        web_layout.setSpacing(0)
 
         self.page = QWebEnginePage(self.profile, self.view)
         try:
@@ -93,7 +119,8 @@ class GraphCard(QFrame):
         self.duty_trigger_status_label.setObjectName("DutyTriggerStatus")
 
         layout.addWidget(self.open_button)
-        layout.addWidget(self.view, stretch=1)
+        web_layout.addWidget(self.view)
+        layout.addWidget(self.graph_web_container, stretch=1)
         layout.addWidget(self.duty_trigger_status_label)
 
         self.timer = QTimer(self)
@@ -276,6 +303,7 @@ class GraphsDashboard(QWidget):
         root.addWidget(title)
 
         scroll = QScrollArea()
+        scroll.setObjectName("GraphScrollArea")
         scroll.setWidgetResizable(True)
         root.addWidget(scroll, stretch=1)
 
@@ -369,6 +397,7 @@ class SimplePageDashboard(QWidget):
         open_external_button.clicked.connect(self.open_current_external)
 
         self.view = QWebEngineView()
+        self.view.setObjectName("GraphWebView")
         colors = _resolve_web_colors()
         self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
         self.page = QWebEnginePage(profile, self.view)
@@ -456,6 +485,7 @@ class ModePagesDashboard(QWidget):
         root.addLayout(button_row)
 
         self.view = QWebEngineView()
+        self.view.setObjectName("GraphWebView")
         colors = _resolve_web_colors()
         self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
 

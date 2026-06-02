@@ -57,6 +57,31 @@ DUTY_TRIGGER_STATUS_MESSAGES = {
 }
 
 
+def resolve_graph_surface_colors():
+    app = QApplication.instance()
+    theme_name = app.property("oko_theme_name") if app else None
+
+    if theme_name in {"light_standard", "white_1"}:
+        return {
+            "page_bg": "#ffffff",
+            "card_bg": "#ffffff",
+            "border": "#b9d7e7" if theme_name == "white_1" else "#d1d5db",
+        }
+
+    if theme_name == "dark_1":
+        return {
+            "page_bg": "#0b0b0b",
+            "card_bg": "#101722",
+            "border": "#354458",
+        }
+
+    return {
+        "page_bg": "#0b0b0b",
+        "card_bg": "#06152d",
+        "border": "#0d3d78",
+    }
+
+
 def normalize_lookup_text(value):
     return " ".join(str(value or "").split()).casefold()
 
@@ -325,24 +350,26 @@ class GraphCheckOverlayDialog(QDialog):
         self._animations = []
         self._hologram_offset = 0
 
+        self.setObjectName("GraphCheckOverlayDialog")
         self.setWindowTitle("Проверка графиков")
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
-        self.resize(1180, 820)
+        self.setMinimumSize(900, 650)
 
         app = QApplication.instance()
         self.theme_name = "mass_effect"
         if app is not None:
             self.theme_name = str(app.property("oko_theme_name") or self.theme_name)
         self.theme_name = self.config.get("settings", {}).get("theme", self.theme_name)
+        self._resize_to_work_area()
 
         self.setWindowOpacity(0.0)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(18, 18, 18, 18)
+        outer.setContentsMargins(12, 12, 12, 12)
 
         panel = QWidget()
-        panel.setObjectName("GraphCheckOverlayRoot")
+        panel.setObjectName("GraphCheckOverlayPanel")
         outer.addWidget(panel)
 
         stack = QStackedLayout(panel)
@@ -358,8 +385,8 @@ class GraphCheckOverlayDialog(QDialog):
         content = QWidget()
         content.setAttribute(Qt.WA_TranslucentBackground, True)
         content_root = QVBoxLayout(content)
-        content_root.setContentsMargins(18, 18, 18, 18)
-        content_root.setSpacing(12)
+        content_root.setContentsMargins(12, 12, 12, 12)
+        content_root.setSpacing(8)
 
         header = QHBoxLayout()
         title = QLabel("Проверка графиков")
@@ -375,9 +402,12 @@ class GraphCheckOverlayDialog(QDialog):
         content_root.addLayout(header)
 
         scroll = QScrollArea()
+        scroll.setObjectName("OverlayGraphArea")
+        scroll.viewport().setObjectName("OverlayGraphViewport")
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget()
+        body.setObjectName("OverlayGraphContent")
         self.cards_layout = QVBoxLayout(body)
         self.cards_layout.setContentsMargins(0, 0, 0, 0)
         self.cards_layout.setSpacing(12)
@@ -390,6 +420,29 @@ class GraphCheckOverlayDialog(QDialog):
         self.hologram_timer = QTimer(self)
         self.hologram_timer.timeout.connect(self._pulse_hologram)
         self.hologram_timer.start(90)
+
+    def _resize_to_work_area(self):
+        screen = None
+        parent = self.parentWidget()
+        if parent is not None:
+            try:
+                screen = parent.screen()
+            except Exception:
+                screen = None
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(1180, 820)
+            return
+
+        geometry = screen.availableGeometry()
+        width = max(900, int(geometry.width() * 0.92))
+        height = max(650, int(geometry.height() * 0.92))
+        self.resize(width, height)
+        self.move(
+            geometry.x() + (geometry.width() - width) // 2,
+            geometry.y() + (geometry.height() - height) // 2,
+        )
 
     def _build_cards(self):
         for item in self.graphs:
@@ -407,6 +460,8 @@ class GraphCheckOverlayDialog(QDialog):
                 time_range=self.config.get("duty_mode", {}).get("check_time_range", "1h"),
                 parent=self,
             )
+            card.setObjectName("OverlayGraphCard")
+            card.setMinimumHeight(520)
             self.cards.append(card)
             self.cards_layout.addWidget(card)
         self.cards_layout.addStretch(1)
@@ -423,6 +478,12 @@ class GraphCheckOverlayDialog(QDialog):
     def _pulse_hologram(self):
         self._hologram_offset = (self._hologram_offset + 1) % 80
         self.hologram.set_phase(self._hologram_offset)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event):
         self.hologram_timer.stop()
@@ -1901,30 +1962,48 @@ class DutyGraphCard(QFrame):
         self.setMinimumWidth(0)
         self.setFrameShape(QFrame.StyledPanel)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+        colors = resolve_graph_surface_colors()
+        self.setStyleSheet(
+            f"QFrame#GraphCard, QFrame#OverlayGraphCard {{ background-color: {colors['card_bg']}; "
+            f"border: 1px solid {colors['border']}; border-radius: 14px; }}"
+        )
 
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(6)
 
         title = QLabel(graph_config.get("title", "График"))
-        title.setObjectName("PageTitle")
+        title.setObjectName("GraphTitle")
         title.setWordWrap(True)
         title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         open_button = QPushButton("Открыть в Zabbix")
+        open_button.setObjectName("GraphOpenButton")
         open_button.clicked.connect(self.open_external)
         open_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         self.view = QWebEngineView()
+        self.view.setObjectName("GraphWebView")
         self.view.setMinimumWidth(0)
         self.view.setMinimumHeight(360)
         self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.view.setZoomFactor(0.85)
-        self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
+        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 0;")
+
+        self.graph_web_container = QFrame()
+        self.graph_web_container.setObjectName("GraphWebContainer")
+        self.graph_web_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.graph_web_container.setStyleSheet(
+            f"QFrame#GraphWebContainer {{ background-color: {colors['page_bg']}; "
+            f"border: 1px solid {colors['border']}; border-radius: 10px; }}"
+        )
+        web_layout = QVBoxLayout(self.graph_web_container)
+        web_layout.setContentsMargins(0, 0, 0, 0)
+        web_layout.setSpacing(0)
 
         self.page = QWebEnginePage(profile, self.view)
         try:
-            self.page.setBackgroundColor(QColor("#0b0b0b"))
+            self.page.setBackgroundColor(QColor(colors["page_bg"]))
         except Exception:
             pass
 
@@ -1940,7 +2019,8 @@ class DutyGraphCard(QFrame):
 
         root.addWidget(title)
         root.addWidget(open_button)
-        root.addWidget(self.view, stretch=1)
+        web_layout.addWidget(self.view)
+        root.addWidget(self.graph_web_container, stretch=1)
         root.addWidget(self.duty_trigger_status_label)
 
         self.load()
