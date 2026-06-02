@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta, timezone
 import re
 
-from PySide6.QtCore import QTimer, QUrl, QUrlQuery, Qt
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, QUrl, QUrlQuery, Qt
 from PySide6.QtGui import QDesktopServices, QColor
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFrame,
     QGridLayout,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QGraphicsOpacityEffect,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -52,6 +54,31 @@ DUTY_TRIGGER_STATUS_MESSAGES = {
     "SOURCE_NOT_FOUND": "Источник данных для проверки не найден",
     "TARGET_NOT_FOUND": "Целевой график для проверки не найден",
 }
+
+
+def resolve_graph_surface_colors():
+    app = QApplication.instance()
+    theme_name = app.property("oko_theme_name") if app else None
+
+    if theme_name in {"light_standard", "white_1"}:
+        return {
+            "page_bg": "#ffffff",
+            "card_bg": "#ffffff",
+            "border": "#b9d7e7" if theme_name == "white_1" else "#d1d5db",
+        }
+
+    if theme_name == "dark_1":
+        return {
+            "page_bg": "#0b0b0b",
+            "card_bg": "#101722",
+            "border": "#354458",
+        }
+
+    return {
+        "page_bg": "#0b0b0b",
+        "card_bg": "#06152d",
+        "border": "#0d3d78",
+    }
 
 
 def normalize_lookup_text(value):
@@ -131,12 +158,20 @@ class DutyNotificationDialog(QDialog):
         super().__init__(parent)
 
         self.result_action = None
+        self._closing_animation = None
 
+        self.setObjectName("DutyNotificationDialog")
         self.setWindowTitle("Дежурное уведомление")
         self.setWindowModality(Qt.ApplicationModal)
-        self.resize(540, 190)
+        self.resize(560, 210)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self.opacity_effect)
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 16)
+        root.setSpacing(12)
 
         title = QLabel("Дежурное уведомление")
         title.setObjectName("PageTitle")
@@ -144,12 +179,14 @@ class DutyNotificationDialog(QDialog):
 
         message = QLabel(text)
         message.setWordWrap(True)
-        message.setStyleSheet("font-size: 16px; padding: 8px;")
+        message.setStyleSheet("font-size: 16px; padding: 10px; background: transparent;")
         root.addWidget(message)
 
         row = QHBoxLayout()
+        row.setSpacing(10)
 
         check_button = QPushButton("Проверить")
+        check_button.setObjectName("PrimaryAction")
         check_button.clicked.connect(self.choose_check)
 
         skip_button = QPushButton("Пропустить")
@@ -161,13 +198,150 @@ class DutyNotificationDialog(QDialog):
 
         root.addLayout(row)
 
+        QTimer.singleShot(0, self._fade_in)
+
+    def _fade_in(self):
+        self._animate_opacity(0.0, 1.0, 180)
+
+    def _animate_opacity(self, start, end, duration, finished=None):
+        animation = QPropertyAnimation(self.opacity_effect, b"opacity", self)
+        animation.setDuration(duration)
+        animation.setStartValue(start)
+        animation.setEndValue(end)
+        animation.setEasingCurve(QEasingCurve.InOutCubic)
+        if finished:
+            animation.finished.connect(finished)
+        self._closing_animation = animation
+        animation.start(QPropertyAnimation.DeleteWhenStopped)
+
+    def _finish(self, action):
+        self.result_action = action
+        self._animate_opacity(1.0, 0.0, 140, self.accept)
+
     def choose_check(self):
-        self.result_action = "check"
-        self.accept()
+        self._finish("check")
 
     def choose_skip(self):
-        self.result_action = "skip"
-        self.accept()
+        self._finish("skip")
+
+
+
+class GraphCheckOverlayDialog(QDialog):
+    """Glass-like overlay for duty graph verification."""
+
+    def __init__(self, graphs, config, profiles, credentials=None, parent=None):
+        super().__init__(parent)
+        self.graphs = graphs
+        self.config = config
+        self.profiles = profiles
+        self.credentials = credentials or {}
+        self.cards = []
+
+        self.setObjectName("GraphCheckOverlayDialog")
+        self.setWindowTitle("Проверка графиков")
+        self.setWindowModality(Qt.NonModal)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.setMinimumSize(900, 650)
+
+        app = QApplication.instance()
+        self.theme_name = "mass_effect"
+        if app is not None:
+            self.theme_name = str(app.property("oko_theme_name") or self.theme_name)
+        self.theme_name = self.config.get("settings", {}).get("theme", self.theme_name)
+        self._resize_to_work_area()
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+
+        panel = QWidget()
+        panel.setObjectName("GraphCheckOverlayPanel")
+        outer.addWidget(panel)
+
+        content_root = QVBoxLayout(panel)
+        content_root.setContentsMargins(12, 12, 12, 12)
+        content_root.setSpacing(8)
+
+        header = QHBoxLayout()
+        title = QLabel("Проверка графиков")
+        title.setObjectName("PageTitle")
+        subtitle = QLabel("Основная область — выбранные графики; декоративные слои не накладываются на рабочую зону.")
+        subtitle.setWordWrap(True)
+        close_button = QPushButton("Закрыть")
+        close_button.setObjectName("DestructiveAction")
+        close_button.clicked.connect(self.close)
+        header.addWidget(title)
+        header.addWidget(subtitle, stretch=1)
+        header.addWidget(close_button)
+        content_root.addLayout(header)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("OverlayGraphArea")
+        scroll.viewport().setObjectName("OverlayGraphViewport")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body = QWidget()
+        body.setObjectName("OverlayGraphContent")
+        self.cards_layout = QVBoxLayout(body)
+        self.cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.cards_layout.setSpacing(12)
+        scroll.setWidget(body)
+        content_root.addWidget(scroll, stretch=1)
+
+        self._build_cards()
+
+    def _resize_to_work_area(self):
+        screen = None
+        parent = self.parentWidget()
+        if parent is not None:
+            try:
+                screen = parent.screen()
+            except Exception:
+                screen = None
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(1180, 820)
+            return
+
+        geometry = screen.availableGeometry()
+        width = max(900, int(geometry.width() * 0.92))
+        height = max(650, int(geometry.height() * 0.92))
+        self.resize(width, height)
+        self.move(
+            geometry.x() + (geometry.width() - width) // 2,
+            geometry.y() + (geometry.height() - height) // 2,
+        )
+
+    def _build_cards(self):
+        for item in self.graphs:
+            zabbix_id = item.get("zabbix_id")
+            profile = self.profiles.get(zabbix_id)
+            if profile is None:
+                label = QLabel(f"Профиль Zabbix не найден для графика: {item.get('title', 'График')}")
+                label.setWordWrap(True)
+                self.cards_layout.addWidget(label)
+                continue
+            card = DutyGraphCard(
+                graph_config=item["graph"],
+                profile=profile,
+                credentials=self.credentials.get(zabbix_id, {}),
+                time_range=self.config.get("duty_mode", {}).get("check_time_range", "1h"),
+                parent=self,
+            )
+            card.setObjectName("OverlayGraphCard")
+            self.cards.append(card)
+            self.cards_layout.addWidget(card)
+        self.cards_layout.addStretch(1)
+
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
 
 
 class DutySettingsDialog(QDialog):
@@ -1638,37 +1812,53 @@ class DutyGraphCard(QFrame):
         self.time_range = time_range
 
         self.setObjectName("GraphCard")
-        self.setMinimumHeight(430)
+        self.initial_view_height = 430
         self.setMinimumWidth(0)
         self.setFrameShape(QFrame.StyledPanel)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+        colors = resolve_graph_surface_colors()
+        self.setStyleSheet(
+            f"QFrame#GraphCard, QFrame#OverlayGraphCard {{ background: transparent; "
+            f"border: 1px solid {colors['border']}; border-radius: 14px; }}"
+        )
 
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(6)
 
         title = QLabel(graph_config.get("title", "График"))
-        title.setObjectName("PageTitle")
+        title.setObjectName("GraphTitle")
         title.setWordWrap(True)
         title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         open_button = QPushButton("Открыть в Zabbix")
+        open_button.setObjectName("GraphOpenButton")
         open_button.clicked.connect(self.open_external)
         open_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         self.view = QWebEngineView()
+        self.view.setObjectName("GraphWebView")
+        self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setMinimumWidth(0)
-        self.view.setMinimumHeight(360)
-        self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.view.setFixedHeight(self.initial_view_height)
+        self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.view.setZoomFactor(0.85)
-        self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
+        self.view.setStyleSheet("background: transparent; border: 0;")
+
+        self.graph_web_container = QFrame()
+        self.graph_web_container.setObjectName("GraphWebContainer")
+        self.graph_web_container.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.graph_web_container.setAutoFillBackground(False)
+        self.graph_web_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.graph_web_container.setFixedHeight(self.initial_view_height)
+        self.graph_web_container.setStyleSheet(
+            "QFrame#GraphWebContainer { background: transparent; border: 0px; }"
+        )
+        web_layout = QVBoxLayout(self.graph_web_container)
+        web_layout.setContentsMargins(0, 0, 0, 0)
+        web_layout.setSpacing(0)
 
         self.page = QWebEnginePage(profile, self.view)
-        try:
-            self.page.setBackgroundColor(QColor("#0b0b0b"))
-        except Exception:
-            pass
-
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_loaded)
 
@@ -1681,7 +1871,8 @@ class DutyGraphCard(QFrame):
 
         root.addWidget(title)
         root.addWidget(open_button)
-        root.addWidget(self.view, stretch=1)
+        web_layout.addWidget(self.view)
+        root.addWidget(self.graph_web_container)
         root.addWidget(self.duty_trigger_status_label)
 
         self.load()
@@ -1757,6 +1948,73 @@ class DutyGraphCard(QFrame):
         )
         if js:
             self.view.page().runJavaScript(js)
+        QTimer.singleShot(500, self.fit_content_height)
+        QTimer.singleShot(1500, self.fit_content_height)
+        QTimer.singleShot(2500, self.fit_content_height)
+
+    def fit_content_height(self):
+        js = """
+        (function() {
+            const styleId = 'oko-duty-graph-fit';
+            let style = document.getElementById(styleId);
+            if (!style) {
+                style = document.createElement('style');
+                style.id = styleId;
+                document.head.appendChild(style);
+            }
+            style.textContent = `
+                html, body {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    overflow: hidden !important;
+                    min-height: 0 !important;
+                    height: auto !important;
+                }
+                header, nav, footer, .sidebar, .header-title, .filter-container,
+                #header, #footer, #sidebar, .server-name, .menu-main {
+                    display: none !important;
+                }
+                img, svg, canvas {
+                    max-width: 100% !important;
+                    object-fit: contain !important;
+                }
+                table, tbody, tr, td, div {
+                    max-width: 100% !important;
+                    box-sizing: border-box !important;
+                }
+            `;
+            function visibleRects(selector) {
+                return Array.from(document.querySelectorAll(selector))
+                    .map((node) => node.getBoundingClientRect())
+                    .filter((rect) => rect.width > 20 && rect.height > 20);
+            }
+            let visibleUseful = visibleRects('img, svg, canvas');
+            if (!visibleUseful.length) {
+                visibleUseful = visibleRects('table');
+            }
+            if (!visibleUseful.length) {
+                visibleUseful = visibleRects('[class*=graph], [id*=graph]');
+            }
+            const bottom = visibleUseful.length
+                ? Math.max(...visibleUseful.map((rect) => rect.bottom))
+                : Math.min(document.documentElement.scrollHeight || 0, document.body.scrollHeight || 0);
+            const height = Math.max(260, Math.min(760, Math.ceil(bottom + 12)));
+            document.documentElement.style.height = height + 'px';
+            document.body.style.height = height + 'px';
+            return height;
+        })();
+        """
+        self.view.page().runJavaScript(js, self.apply_content_height)
+
+    def apply_content_height(self, height):
+        try:
+            height = int(float(height))
+        except (TypeError, ValueError):
+            return
+        height = max(260, min(height, 760))
+        self.view.setFixedHeight(height)
+        self.graph_web_container.setFixedHeight(height)
+        self.updateGeometry()
 
     def open_external(self):
         url = self.build_open_url()
@@ -1780,6 +2038,7 @@ class DutyModeWidget(QWidget):
         self.duty_trigger_stats = {"total": 0, "ok": 0, "alert": 0, "errors": 0}
         self.check_graphs = []
         self.cards = []
+        self.graph_check_overlay = None
 
         self.audio_player = None
         self.audio_output = None
@@ -1790,6 +2049,8 @@ class DutyModeWidget(QWidget):
         self.skip_timer.timeout.connect(self.show_skip_reminder)
 
         self.last_check_at = None
+
+        self.setObjectName("DutyModeShell")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -1818,6 +2079,7 @@ class DutyModeWidget(QWidget):
         root.addLayout(header)
 
         state_group = QGroupBox("Состояние")
+        state_group.setObjectName("DutyStatePanel")
         state_layout = QGridLayout(state_group)
         state_layout.setContentsMargins(10, 8, 10, 8)
         state_layout.setHorizontalSpacing(14)
@@ -1853,6 +2115,7 @@ class DutyModeWidget(QWidget):
         actions_layout.setSpacing(8)
 
         self.enable_button = QPushButton("")
+        self.enable_button.setObjectName("PrimaryAction")
         self.enable_button.setMinimumHeight(38)
         self.enable_button.clicked.connect(self.toggle_enabled)
 
@@ -2496,7 +2759,8 @@ class DutyModeWidget(QWidget):
         if self.skip_timer.isActive():
             self.skip_timer.stop()
 
-        if not self.render_check_graph_cards():
+        self.load_check_graphs()
+        if not self.check_graphs:
             QMessageBox.warning(
                 self,
                 "Режим дежурства",
@@ -2504,9 +2768,31 @@ class DutyModeWidget(QWidget):
             )
             return False
 
+        self.open_graph_check_overlay()
         self.mark_check_started()
-        self.status_label.setText("Идёт проверка графиков.")
+        self.status_label.setText("Идёт проверка графиков в overlay-панели.")
         return True
+
+    def open_graph_check_overlay(self):
+        if self.graph_check_overlay is not None:
+            try:
+                self.graph_check_overlay.close()
+            except Exception:
+                pass
+
+        self.graph_check_overlay = GraphCheckOverlayDialog(
+            graphs=self.check_graphs,
+            config=self.config,
+            profiles=self.profiles,
+            credentials=self.credentials,
+            parent=self,
+        )
+        self.graph_check_overlay.finished.connect(lambda _result: setattr(self, "graph_check_overlay", None))
+        self.graph_check_overlay.destroyed.connect(lambda: setattr(self, "graph_check_overlay", None))
+        self.cards = self.graph_check_overlay.cards
+        self.graph_check_overlay.show()
+        self.graph_check_overlay.raise_()
+        self.graph_check_overlay.activateWindow()
 
     def success_check(self):
         if self.skip_timer.isActive():

@@ -21,19 +21,29 @@ from app.autologin import make_zabbix_login_js
 def _resolve_web_colors():
     app = QApplication.instance()
     theme_name = app.property("oko_theme_name") if app else None
-    is_light = theme_name == "light_standard"
 
-    if is_light:
+    if theme_name in {"light_standard", "white_1"}:
         return {
             "page_bg": "#ffffff",
-            "host_bg": "#f3f4f6",
+            "host_bg": "#f5faff" if theme_name == "white_1" else "#f3f4f6",
+            "card_bg": "#ffffff",
             "text": "#111827",
-            "border": "#d1d5db",
+            "border": "#b9d7e7" if theme_name == "white_1" else "#d1d5db",
+        }
+
+    if theme_name == "dark_1":
+        return {
+            "page_bg": "#0b0b0b",
+            "host_bg": "#070b13",
+            "card_bg": "#101722",
+            "text": "#e8f0f6",
+            "border": "#354458",
         }
 
     return {
         "page_bg": "#0b0b0b",
         "host_bg": "#0b0b0b",
+        "card_bg": "#0b0b0b",
         "text": "#d7e8ff",
         "border": "#0b0b0b",
     }
@@ -57,28 +67,43 @@ class GraphCard(QFrame):
         self.credentials = credentials or {}
 
         self.setObjectName("GraphCard")
-        self.setMinimumHeight(int(min_height))
+        self.initial_view_height = max(260, min(int(min_height), 520))
         self.setFrameShape(QFrame.StyledPanel)
+        colors = _resolve_web_colors()
+        self.setStyleSheet(
+            f"QFrame#GraphCard {{ background: transparent; "
+            f"border: 1px solid {colors['border']}; border-radius: 12px; }}"
+        )
 
         self.title = QLabel(graph_config.get("title", "График"))
-        self.title.setObjectName("PageTitle")
+        self.title.setObjectName("GraphTitle")
         self.title.setWordWrap(True)
 
         self.open_button = QPushButton("Открыть в Zabbix")
+        self.open_button.setObjectName("GraphOpenButton")
         self.open_button.setToolTip("Открыть этот график во внешнем браузере")
         self.open_button.clicked.connect(self.open_in_external_browser)
 
         self.view = QWebEngineView()
-        colors = _resolve_web_colors()
+        self.view.setObjectName("GraphWebView")
+        self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setZoomFactor(self.zoom_factor)
-        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
+        self.view.setFixedHeight(self.initial_view_height)
+        self.view.setStyleSheet("background: transparent; border: 0;")
+
+        self.graph_web_container = QFrame()
+        self.graph_web_container.setObjectName("GraphWebContainer")
+        self.graph_web_container.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.graph_web_container.setAutoFillBackground(False)
+        self.graph_web_container.setStyleSheet(
+            "QFrame#GraphWebContainer { background: transparent; border: 0px; }"
+        )
+        self.graph_web_container.setFixedHeight(self.initial_view_height)
+        web_layout = QVBoxLayout(self.graph_web_container)
+        web_layout.setContentsMargins(0, 0, 0, 0)
+        web_layout.setSpacing(0)
 
         self.page = QWebEnginePage(self.profile, self.view)
-        try:
-            self.page.setBackgroundColor(QColor(colors["page_bg"]))
-        except Exception:
-            pass
-
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_load_finished)
 
@@ -93,7 +118,8 @@ class GraphCard(QFrame):
         self.duty_trigger_status_label.setObjectName("DutyTriggerStatus")
 
         layout.addWidget(self.open_button)
-        layout.addWidget(self.view, stretch=1)
+        web_layout.addWidget(self.view)
+        layout.addWidget(self.graph_web_container)
         layout.addWidget(self.duty_trigger_status_label)
 
         self.timer = QTimer(self)
@@ -185,6 +211,18 @@ class GraphCard(QFrame):
         if self.fit_graphs:
             QTimer.singleShot(500, self.inject_fit_script)
             QTimer.singleShot(1500, self.inject_fit_script)
+            QTimer.singleShot(2500, self.inject_fit_script)
+
+
+    def apply_content_height(self, height):
+        try:
+            height = int(float(height))
+        except (TypeError, ValueError):
+            return
+        height = max(220, min(height, 720))
+        self.view.setFixedHeight(height)
+        self.graph_web_container.setFixedHeight(height)
+        self.updateGeometry()
 
     def inject_auto_login(self):
         js = make_zabbix_login_js(
@@ -195,7 +233,6 @@ class GraphCard(QFrame):
             self.view.page().runJavaScript(js)
 
     def inject_fit_script(self):
-        colors = _resolve_web_colors()
         js = """
         (function() {
             const styleId = 'dezhurka-graph-fit';
@@ -210,13 +247,9 @@ class GraphCard(QFrame):
                 html, body {
                     margin: 0 !important;
                     padding: 0 !important;
-                    overflow-x: hidden !important;
-                    overflow-y: auto !important;
-                    background: __BG__ !important;
-                }
-
-                body * {
-                    background-color: transparent !important;
+                    overflow: hidden !important;
+                    min-height: 0 !important;
+                    height: auto !important;
                 }
 
                 header, nav, footer, .sidebar, .header-title, .filter-container,
@@ -242,13 +275,28 @@ class GraphCard(QFrame):
                 }
             `;
 
-            document.body.style.background = '__BG__';
-            document.documentElement.style.background = '__BG__';
-            return 'OK';
+            function visibleRects(selector) {
+                return Array.from(document.querySelectorAll(selector))
+                    .map((node) => node.getBoundingClientRect())
+                    .filter((rect) => rect.width > 20 && rect.height > 20);
+            }
+            let visibleUseful = visibleRects('img, svg, canvas');
+            if (!visibleUseful.length) {
+                visibleUseful = visibleRects('table');
+            }
+            if (!visibleUseful.length) {
+                visibleUseful = visibleRects('[class*=graph], [id*=graph]');
+            }
+            const bottom = visibleUseful.length
+                ? Math.max(...visibleUseful.map((rect) => rect.bottom))
+                : Math.min(document.documentElement.scrollHeight || 0, document.body.scrollHeight || 0);
+            const height = Math.max(220, Math.min(720, Math.ceil(bottom + 12)));
+            document.documentElement.style.height = height + 'px';
+            document.body.style.height = height + 'px';
+            return height;
         })();
         """
-        js = js.replace("__BG__", colors["page_bg"])
-        self.view.page().runJavaScript(js)
+        self.view.page().runJavaScript(js, self.apply_content_height)
 
 
 class GraphsDashboard(QWidget):
@@ -276,6 +324,7 @@ class GraphsDashboard(QWidget):
         root.addWidget(title)
 
         scroll = QScrollArea()
+        scroll.setObjectName("GraphScrollArea")
         scroll.setWidgetResizable(True)
         root.addWidget(scroll, stretch=1)
 
@@ -369,14 +418,10 @@ class SimplePageDashboard(QWidget):
         open_external_button.clicked.connect(self.open_current_external)
 
         self.view = QWebEngineView()
-        colors = _resolve_web_colors()
-        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
+        self.view.setObjectName("GraphWebView")
+        self.view.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.view.setStyleSheet("background: transparent; border: 0;")
         self.page = QWebEnginePage(profile, self.view)
-        try:
-            self.page.setBackgroundColor(QColor(colors["page_bg"]))
-        except Exception:
-            pass
-
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_page_loaded)
 
@@ -394,6 +439,17 @@ class SimplePageDashboard(QWidget):
     def on_page_loaded(self, ok):
         if ok:
             self.inject_auto_login()
+
+
+    def apply_content_height(self, height):
+        try:
+            height = int(float(height))
+        except (TypeError, ValueError):
+            return
+        height = max(220, min(height, 720))
+        self.view.setFixedHeight(height)
+        self.graph_web_container.setFixedHeight(height)
+        self.updateGeometry()
 
     def inject_auto_login(self):
         js = make_zabbix_login_js(
@@ -456,15 +512,11 @@ class ModePagesDashboard(QWidget):
         root.addLayout(button_row)
 
         self.view = QWebEngineView()
-        colors = _resolve_web_colors()
-        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
+        self.view.setObjectName("GraphWebView")
+        self.view.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.view.setStyleSheet("background: transparent; border: 0;")
 
         self.page = QWebEnginePage(profile, self.view)
-        try:
-            self.page.setBackgroundColor(QColor(colors["page_bg"]))
-        except Exception:
-            pass
-
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_page_loaded)
         root.addWidget(self.view, stretch=1)
@@ -512,6 +564,17 @@ class ModePagesDashboard(QWidget):
     def on_page_loaded(self, ok):
         if ok:
             self.inject_auto_login()
+
+
+    def apply_content_height(self, height):
+        try:
+            height = int(float(height))
+        except (TypeError, ValueError):
+            return
+        height = max(220, min(height, 720))
+        self.view.setFixedHeight(height)
+        self.graph_web_container.setFixedHeight(height)
+        self.updateGeometry()
 
     def inject_auto_login(self):
         js = make_zabbix_login_js(
