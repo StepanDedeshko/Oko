@@ -71,7 +71,7 @@ class GraphCard(QFrame):
         self.setFrameShape(QFrame.StyledPanel)
         colors = _resolve_web_colors()
         self.setStyleSheet(
-            f"QFrame#GraphCard {{ background-color: {colors['card_bg']}; "
+            f"QFrame#GraphCard {{ background: transparent; "
             f"border: 1px solid {colors['border']}; border-radius: 12px; }}"
         )
 
@@ -88,26 +88,20 @@ class GraphCard(QFrame):
         self.view.setObjectName("GraphWebView")
         self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setZoomFactor(self.zoom_factor)
-        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 0;")
+        self.view.setStyleSheet("background: transparent; border: 0;")
 
         self.graph_web_container = QFrame()
         self.graph_web_container.setObjectName("GraphWebContainer")
         self.graph_web_container.setAttribute(Qt.WA_TranslucentBackground, False)
-        self.graph_web_container.setAutoFillBackground(True)
+        self.graph_web_container.setAutoFillBackground(False)
         self.graph_web_container.setStyleSheet(
-            f"QFrame#GraphWebContainer {{ background-color: {colors['page_bg']}; "
-            f"border: 1px solid {colors['border']}; border-radius: 10px; }}"
+            "QFrame#GraphWebContainer { background: transparent; border: 0px; }"
         )
         web_layout = QVBoxLayout(self.graph_web_container)
         web_layout.setContentsMargins(0, 0, 0, 0)
         web_layout.setSpacing(0)
 
         self.page = QWebEnginePage(self.profile, self.view)
-        try:
-            self.page.setBackgroundColor(QColor(colors["page_bg"]))
-        except Exception:
-            pass
-
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_load_finished)
 
@@ -225,7 +219,6 @@ class GraphCard(QFrame):
             self.view.page().runJavaScript(js)
 
     def inject_fit_script(self):
-        colors = _resolve_web_colors()
         js = """
         (function() {
             const styleId = 'dezhurka-graph-fit';
@@ -242,11 +235,6 @@ class GraphCard(QFrame):
                     padding: 0 !important;
                     overflow-x: hidden !important;
                     overflow-y: auto !important;
-                    background: __BG__ !important;
-                }
-
-                body * {
-                    background-color: transparent !important;
                 }
 
                 header, nav, footer, .sidebar, .header-title, .filter-container,
@@ -272,12 +260,9 @@ class GraphCard(QFrame):
                 }
             `;
 
-            document.body.style.background = '__BG__';
-            document.documentElement.style.background = '__BG__';
             return 'OK';
         })();
         """
-        js = js.replace("__BG__", colors["page_bg"])
         self.view.page().runJavaScript(js)
 
 
@@ -402,14 +387,8 @@ class SimplePageDashboard(QWidget):
         self.view = QWebEngineView()
         self.view.setObjectName("GraphWebView")
         self.view.setAttribute(Qt.WA_TranslucentBackground, False)
-        colors = _resolve_web_colors()
-        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
+        self.view.setStyleSheet("background: transparent; border: 0;")
         self.page = QWebEnginePage(profile, self.view)
-        try:
-            self.page.setBackgroundColor(QColor(colors["page_bg"]))
-        except Exception:
-            pass
-
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_page_loaded)
 
@@ -491,15 +470,9 @@ class ModePagesDashboard(QWidget):
         self.view = QWebEngineView()
         self.view.setObjectName("GraphWebView")
         self.view.setAttribute(Qt.WA_TranslucentBackground, False)
-        colors = _resolve_web_colors()
-        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 1px solid {colors['border']};")
+        self.view.setStyleSheet("background: transparent; border: 0;")
 
         self.page = QWebEnginePage(profile, self.view)
-        try:
-            self.page.setBackgroundColor(QColor(colors["page_bg"]))
-        except Exception:
-            pass
-
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_page_loaded)
         root.addWidget(self.view, stretch=1)

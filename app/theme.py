@@ -617,7 +617,7 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
     }}
 
     QWidget#GraphCard, QWidget#OverlayGraphCard, QFrame#GraphCard, QFrame#OverlayGraphCard {{
-        background: {graph_card_bg};
+        background: transparent;
         border: 1px solid {p['border_dark']};
         border-radius: 16px;
     }}
@@ -645,24 +645,23 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
     }}
 
     QFrame#GraphWebContainer, QWidget#GraphWebContainer {{
-        background: {graph_page_bg};
-        border: 1px solid {p['border_dark']};
-        border-radius: 10px;
+        background: transparent;
+        border: 0px;
     }}
 
     QWebEngineView#GraphWebView {{
-        background: {graph_page_bg};
+        background: transparent;
         border: 0px;
     }}
 
     QScrollArea#OverlayGraphArea {{
-        background: {graph_area_bg};
+        background: transparent;
         border: 1px solid {p['border_dark']};
         border-radius: 14px;
     }}
 
     QWidget#OverlayGraphContent, QWidget#OverlayGraphViewport {{
-        background: {graph_area_bg};
+        background: transparent;
     }}
 
     QWidget#DutyModeShell, QWidget#HomeShell {{

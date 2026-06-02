@@ -1819,7 +1819,7 @@ class DutyGraphCard(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         colors = resolve_graph_surface_colors()
         self.setStyleSheet(
-            f"QFrame#GraphCard, QFrame#OverlayGraphCard {{ background-color: {colors['card_bg']}; "
+            f"QFrame#GraphCard, QFrame#OverlayGraphCard {{ background: transparent; "
             f"border: 1px solid {colors['border']}; border-radius: 14px; }}"
         )
 
@@ -1844,27 +1844,21 @@ class DutyGraphCard(QFrame):
         self.view.setMinimumHeight(360)
         self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.view.setZoomFactor(0.85)
-        self.view.setStyleSheet(f"background-color: {colors['page_bg']}; border: 0;")
+        self.view.setStyleSheet("background: transparent; border: 0;")
 
         self.graph_web_container = QFrame()
         self.graph_web_container.setObjectName("GraphWebContainer")
         self.graph_web_container.setAttribute(Qt.WA_TranslucentBackground, False)
-        self.graph_web_container.setAutoFillBackground(True)
+        self.graph_web_container.setAutoFillBackground(False)
         self.graph_web_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.graph_web_container.setStyleSheet(
-            f"QFrame#GraphWebContainer {{ background-color: {colors['page_bg']}; "
-            f"border: 1px solid {colors['border']}; border-radius: 10px; }}"
+            "QFrame#GraphWebContainer { background: transparent; border: 0px; }"
         )
         web_layout = QVBoxLayout(self.graph_web_container)
         web_layout.setContentsMargins(0, 0, 0, 0)
         web_layout.setSpacing(0)
 
         self.page = QWebEnginePage(profile, self.view)
-        try:
-            self.page.setBackgroundColor(QColor(colors["page_bg"]))
-        except Exception:
-            pass
-
         self.view.setPage(self.page)
         self.view.loadFinished.connect(self.on_loaded)
 
