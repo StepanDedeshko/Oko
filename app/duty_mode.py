@@ -6,6 +6,8 @@ from PySide6.QtGui import QDesktopServices, QColor
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -1787,7 +1789,11 @@ class DutyModeWidget(QWidget):
         self.skip_timer.setSingleShot(True)
         self.skip_timer.timeout.connect(self.show_skip_reminder)
 
+        self.last_check_at = None
+
         root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
 
         header = QHBoxLayout()
 
@@ -1797,54 +1803,94 @@ class DutyModeWidget(QWidget):
         self.msk_time_label = QLabel("")
         self.msk_time_label.setStyleSheet("font-size: 16px; font-weight: bold;")
 
-        self.enable_button = QPushButton("")
-        self.enable_button.clicked.connect(self.toggle_enabled)
-
-        create_duty_task_button = QPushButton("Создать задачу дежурства")
-        create_duty_task_button.clicked.connect(self.open_base_duty_task)
-
-        attach_task_button = QPushButton("Привязать задачу")
-        attach_task_button.clicked.connect(self.attach_existing_task)
-
-        notify_now_button = QPushButton("Показать уведомление сейчас")
-        notify_now_button.clicked.connect(lambda: self.show_notification("Нужно произвести проверку графиков."))
-
-        check_triggers_button = QPushButton("Проверить триггеры")
-        check_triggers_button.clicked.connect(self.run_duty_triggers_check)
-
-        header.addWidget(title)
-        header.addStretch()
-        header.addWidget(self.msk_time_label)
-        header.addWidget(self.enable_button)
-        header.addWidget(create_duty_task_button)
-        header.addWidget(attach_task_button)
-        header.addWidget(check_triggers_button)
-        header.addWidget(notify_now_button)
-
-        root.addLayout(header)
-
-        self.status_label = QLabel("Ожидание следующей проверки. При заступлении на дежурство создай базовую задачу ОТРС.")
-        self.status_label.setWordWrap(True)
-        root.addWidget(self.status_label)
-
-        self.current_task_label = QLabel("")
-        self.current_task_label.setWordWrap(True)
-        root.addWidget(self.current_task_label)
-
-        secondary_actions = QHBoxLayout()
-        secondary_actions.addStretch()
         settings_button = QPushButton("Настройки дежурки")
         settings_button.setFlat(True)
         settings_button.setStyleSheet("font-size: 11px; padding: 2px 6px;")
         settings_button.clicked.connect(self.open_settings)
-        secondary_actions.addWidget(settings_button)
-        root.addLayout(secondary_actions)
+
+        header.addWidget(title)
+        header.addStretch()
+        header.addWidget(self.msk_time_label)
+        header.addWidget(settings_button)
+
+        root.addLayout(header)
+
+        state_group = QGroupBox("Состояние")
+        state_layout = QGridLayout(state_group)
+        state_layout.setColumnStretch(1, 1)
+        state_layout.setColumnStretch(3, 1)
+
+        self.duty_state_value = QLabel("")
+        self.last_check_value = QLabel("ещё не выполнялась")
+        self.task_state_value = QLabel("")
+        self.graphs_state_value = QLabel("")
+
+        state_layout.addWidget(QLabel("Дежурство:"), 0, 0)
+        state_layout.addWidget(self.duty_state_value, 0, 1)
+        state_layout.addWidget(QLabel("Последняя проверка:"), 0, 2)
+        state_layout.addWidget(self.last_check_value, 0, 3)
+        state_layout.addWidget(QLabel("Задача ОТРС:"), 1, 0)
+        state_layout.addWidget(self.task_state_value, 1, 1)
+        state_layout.addWidget(QLabel("Графики:"), 1, 2)
+        state_layout.addWidget(self.graphs_state_value, 1, 3)
+        root.addWidget(state_group)
+
+        actions_group = QGroupBox("Рабочие действия")
+        actions_layout = QHBoxLayout(actions_group)
+        actions_layout.setSpacing(8)
+
+        self.enable_button = QPushButton("")
+        self.enable_button.setMinimumHeight(40)
+        self.enable_button.clicked.connect(self.toggle_enabled)
+
+        create_duty_task_button = QPushButton("Создать задачу дежурства")
+        create_duty_task_button.setMinimumHeight(40)
+        create_duty_task_button.clicked.connect(self.open_base_duty_task)
+
+        attach_task_button = QPushButton("Привязать задачу")
+        attach_task_button.setMinimumHeight(40)
+        attach_task_button.clicked.connect(self.attach_existing_task)
+
+        check_triggers_button = QPushButton("Проверить триггеры")
+        check_triggers_button.setMinimumHeight(40)
+        check_triggers_button.clicked.connect(self.run_duty_triggers_check)
+
+        notify_now_button = QPushButton("Показать уведомление сейчас")
+        notify_now_button.setMinimumHeight(40)
+        notify_now_button.clicked.connect(lambda: self.show_notification("Нужно произвести проверку графиков."))
+
+        actions_layout.addWidget(self.enable_button)
+        actions_layout.addWidget(create_duty_task_button)
+        actions_layout.addWidget(attach_task_button)
+        actions_layout.addWidget(check_triggers_button)
+        actions_layout.addWidget(notify_now_button)
+        root.addWidget(actions_group)
+
+        task_group = QGroupBox("Текущая задача")
+        task_layout = QVBoxLayout(task_group)
+        self.current_task_label = QLabel("")
+        self.current_task_label.setWordWrap(True)
+        task_layout.addWidget(self.current_task_label)
+        root.addWidget(task_group)
+
+        trigger_group = QGroupBox("Проверка триггеров")
+        trigger_layout = QVBoxLayout(trigger_group)
+        self.status_label = QLabel("Проверка триггеров ещё не выполнялась. Нажмите «Проверить триггеры», чтобы запустить ручную проверку.")
+        self.status_label.setWordWrap(True)
+        trigger_layout.addWidget(self.status_label)
+        root.addWidget(trigger_group)
+
+        graphs_group = QGroupBox("Графики дежурства")
+        graphs_layout = QVBoxLayout(graphs_group)
+        self.graphs_hint_label = QLabel("")
+        self.graphs_hint_label.setWordWrap(True)
+        graphs_layout.addWidget(self.graphs_hint_label)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        root.addWidget(self.scroll, stretch=1)
+        graphs_layout.addWidget(self.scroll, stretch=1)
 
         self.content = QWidget()
         self.content.setMinimumWidth(0)
@@ -1853,6 +1899,8 @@ class DutyModeWidget(QWidget):
         self.cards_layout.setContentsMargins(6, 6, 6, 6)
         self.cards_layout.setSpacing(10)
         self.scroll.setWidget(self.content)
+
+        root.addWidget(graphs_group, stretch=1)
 
         bottom = QHBoxLayout()
 
@@ -1895,22 +1943,65 @@ class DutyModeWidget(QWidget):
 
     def update_enable_button(self):
         enabled = self.get_settings().get("enabled", False)
-        self.enable_button.setText("Дежурство: ВКЛ" if enabled else "Дежурство: ВЫКЛ")
+        self.enable_button.setText("Выключить дежурство" if enabled else "Включить дежурство")
+        self.update_dashboard_summary()
 
-    def update_task_label(self):
+    def _task_parts(self):
         settings = self.get_settings()
         number = settings.get("current_ticket_number", "").strip()
         ticket_id = settings.get("current_ticket_id", "").strip()
+        url = settings.get("current_ticket_url", "").strip()
 
-        if number or ticket_id:
-            parts = []
-            if number:
-                parts.append(f"№{number}")
-            if ticket_id:
-                parts.append(f"TicketID={ticket_id}")
-            self.current_task_label.setText("Текущая задача дежурства: " + ", ".join(parts))
+        parts = []
+        if number:
+            parts.append(f"№{number}")
+        if ticket_id:
+            parts.append(f"TicketID={ticket_id}")
+        if url:
+            parts.append("ссылка сохранена")
+        return parts
+
+    def _graphs_summary(self):
+        self.load_check_graphs()
+        if not self.check_graphs:
+            return (
+                "выбрано 0",
+                "Графики дежурства не выбраны. Настройте их в разделе «Настройки дежурки»."
+            )
+
+        count = len(self.check_graphs)
+        titles = [item.get("title", "График") for item in self.check_graphs[:5]]
+        details = ", ".join(titles)
+        if count > len(titles):
+            details += f" и ещё {count - len(titles)}"
+        return f"выбрано {count}", f"Выбрано графиков: {count}. {details}"
+
+    def update_dashboard_summary(self):
+        settings = self.get_settings()
+        enabled = settings.get("enabled", False)
+        task_parts = self._task_parts()
+        graphs_state, graphs_hint = self._graphs_summary()
+
+        self.duty_state_value.setText("включено" if enabled else "выключено")
+        self.last_check_value.setText(
+            self.last_check_at.strftime("%H:%M:%S")
+            if self.last_check_at
+            else "ещё не выполнялась"
+        )
+        self.task_state_value.setText("привязана" if task_parts else "не привязана")
+        self.graphs_state_value.setText(graphs_state)
+        self.graphs_hint_label.setText(graphs_hint)
+
+    def update_task_label(self):
+        task_parts = self._task_parts()
+
+        if task_parts:
+            self.current_task_label.setText("Текущая задача дежурства: " + ", ".join(task_parts) + ".")
         else:
-            self.current_task_label.setText("Текущая задача дежурства: не привязана")
+            self.current_task_label.setText(
+                "Задача дежурства не привязана. Создайте или привяжите задачу."
+            )
+        self.update_dashboard_summary()
 
     def toggle_enabled(self):
         settings = self.get_settings()
@@ -2082,9 +2173,9 @@ class DutyModeWidget(QWidget):
     def render_empty_hint(self):
         self.clear_cards()
 
+        self.update_dashboard_summary()
         hint = QLabel(
-            "Здесь появятся графики для дежурной проверки. "
-            "Нажми «Настроить режим дежурства» и выбери нужные графики."
+            "Графики дежурства не выбраны. Настройте их в разделе «Настройки дежурки»."
         )
         hint.setWordWrap(True)
         self.cards_layout.addWidget(hint)
@@ -2117,6 +2208,7 @@ class DutyModeWidget(QWidget):
             self.cards_layout.addWidget(card, stretch=0)
 
         self.cards_layout.addStretch(1)
+        self.update_dashboard_summary()
         return bool(self.cards)
 
     def _trigger_display_name(self, trigger):
@@ -2209,6 +2301,10 @@ class DutyModeWidget(QWidget):
             "to_time": result.get("to_time") if isinstance(result, dict) else None,
         }
 
+    def mark_check_started(self):
+        self.last_check_at = datetime.now(MSK)
+        self.update_dashboard_summary()
+
     def run_duty_triggers_check(self):
         if self.duty_trigger_running:
             self.status_label.setText("Проверка триггеров уже выполняется.")
@@ -2225,6 +2321,7 @@ class DutyModeWidget(QWidget):
             if trigger.get("enabled", True)
         ]
         self.logger.info("Duty trigger manual check started: enabled_count=%s", len(enabled_triggers))
+        self.mark_check_started()
         self.status_label.setText(f"Запущена проверка триггеров: {len(enabled_triggers)} шт.")
 
         if not self.cards:
@@ -2433,10 +2530,11 @@ class DutyModeWidget(QWidget):
             QMessageBox.warning(
                 self,
                 "Режим дежурства",
-                "Не выбраны графики для проверки. Нажми «Настроить режим дежурства»."
+                "Не выбраны графики для проверки. Настройте их в разделе «Настройки дежурки»."
             )
             return False
 
+        self.mark_check_started()
         self.status_label.setText("Идёт проверка графиков.")
         return True
 
@@ -2446,6 +2544,7 @@ class DutyModeWidget(QWidget):
 
         text = "Показатели в пределах нормы. Отклонений не обнаружено."
 
+        self.mark_check_started()
         self.status_label.setText("Проверка выполнена: показатели в пределах нормы.")
 
         dialog = OtrsNoteDialog(
