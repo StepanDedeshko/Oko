@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import re
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, QUrl, QUrlQuery, Qt
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, QUrl, QUrlQuery, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QColor
 from PySide6.QtWidgets import (
     QApplication,
@@ -234,6 +234,8 @@ class DutyNotificationDialog(QDialog):
 class GraphCheckOverlayDialog(QDialog):
     """Glass-like overlay for duty graph verification."""
 
+    confirmed = Signal()
+
     def __init__(self, graphs, config, profiles, credentials=None, parent=None):
         super().__init__(parent)
         self.graphs = graphs
@@ -241,6 +243,7 @@ class GraphCheckOverlayDialog(QDialog):
         self.profiles = profiles
         self.credentials = credentials or {}
         self.cards = []
+        self.logger = get_logger()
 
         self.setObjectName("GraphCheckOverlayDialog")
         self.setWindowTitle("Проверка графиков")
@@ -294,6 +297,24 @@ class GraphCheckOverlayDialog(QDialog):
 
         self._build_cards()
 
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 4, 0, 0)
+        confirm_button = QPushButton("Проверено")
+        confirm_button.setObjectName("PrimaryAction")
+        confirm_button.setMinimumHeight(38)
+        confirm_button.setMinimumWidth(160)
+        confirm_button.clicked.connect(self.confirm_check)
+
+        bottom_close_button = QPushButton("Закрыть")
+        bottom_close_button.setObjectName("DestructiveAction")
+        bottom_close_button.setMinimumHeight(38)
+        bottom_close_button.clicked.connect(self.close)
+
+        actions.addWidget(confirm_button)
+        actions.addStretch(1)
+        actions.addWidget(bottom_close_button)
+        content_root.addLayout(actions)
+
     def _resize_to_work_area(self):
         screen = None
         parent = self.parentWidget()
@@ -338,6 +359,10 @@ class GraphCheckOverlayDialog(QDialog):
             self.cards_layout.addWidget(card)
         self.cards_layout.addStretch(1)
 
+
+    def confirm_check(self):
+        self.logger.info("Duty graph check confirmed")
+        self.confirmed.emit()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -1237,11 +1262,15 @@ class OtrsNoteDialog(QDialog):
     - вставить текст в CKEditor/contenteditable body.
     """
 
-    def __init__(self, config, note_text, parent=None):
+    def __init__(self, config, note_text, parent=None, on_saved_callback=None, saved_log_message=None):
         super().__init__(parent)
 
         self.config = config
         self.note_text = note_text
+        self.on_saved_callback = on_saved_callback
+        self.saved_log_message = saved_log_message
+        self.note_saved = False
+        self.logger = get_logger()
 
         self.setWindowTitle("Заметка в задачу ОТРС")
         self.resize(1280, 850)
@@ -1594,14 +1623,22 @@ class OtrsNoteDialog(QDialog):
         self.view.page().runJavaScript(js, self.after_check_send_clicked)
 
     def after_check_send_clicked(self, clicked):
-        if clicked:
+        if clicked and not self.note_saved:
             try:
                 self.send_watch_timer.stop()
             except Exception:
                 pass
 
+            self.note_saved = True
+
             # Даём ОТРС время отправить форму и закрываем окно.
-            QTimer.singleShot(1800, self.close)
+            QTimer.singleShot(1800, self.finish_saved_note)
+
+    def finish_saved_note(self):
+        self.logger.info(self.saved_log_message or "OTRS note saved")
+        if self.on_saved_callback is not None:
+            self.on_saved_callback()
+        self.accept()
 
     def html_escape(self, text):
         return (
@@ -2977,12 +3014,86 @@ class DutyModeWidget(QWidget):
             credentials=self.credentials,
             parent=self,
         )
+        self.graph_check_overlay.confirmed.connect(self.open_graph_check_note)
         self.graph_check_overlay.finished.connect(lambda _result: setattr(self, "graph_check_overlay", None))
         self.graph_check_overlay.destroyed.connect(lambda: setattr(self, "graph_check_overlay", None))
         self.cards = self.graph_check_overlay.cards
         self.graph_check_overlay.show()
         self.graph_check_overlay.raise_()
         self.graph_check_overlay.activateWindow()
+
+
+    def _bound_task_details(self):
+        settings = self.get_settings()
+        ticket_number = settings.get("current_ticket_number", "").strip()
+        ticket_id = settings.get("current_ticket_id", "").strip()
+        ticket_url = settings.get("current_ticket_url", "").strip()
+
+        if not ticket_id and ticket_url:
+            match = re.search(r"[?;]TicketID=([^;&?#]+)", ticket_url)
+            if match:
+                ticket_id = match.group(1).strip()
+                settings["current_ticket_id"] = ticket_id
+                save_config(self.config)
+
+        return ticket_number, ticket_id, ticket_url
+
+    def build_graph_check_note_text(self):
+        stats = self.duty_trigger_stats or {}
+        from_time = self.last_check_at.strftime("%d.%m.%Y %H:%M:%S") if self.last_check_at else "не указано"
+        to_time = datetime.now(MSK).strftime("%d.%m.%Y %H:%M:%S")
+        return (
+            "Проверка графиков выполнена.\n"
+            f"Период проверки: {from_time} — {to_time}\n"
+            "Результат триггеров: "
+            f"OK={stats.get('ok', 0)}, "
+            f"ALERT={stats.get('alert', 0)}, "
+            f"errors={stats.get('errors', 0)}"
+        )
+
+    def open_graph_check_note(self):
+        self.logger.info("Duty graph check note requested")
+        ticket_number, ticket_id, ticket_url = self._bound_task_details()
+
+        if not any([ticket_number, ticket_id, ticket_url]):
+            self.logger.info("Duty graph check note skipped: no bound task")
+            QMessageBox.warning(
+                self,
+                "Задача дежурства",
+                "Задача дежурства не привязана. Включите режим дежурства и создайте или привяжите задачу."
+            )
+            return
+
+        if not ticket_id:
+            otrs = self.get_settings().setdefault("otrs", {})
+            note_template = otrs.get("note_url_template", "").strip()
+            if "{ticket_number}" not in note_template:
+                self.logger.info("Duty graph check note skipped: no bound task")
+                QMessageBox.warning(
+                    self,
+                    "Задача дежурства",
+                    "У привязанной задачи не найден TicketID. Откройте или привяжите задачу ОТРС с TicketID."
+                )
+                return
+
+        note_text = self.build_graph_check_note_text()
+        dialog = OtrsNoteDialog(
+            config=self.config,
+            note_text=note_text,
+            parent=self,
+            on_saved_callback=self._after_graph_check_note_saved,
+            saved_log_message="Duty graph check note saved",
+        )
+        self.logger.info(
+            "Duty graph check note opened: ticket_number=%s ticket_id=%s",
+            ticket_number or "",
+            ticket_id or "",
+        )
+        dialog.exec()
+
+    def _after_graph_check_note_saved(self):
+        if self.graph_check_overlay is not None:
+            self.graph_check_overlay.close()
 
     def success_check(self):
         if self.skip_timer.isActive():
