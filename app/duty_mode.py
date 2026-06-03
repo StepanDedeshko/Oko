@@ -53,7 +53,12 @@ DUTY_TRIGGER_STATUS_MESSAGES = {
     "PARSE_ERROR": "Не удалось прочитать данные проверки сработок",
     "SOURCE_NOT_FOUND": "Источник данных для проверки не найден",
     "TARGET_NOT_FOUND": "Целевой график для проверки не найден",
+    "ERROR": "Ошибка проверки сработок",
 }
+
+DUTY_TRIGGER_CHECK_COOLDOWN_SECONDS = 3
+DUTY_TRIGGER_HIDDEN_WEBVIEW_TIMEOUT_MS = 15000
+DUTY_TRIGGER_HTML_READ_DELAY_MS = 1500
 
 
 def resolve_graph_surface_colors():
@@ -2033,8 +2038,10 @@ class DutyModeWidget(QWidget):
         self.source_view_finder = source_view_finder
         self.logger = get_logger()
         self.hidden_trigger_views = []
+        self._hidden_trigger_contexts = []
         self.duty_trigger_queue = []
         self.duty_trigger_running = False
+        self._last_duty_trigger_check_finished_at = None
         self.duty_trigger_stats = {"total": 0, "ok": 0, "alert": 0, "errors": 0}
         self.check_graphs = []
         self.cards = []
@@ -2538,9 +2545,43 @@ class DutyModeWidget(QWidget):
         self.last_check_at = datetime.now(MSK)
         self.update_dashboard_summary()
 
+    def _set_duty_trigger_check_running(self, running):
+        self.duty_trigger_running = bool(running)
+        if hasattr(self, "check_triggers_button"):
+            self.check_triggers_button.setEnabled(not running)
+
+    def _duty_trigger_cooldown_remaining(self):
+        if self._last_duty_trigger_check_finished_at is None:
+            return 0.0
+        elapsed = (datetime.now(MSK) - self._last_duty_trigger_check_finished_at).total_seconds()
+        return max(0.0, DUTY_TRIGGER_CHECK_COOLDOWN_SECONDS - elapsed)
+
+    def _finish_duty_triggers_check(self):
+        stats = self.duty_trigger_stats
+        self._set_duty_trigger_check_running(False)
+        self._last_duty_trigger_check_finished_at = datetime.now(MSK)
+        self.status_label.setText(
+            "Проверка триггеров завершена: "
+            f"OK={stats['ok']}, ALERT={stats['alert']}, ошибки={stats['errors']}."
+        )
+        self.logger.info("Duty triggers check finished: stats=%s", stats)
+
     def run_duty_triggers_check(self):
-        if self.duty_trigger_running:
-            self.status_label.setText("Проверка триггеров уже выполняется.")
+        if self.duty_trigger_running or self._hidden_trigger_contexts or self.hidden_trigger_views:
+            self.status_label.setText("Проверка уже выполняется")
+            self.logger.info("Duty trigger manual check skipped: check already running")
+            return
+
+        cooldown_remaining = self._duty_trigger_cooldown_remaining()
+        if cooldown_remaining > 0:
+            self.status_label.setText(
+                "Проверка триггеров недавно завершилась. "
+                f"Повторите через {cooldown_remaining:.0f} сек."
+            )
+            self.logger.info(
+                "Duty trigger check skipped: cooldown active remaining_seconds=%.1f",
+                cooldown_remaining,
+            )
             return
 
         trigger_settings = ensure_duty_triggers_defaults(self.config)
@@ -2561,28 +2602,30 @@ class DutyModeWidget(QWidget):
             self.render_check_graph_cards()
         self._clear_duty_trigger_statuses()
 
-        if not enabled_triggers:
-            self.logger.info("Duty triggers check finished: stats=%s", {"total": 0, "ok": 0, "alert": 0, "errors": 0})
-            return
-
         self.duty_trigger_queue = list(enabled_triggers)
         self.duty_trigger_stats = {"total": len(enabled_triggers), "ok": 0, "alert": 0, "errors": 0}
-        self.duty_trigger_running = True
+        if not enabled_triggers:
+            self._finish_duty_triggers_check()
+            return
+
+        self._set_duty_trigger_check_running(True)
         self._run_next_duty_trigger()
 
     def _run_next_duty_trigger(self):
         if not self.duty_trigger_queue:
-            stats = self.duty_trigger_stats
-            self.duty_trigger_running = False
-            self.status_label.setText(
-                "Проверка триггеров завершена: "
-                f"OK={stats['ok']}, ALERT={stats['alert']}, ошибки={stats['errors']}."
-            )
-            self.logger.info("Duty triggers check finished: stats=%s", stats)
+            self._finish_duty_triggers_check()
             return
 
         trigger = self.duty_trigger_queue.pop(0)
-        self._run_single_duty_trigger(trigger)
+        try:
+            self._run_single_duty_trigger(trigger)
+        except Exception as exc:
+            self.logger.exception(
+                "Duty trigger finished with error: id=%s reason=%s",
+                trigger.get("id", ""),
+                exc,
+            )
+            self._finish_trigger_without_html(trigger, "ERROR", reason=str(exc))
 
     def _run_single_duty_trigger(self, trigger):
         self.logger.info(
@@ -2649,47 +2692,186 @@ class DutyModeWidget(QWidget):
         view.setVisible(False)
         page = QWebEnginePage(profile, view)
         view.setPage(page)
-        self.hidden_trigger_views.append(view)
 
-        def on_loaded(ok, v=view, t=trigger, zid=zabbix_id):
+        context = {
+            "view": view,
+            "page": page,
+            "trigger": trigger,
+            "load_handler": None,
+            "timeout_timer": QTimer(self),
+            "read_timer": QTimer(self),
+            "completed": False,
+            "cleanup_started": False,
+        }
+        context["timeout_timer"].setSingleShot(True)
+        context["read_timer"].setSingleShot(True)
+        self.hidden_trigger_views.append(view)
+        self._hidden_trigger_contexts.append(context)
+
+        def on_timeout(ctx=context):
+            if ctx.get("completed"):
+                return
+            ctx["completed"] = True
+            t = ctx.get("trigger") or {}
+            self.logger.error("Duty trigger hidden WebView timeout: id=%s", t.get("id", ""))
+            self.logger.error("Duty trigger finished with error: id=%s reason=timeout", t.get("id", ""))
+            self._cleanup_hidden_view(ctx)
+            self._finish_trigger_without_html(t, "ERROR", reason="timeout")
+
+        def read_html(ctx=context):
+            if ctx.get("completed"):
+                return
+            try:
+                current_page = ctx.get("page")
+                if current_page is None:
+                    raise RuntimeError("hidden WebView page is not available")
+                current_page.toHtml(lambda html, ctx=ctx: self._after_hidden_duty_trigger_html(ctx, html))
+            except Exception as exc:
+                if ctx.get("completed"):
+                    return
+                ctx["completed"] = True
+                t = ctx.get("trigger") or {}
+                self.logger.exception(
+                    "Duty trigger finished with error: id=%s reason=%s",
+                    t.get("id", ""),
+                    exc,
+                )
+                self._cleanup_hidden_view(ctx)
+                self._finish_trigger_without_html(t, "ERROR", reason=str(exc))
+
+        def on_loaded(ok, ctx=context, zid=zabbix_id):
+            if ctx.get("completed"):
+                return
+            t = ctx.get("trigger") or {}
             if not ok:
+                ctx["completed"] = True
                 self.logger.warning("Duty trigger hidden source load failed: id=%s", t.get("id", ""))
-                self._cleanup_hidden_view(v)
+                self._cleanup_hidden_view(ctx)
                 self._finish_trigger_without_html(t, "SOURCE_NOT_FOUND")
                 return
 
-            js = make_zabbix_login_js(
-                self.credentials.get(zid, {}).get("login", ""),
-                self.credentials.get(zid, {}).get("password", ""),
-            )
-            if js:
-                v.page().runJavaScript(js)
-            self.logger.info(
-                "Duty trigger waiting before HTML read: id=%s display_name=%s delay_ms=1500",
-                t.get("id", ""),
-                t.get("display_name", ""),
-            )
-            QTimer.singleShot(1500, lambda v=v, t=t: v.page().toHtml(lambda html: self._after_hidden_duty_trigger_html(v, t, html)))
+            try:
+                current_page = ctx.get("page")
+                if current_page is None:
+                    raise RuntimeError("hidden WebView page is not available")
+                js = make_zabbix_login_js(
+                    self.credentials.get(zid, {}).get("login", ""),
+                    self.credentials.get(zid, {}).get("password", ""),
+                )
+                if js:
+                    current_page.runJavaScript(js)
+                self.logger.info(
+                    "Duty trigger waiting before HTML read: id=%s display_name=%s delay_ms=%s",
+                    t.get("id", ""),
+                    t.get("display_name", ""),
+                    DUTY_TRIGGER_HTML_READ_DELAY_MS,
+                )
+                ctx["read_timer"].timeout.connect(read_html)
+                ctx["read_timer"].start(DUTY_TRIGGER_HTML_READ_DELAY_MS)
+            except Exception as exc:
+                if ctx.get("completed"):
+                    return
+                ctx["completed"] = True
+                self.logger.exception(
+                    "Duty trigger finished with error: id=%s reason=%s",
+                    t.get("id", ""),
+                    exc,
+                )
+                self._cleanup_hidden_view(ctx)
+                self._finish_trigger_without_html(t, "ERROR", reason=str(exc))
 
+        context["load_handler"] = on_loaded
+        context["timeout_timer"].timeout.connect(on_timeout)
         self.logger.info(
-            "Duty trigger hidden WebView loading source: id=%s display_name=%s has_cache_buster=%s",
+            "Duty trigger hidden WebView loading source: id=%s display_name=%s has_cache_buster=%s timeout_ms=%s",
             trigger.get("id", ""),
             trigger.get("display_name", ""),
             "_oko_trigger_check_ts=" in source_url,
+            DUTY_TRIGGER_HIDDEN_WEBVIEW_TIMEOUT_MS,
         )
         view.loadFinished.connect(on_loaded)
+        context["timeout_timer"].start(DUTY_TRIGGER_HIDDEN_WEBVIEW_TIMEOUT_MS)
         view.load(QUrl(source_url))
 
-    def _cleanup_hidden_view(self, view):
-        if view in self.hidden_trigger_views:
-            self.hidden_trigger_views.remove(view)
-        view.deleteLater()
+    def _cleanup_hidden_view(self, context_or_view):
+        context = context_or_view if isinstance(context_or_view, dict) else None
+        view = context_or_view if context is None else context.get("view")
+        trigger = (context or {}).get("trigger") or {}
+        trigger_id = trigger.get("id", "")
 
-    def _after_hidden_duty_trigger_html(self, view, trigger, html):
-        self._cleanup_hidden_view(view)
-        self._after_duty_trigger_html(trigger, html)
+        if context is not None and context.get("cleanup_started"):
+            return
+        if context is not None:
+            context["cleanup_started"] = True
 
-    def _finish_trigger_without_html(self, trigger, status):
+        self.logger.info("Duty trigger hidden WebView cleanup started: id=%s", trigger_id)
+
+        if context is not None:
+            for timer_name in ("timeout_timer", "read_timer"):
+                timer = context.get(timer_name)
+                if timer is not None:
+                    try:
+                        timer.stop()
+                    except Exception:
+                        pass
+                    try:
+                        timer.deleteLater()
+                    except Exception:
+                        pass
+
+        def delete_objects(ctx=context, hidden_view=view, tid=trigger_id):
+            hidden_page = (ctx or {}).get("page")
+            load_handler = (ctx or {}).get("load_handler")
+            try:
+                if hidden_view is not None and load_handler is not None:
+                    hidden_view.loadFinished.disconnect(load_handler)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                if hidden_view is not None:
+                    hidden_view.stop()
+            except RuntimeError:
+                pass
+            try:
+                if hidden_page is not None:
+                    hidden_page.deleteLater()
+            except RuntimeError:
+                pass
+            try:
+                if hidden_view is not None:
+                    hidden_view.setParent(None)
+                    hidden_view.deleteLater()
+            except RuntimeError:
+                pass
+            if hidden_view in self.hidden_trigger_views:
+                self.hidden_trigger_views.remove(hidden_view)
+            if ctx in self._hidden_trigger_contexts:
+                self._hidden_trigger_contexts.remove(ctx)
+            if ctx is not None:
+                ctx["view"] = None
+                ctx["page"] = None
+                ctx["load_handler"] = None
+            self.logger.info("Duty trigger hidden WebView cleanup finished: id=%s", tid)
+
+        QTimer.singleShot(0, delete_objects)
+
+    def _after_hidden_duty_trigger_html(self, context, html):
+        if context.get("completed"):
+            return
+        context["completed"] = True
+        trigger = context.get("trigger") or {}
+        self._cleanup_hidden_view(context)
+        try:
+            self._after_duty_trigger_html(trigger, html)
+        except Exception as exc:
+            self.logger.exception(
+                "Duty trigger finished with error: id=%s reason=%s",
+                trigger.get("id", ""),
+                exc,
+            )
+            self._finish_trigger_without_html(trigger, "ERROR", reason=str(exc))
+
+    def _finish_trigger_without_html(self, trigger, status, reason=None):
         message = self._status_message(status, trigger=trigger)
         target_found = self._set_target_status(trigger, status, message)
         if status == "TARGET_NOT_FOUND" or not target_found:
@@ -2697,11 +2879,19 @@ class DutyModeWidget(QWidget):
         else:
             final_status = status
         self.duty_trigger_stats["errors"] += 1
-        self.logger.warning(
-            "Duty trigger finished without HTML: %s target_found=%s html_received=False",
-            self._build_trigger_result_log(trigger, {}, final_status),
-            target_found,
-        )
+        if reason:
+            self.logger.warning(
+                "Duty trigger finished without HTML: %s target_found=%s html_received=False reason=%s",
+                self._build_trigger_result_log(trigger, {}, final_status),
+                target_found,
+                reason,
+            )
+        else:
+            self.logger.warning(
+                "Duty trigger finished without HTML: %s target_found=%s html_received=False",
+                self._build_trigger_result_log(trigger, {}, final_status),
+                target_found,
+            )
         QTimer.singleShot(0, self._run_next_duty_trigger)
 
     def _after_duty_trigger_html(self, trigger, html):
