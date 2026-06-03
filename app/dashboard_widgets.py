@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -65,6 +66,8 @@ class GraphCard(QFrame):
         self.zoom_factor = float(zoom_factor)
         self.fit_graphs = fit_graphs
         self.credentials = credentials or {}
+        self._fit_generation = 0
+        self._pending_content_retry_count = 0
 
         self.setObjectName("GraphCard")
         self.initial_view_height = max(260, min(int(min_height), 520))
@@ -89,12 +92,14 @@ class GraphCard(QFrame):
         self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setZoomFactor(self.zoom_factor)
         self.view.setFixedHeight(self.initial_view_height)
+        self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.view.setStyleSheet("background: transparent; border: 0;")
 
         self.graph_web_container = QFrame()
         self.graph_web_container.setObjectName("GraphWebContainer")
         self.graph_web_container.setAttribute(Qt.WA_TranslucentBackground, False)
         self.graph_web_container.setAutoFillBackground(False)
+        self.graph_web_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.graph_web_container.setStyleSheet(
             "QFrame#GraphWebContainer { background: transparent; border: 0px; }"
         )
@@ -209,20 +214,54 @@ class GraphCard(QFrame):
         self.inject_auto_login()
 
         if self.fit_graphs:
-            QTimer.singleShot(500, self.inject_fit_script)
-            QTimer.singleShot(1500, self.inject_fit_script)
-            QTimer.singleShot(2500, self.inject_fit_script)
+            self.schedule_initial_graph_fit()
 
+    def schedule_initial_graph_fit(self):
+        """
+        QWebEngine emits loadFinished before Zabbix graph images/canvases always have
+        their final geometry.  Run the ordinary fit logic shortly after the first
+        paint and repeat it a few times, so the card leaves its default bootstrap
+        height without requiring a manual period change or a refresh tick.
+        """
+        self._fit_generation += 1
+        self._pending_content_retry_count = 0
+        generation = self._fit_generation
+        for delay_ms in (150, 600, 1400, 2600):
+            QTimer.singleShot(
+                delay_ms,
+                lambda generation=generation: self.inject_fit_script(generation),
+            )
 
-    def apply_content_height(self, height):
+    def apply_content_height(self, result, generation=None):
+        if generation is not None and generation != self._fit_generation:
+            return
+
+        if isinstance(result, dict):
+            height_value = result.get("height")
+            content_ready = bool(result.get("ready", True))
+            useful_count = int(result.get("usefulCount") or 0)
+        else:
+            height_value = result
+            content_ready = True
+            useful_count = 1
+
         try:
-            height = int(float(height))
+            height = int(float(height_value))
         except (TypeError, ValueError):
             return
+
         height = max(220, min(height, 720))
-        self.view.setFixedHeight(height)
-        self.graph_web_container.setFixedHeight(height)
-        self.updateGeometry()
+        if useful_count > 0 or height != self.view.height():
+            self.view.setFixedHeight(height)
+            self.graph_web_container.setFixedHeight(height)
+            self.updateGeometry()
+
+        if not content_ready and self._pending_content_retry_count < 2:
+            self._pending_content_retry_count += 1
+            QTimer.singleShot(
+                500,
+                lambda generation=generation: self.inject_fit_script(generation),
+            )
 
     def inject_auto_login(self):
         js = make_zabbix_login_js(
@@ -232,7 +271,10 @@ class GraphCard(QFrame):
         if js:
             self.view.page().runJavaScript(js)
 
-    def inject_fit_script(self):
+    def inject_fit_script(self, generation=None):
+        if generation is not None and generation != self._fit_generation:
+            return
+
         js = """
         (function() {
             const styleId = 'dezhurka-graph-fit';
@@ -275,28 +317,57 @@ class GraphCard(QFrame):
                 }
             `;
 
+            function isVisible(node) {
+                const style = window.getComputedStyle(node);
+                return style && style.display !== 'none' && style.visibility !== 'hidden';
+            }
+
             function visibleRects(selector) {
                 return Array.from(document.querySelectorAll(selector))
+                    .filter(isVisible)
                     .map((node) => node.getBoundingClientRect())
                     .filter((rect) => rect.width > 20 && rect.height > 20);
             }
+
+            function imageReady(node) {
+                if (node.tagName !== 'IMG') return true;
+                return node.complete && node.naturalWidth > 0 && node.naturalHeight > 0;
+            }
+
+            const usefulNodes = Array.from(document.querySelectorAll('img, svg, canvas'))
+                .filter(isVisible);
+            const pendingImages = usefulNodes.filter((node) => !imageReady(node)).length;
             let visibleUseful = visibleRects('img, svg, canvas');
             if (!visibleUseful.length) {
                 visibleUseful = visibleRects('table');
             }
             if (!visibleUseful.length) {
-                visibleUseful = visibleRects('[class*=graph], [id*=graph]');
+                visibleUseful = visibleRects('[class*=graph], [id*=graph], [class*=chart], [id*=chart]');
             }
+            const fallbackHeight = Math.max(
+                document.documentElement.scrollHeight || 0,
+                document.body.scrollHeight || 0,
+                document.documentElement.offsetHeight || 0,
+                document.body.offsetHeight || 0
+            );
             const bottom = visibleUseful.length
                 ? Math.max(...visibleUseful.map((rect) => rect.bottom))
-                : Math.min(document.documentElement.scrollHeight || 0, document.body.scrollHeight || 0);
+                : fallbackHeight;
             const height = Math.max(220, Math.min(720, Math.ceil(bottom + 12)));
             document.documentElement.style.height = height + 'px';
             document.body.style.height = height + 'px';
-            return height;
+            return {
+                height: height,
+                ready: document.readyState === 'complete' && pendingImages === 0 && visibleUseful.length > 0,
+                usefulCount: visibleUseful.length,
+                pendingImages: pendingImages
+            };
         })();
         """
-        self.view.page().runJavaScript(js, self.apply_content_height)
+        self.view.page().runJavaScript(
+            js,
+            lambda result, generation=generation: self.apply_content_height(result, generation),
+        )
 
 
 class GraphsDashboard(QWidget):
