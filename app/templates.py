@@ -48,40 +48,163 @@ DEFAULT_REDMINE_TASK_TEMPLATE = {
     "project": "",
 }
 
-OTRS_VARIABLES = [
-    "{checked_at}",
-    "{from_time}",
-    "{to_time}",
-    "{duration_minutes}",
-    "{ok_count}",
-    "{alert_count}",
-    "{error_count}",
-    "{active_triggers}",
-    "{active_trigger_names}",
-    "{active_problems}",
-    "{related_graphs}",
-    "{related_graph_links}",
-    "{trigger_name}",
-    "{trigger_status}",
-    "{trigger_source_product}",
-    "{trigger_source_section}",
+OTRS_VARIABLE_DETAILS = [
+    {
+        "group": "Общие",
+        "name": "{checked_at}",
+        "description": "дата и время выполнения проверки",
+        "example": "03.06.2026 12:30:15",
+    },
+    {
+        "group": "Проверка",
+        "name": "{from_time}",
+        "description": "начало периода проверки",
+        "example": "03.06.2026 09:30:15",
+    },
+    {
+        "group": "Проверка",
+        "name": "{to_time}",
+        "description": "конец периода проверки",
+        "example": "03.06.2026 12:30:15",
+    },
+    {
+        "group": "Проверка",
+        "name": "{duration_minutes}",
+        "description": "длительность проверяемого периода в минутах",
+        "example": "180",
+    },
+    {
+        "group": "Проверка",
+        "name": "{ok_count}",
+        "description": "количество триггеров со статусом OK",
+        "example": "4",
+    },
+    {
+        "group": "Проверка",
+        "name": "{alert_count}",
+        "description": "количество активных/проблемных триггеров",
+        "example": "2",
+    },
+    {
+        "group": "Проверка",
+        "name": "{error_count}",
+        "description": "количество ошибок при проверке",
+        "example": "0",
+    },
+    {
+        "group": "Триггеры",
+        "name": "{active_triggers}",
+        "description": "подробный список активных триггеров",
+        "example": "1. Проверка поступления сработок — ALERT\n2. Высокая нагрузка CPU — ALERT",
+    },
+    {
+        "group": "Триггеры",
+        "name": "{active_trigger_names}",
+        "description": "только названия активных триггеров",
+        "example": "Проверка поступления сработок, Высокая нагрузка CPU",
+    },
+    {
+        "group": "Триггеры",
+        "name": "{active_problems}",
+        "description": "готовый текстовый блок “Обнаружены проблемы”",
+        "example": "1. По графику “Сфера 1: Сработки” наблюдается отклонение.\n2. Активен триггер: Проверка поступления сработок.",
+    },
+    {
+        "group": "Графики",
+        "name": "{related_graphs}",
+        "description": "список связанных графиков",
+        "example": "1. Сфера 1 / Zabbix: Общее количество сработок\n2. Сфера 2 / Zabbix: Общее количество сработок",
+    },
+    {
+        "group": "Графики",
+        "name": "{related_graph_links}",
+        "description": "список ссылок на связанные графики",
+        "example": "1. https://zabbix.example/chart.php?graphid=101\n2. https://zabbix.example/chart.php?graphid=102",
+    },
+    {
+        "group": "Триггеры",
+        "name": "{trigger_name}",
+        "description": "название текущего триггера",
+        "example": "Проверка поступления сработок",
+    },
+    {
+        "group": "Триггеры",
+        "name": "{trigger_status}",
+        "description": "статус текущего триггера",
+        "example": "ALERT",
+    },
+    {
+        "group": "Триггеры",
+        "name": "{trigger_source_product}",
+        "description": "продукт-источник триггера",
+        "example": "Сфера 1",
+    },
+    {
+        "group": "Триггеры",
+        "name": "{trigger_source_section}",
+        "description": "раздел-источник триггера",
+        "example": "Zabbix-графики",
+    },
 ]
 
-REDMINE_GRAPH_VARIABLES = [
-    "{graph_1_title}",
-    "{graph_1_url}",
-    "{graph_1_image}",
-    "{graph_1_redmine_image}",
-    "{graph_1_collapsed}",
-    "{graph_2_title}",
-    "{graph_2_url}",
-    "{graph_2_image}",
-    "{graph_2_redmine_image}",
-    "{graph_2_collapsed}",
-    "{graph_images}",
-    "{graph_images_collapsed}",
-    "{screenshots_folder}",
-]
+REDMINE_GRAPH_VARIABLE_DETAILS = []
+for graph_index in range(1, 5):
+    REDMINE_GRAPH_VARIABLE_DETAILS.extend([
+        {
+            "group": "Графики",
+            "name": f"{{graph_{graph_index}_title}}",
+            "description": f"название {graph_index}-го связанного графика",
+            "example": "Общее количество сработок за опер. сутки",
+        },
+        {
+            "group": "Графики",
+            "name": f"{{graph_{graph_index}_url}}",
+            "description": f"ссылка на {graph_index}-й связанный график",
+            "example": "https://zabbix.example/chart.php?graphid=101",
+        },
+        {
+            "group": "Redmine-изображения",
+            "name": f"{{graph_{graph_index}_image}}",
+            "description": f"имя файла скриншота {graph_index}-го графика",
+            "example": f"graph_{graph_index}.png",
+        },
+        {
+            "group": "Redmine-изображения",
+            "name": f"{{graph_{graph_index}_redmine_image}}",
+            "description": "готовая вставка изображения Redmine вида !filename.png!",
+            "example": f"!graph_{graph_index}.png!",
+        },
+        {
+            "group": "Redmine-изображения",
+            "name": f"{{graph_{graph_index}_collapsed}}",
+            "description": f"готовый collapse-блок Redmine для {graph_index}-го графика",
+            "example": f"{{{{collapse(График {graph_index})\n!graph_{graph_index}.png!\n}}}}",
+        },
+    ])
+
+REDMINE_GRAPH_VARIABLE_DETAILS.extend([
+    {
+        "group": "Redmine-изображения",
+        "name": "{graph_images}",
+        "description": "список всех изображений графиков в Redmine-разметке",
+        "example": "!graph_1.png!\n!graph_2.png!",
+    },
+    {
+        "group": "Redmine-изображения",
+        "name": "{graph_images_collapsed}",
+        "description": "список всех изображений графиков в collapse-блоках",
+        "example": "{{collapse(График 1)\n!graph_1.png!\n}}\n{{collapse(График 2)\n!graph_2.png!\n}}",
+    },
+    {
+        "group": "Redmine-изображения",
+        "name": "{screenshots_folder}",
+        "description": "папка, куда сохранены скриншоты графиков",
+        "example": "/home/user/oko/screenshots/2026-06-03_123015",
+    },
+])
+
+OTRS_VARIABLES = [item["name"] for item in OTRS_VARIABLE_DETAILS]
+REDMINE_GRAPH_VARIABLES = [item["name"] for item in REDMINE_GRAPH_VARIABLE_DETAILS]
 
 OTRS_TEMPLATE_EXAMPLE = """Проверка выполнена.
 
@@ -167,6 +290,29 @@ def render_template(template_text, context):
         return safe_context.get(match.group(1), "")
 
     return _TEMPLATE_TOKEN_RE.sub(replace, str(template_text or ""))
+
+
+def variable_details_text(details):
+    """Format grouped variable help for read-only template editor panels."""
+    grouped = {}
+    for item in details or []:
+        grouped.setdefault(item.get("group", "Прочее"), []).append(item)
+
+    lines = [
+        "Переменные можно вставлять в текст шаблона. "
+        "При создании заметки или задачи они будут автоматически заменены на реальные значения."
+    ]
+    for group, items in grouped.items():
+        lines.append("")
+        lines.append(f"[{group}]")
+        for item in items:
+            lines.append(item.get("name", ""))
+            lines.append(f"Описание: {item.get('description', '')}")
+            example = item.get("example", "")
+            if example:
+                lines.append(f"Пример: {example}")
+            lines.append("")
+    return "\n".join(lines).strip()
 
 
 def format_numbered_lines(items, empty_text="Не обнаружены"):

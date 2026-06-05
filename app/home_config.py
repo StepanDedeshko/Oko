@@ -29,11 +29,12 @@ from app.templates import (
     OTRS_TEMPLATE_EXAMPLE,
     REDMINE_ALL_GRAPHS_EXAMPLE,
     REDMINE_COLLAPSE_EXAMPLE,
-    REDMINE_GRAPH_VARIABLES,
-    OTRS_VARIABLES,
+    REDMINE_GRAPH_VARIABLE_DETAILS,
+    OTRS_VARIABLE_DETAILS,
     ensure_templates_defaults,
     reset_otrs_graph_check_template,
     reset_redmine_task_template,
+    variable_details_text,
 )
 from app.credentials import OTRS_CREDENTIALS_KEY, LEGACY_OTRS_CREDENTIALS_KEY, load_otrs_credentials, load_saved_credentials, save_credentials
 from app.theme import get_available_themes
@@ -977,6 +978,13 @@ class TemplatesWidget(QWidget):
         hint.setWordWrap(True)
         root.addWidget(hint)
 
+        variables_hint = QLabel(
+            "Переменные можно вставлять в текст шаблона. "
+            "При создании заметки или задачи они будут автоматически заменены на реальные значения."
+        )
+        variables_hint.setWordWrap(True)
+        root.addWidget(variables_hint)
+
         tabs = QHBoxLayout()
         self.stack = QStackedWidget()
         self.tab_buttons = []
@@ -1030,7 +1038,7 @@ class TemplatesWidget(QWidget):
         actions.addStretch(1)
         layout.addLayout(actions)
 
-        layout.addWidget(self._readonly_box("Доступные переменные", "\n".join(OTRS_VARIABLES)))
+        layout.addWidget(self._readonly_box("Доступные переменные", variable_details_text(OTRS_VARIABLE_DETAILS), minimum_height=220))
         layout.addWidget(self._readonly_box("Пример", OTRS_TEMPLATE_EXAMPLE))
         return page
 
@@ -1069,7 +1077,10 @@ class TemplatesWidget(QWidget):
         actions.addStretch(1)
         layout.addLayout(actions)
 
-        layout.addWidget(self._readonly_box("Доступные переменные", "\n".join(REDMINE_GRAPH_VARIABLES)))
+        layout.addWidget(self._readonly_box("Доступные переменные", variable_details_text(REDMINE_GRAPH_VARIABLE_DETAILS), minimum_height=260))
+        redmine_warning = QLabel("Изображение вида !filename.png! отобразится в Redmine только если файл с таким именем прикреплён к задаче.")
+        redmine_warning.setWordWrap(True)
+        layout.addWidget(redmine_warning)
         layout.addWidget(self._readonly_box("Примеры вставки графиков", REDMINE_COLLAPSE_EXAMPLE + "\n" + REDMINE_ALL_GRAPHS_EXAMPLE))
         period_hint = QLabel("Скриншоты графиков для Redmine должны формироваться за период 3 часа.")
         period_hint.setWordWrap(True)
@@ -1079,8 +1090,11 @@ class TemplatesWidget(QWidget):
     def _build_variables_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(self._readonly_box("Переменные заметки ОТРС", "\n".join(OTRS_VARIABLES)))
-        layout.addWidget(self._readonly_box("Переменные Redmine для графиков", "\n".join(REDMINE_GRAPH_VARIABLES)))
+        layout.addWidget(self._readonly_box("Переменные заметки ОТРС", variable_details_text(OTRS_VARIABLE_DETAILS), minimum_height=260))
+        layout.addWidget(self._readonly_box("Переменные Redmine для графиков", variable_details_text(REDMINE_GRAPH_VARIABLE_DETAILS), minimum_height=300))
+        redmine_warning = QLabel("Изображение вида !filename.png! отобразится в Redmine только если файл с таким именем прикреплён к задаче.")
+        redmine_warning.setWordWrap(True)
+        layout.addWidget(redmine_warning)
         layout.addStretch(1)
         return page
 
@@ -1096,13 +1110,13 @@ class TemplatesWidget(QWidget):
         layout.addStretch(1)
         return page
 
-    def _readonly_box(self, title, text):
+    def _readonly_box(self, title, text, minimum_height=120):
         box = QGroupBox(title)
         layout = QVBoxLayout(box)
         editor = QTextEdit()
         editor.setReadOnly(True)
         editor.setPlainText(text)
-        editor.setMinimumHeight(120)
+        editor.setMinimumHeight(minimum_height)
         layout.addWidget(editor)
         return box
 
