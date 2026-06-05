@@ -41,6 +41,12 @@ from app.duty_settings import DutyModeSettingsWidget
 from app.duty_triggers import evaluate_stagnation_trigger
 from app.logger import get_logger
 from app.time_range import apply_time_range_to_url
+from app.templates import (
+    format_dt,
+    format_numbered_lines,
+    get_otrs_graph_check_template,
+    render_template,
+)
 
 
 MSK = timezone(timedelta(hours=3))
@@ -2080,6 +2086,7 @@ class DutyModeWidget(QWidget):
         self.duty_trigger_running = False
         self._last_duty_trigger_check_finished_at = None
         self.duty_trigger_stats = {"total": 0, "ok": 0, "alert": 0, "errors": 0}
+        self.duty_trigger_results = []
         self.check_graphs = []
         self.cards = []
         self.graph_check_overlay = None
@@ -2578,6 +2585,90 @@ class DutyModeWidget(QWidget):
             "to_time": result.get("to_time") if isinstance(result, dict) else None,
         }
 
+    def _remember_duty_trigger_result(self, trigger, status, message, result=None, target_found=True):
+        result = result if isinstance(result, dict) else {}
+        self.duty_trigger_results.append({
+            "trigger": dict(trigger or {}),
+            "status": str(status or "").upper(),
+            "message": str(message or ""),
+            "target_found": bool(target_found),
+            "duration_minutes": result.get("duration_minutes"),
+            "from_time": result.get("from_time"),
+            "to_time": result.get("to_time"),
+        })
+
+    def _graph_note_title(self, item):
+        product = str(item.get("product") or "").strip()
+        dashboard = str(item.get("dashboard") or "").strip()
+        title = str(item.get("title") or item.get("graph", {}).get("title") or "График").strip()
+        prefix = " / ".join(part for part in [product, dashboard] if part)
+        return f"{prefix}: {title}" if prefix else title
+
+    def _graph_note_url(self, item):
+        graph = item.get("graph") or {}
+        url = graph.get("open_url") or graph.get("zabbix_url") or graph.get("external_url") or graph.get("url") or ""
+        if url and graph.get("use_time_range", True):
+            return apply_time_range_to_url(url, self.config.get("duty_mode", {}).get("check_time_range", "1h"))
+        return str(url or "")
+
+    def _build_template_context(self):
+        stats = self.duty_trigger_stats or {}
+        checked_at = datetime.now(MSK)
+        from_dt = self.last_check_at
+        duration_minutes = ""
+        if from_dt:
+            duration_minutes = max(0, int((checked_at - from_dt).total_seconds() // 60))
+
+        active_results = [item for item in self.duty_trigger_results if item.get("status") == "ALERT"]
+        active_trigger_lines = [
+            f"{item.get('trigger', {}).get('display_name') or item.get('trigger', {}).get('id') or 'Триггер'} — {item.get('status') or 'ALERT'}"
+            for item in active_results
+        ]
+        active_triggers = format_numbered_lines(active_trigger_lines, empty_text="Не обнаружены")
+        active_trigger_names = ", ".join(
+            str(item.get("trigger", {}).get("display_name") or item.get("trigger", {}).get("id") or "Триггер")
+            for item in active_results
+        ) or "Не обнаружены"
+
+        graph_titles = [self._graph_note_title(item) for item in self.check_graphs]
+        graph_urls = [self._graph_note_url(item) for item in self.check_graphs]
+        related_graphs = format_numbered_lines(graph_titles, empty_text="Не указаны")
+        related_graph_links = format_numbered_lines(graph_urls, empty_text="Не указаны")
+
+        problem_lines = []
+        if active_results:
+            problem_lines.extend(
+                f"По графику “{title}” наблюдается отклонение."
+                for title in graph_titles
+            )
+            problem_lines.extend(
+                f"Активен триггер: {item.get('trigger', {}).get('display_name') or item.get('trigger', {}).get('id') or 'Триггер'}."
+                for item in active_results
+            )
+        active_problems = format_numbered_lines(problem_lines, empty_text="Проблемы не обнаружены.")
+
+        primary = active_results[0] if active_results else (self.duty_trigger_results[0] if self.duty_trigger_results else {})
+        primary_trigger = primary.get("trigger", {}) if isinstance(primary, dict) else {}
+
+        return {
+            "checked_at": format_dt(checked_at),
+            "from_time": format_dt(from_dt),
+            "to_time": format_dt(checked_at),
+            "duration_minutes": duration_minutes,
+            "ok_count": stats.get("ok", 0),
+            "alert_count": stats.get("alert", 0),
+            "error_count": stats.get("errors", 0),
+            "active_triggers": active_triggers,
+            "active_trigger_names": active_trigger_names,
+            "active_problems": active_problems,
+            "related_graphs": related_graphs,
+            "related_graph_links": related_graph_links,
+            "trigger_name": primary_trigger.get("display_name") or primary_trigger.get("id") or "",
+            "trigger_status": primary.get("status", "") if isinstance(primary, dict) else "",
+            "trigger_source_product": primary_trigger.get("source_product", ""),
+            "trigger_source_section": primary_trigger.get("source_section", ""),
+        }
+
     def mark_check_started(self):
         self.last_check_at = datetime.now(MSK)
         self.update_dashboard_summary()
@@ -2641,6 +2732,7 @@ class DutyModeWidget(QWidget):
 
         self.duty_trigger_queue = list(enabled_triggers)
         self.duty_trigger_stats = {"total": len(enabled_triggers), "ok": 0, "alert": 0, "errors": 0}
+        self.duty_trigger_results = []
         if not enabled_triggers:
             self._finish_duty_triggers_check()
             return
@@ -2916,6 +3008,7 @@ class DutyModeWidget(QWidget):
         else:
             final_status = status
         self.duty_trigger_stats["errors"] += 1
+        self._remember_duty_trigger_result(trigger, final_status, message, target_found=target_found)
         if reason:
             self.logger.warning(
                 "Duty trigger finished without HTML: %s target_found=%s html_received=False reason=%s",
@@ -2973,6 +3066,8 @@ class DutyModeWidget(QWidget):
             self.duty_trigger_stats["errors"] += 1
         if not target_found:
             self.duty_trigger_stats["errors"] += 1
+
+        self._remember_duty_trigger_result(trigger, status if target_found else "TARGET_NOT_FOUND", message, result=result, target_found=target_found)
 
         self.logger.info(
             "Duty trigger finished: %s target_found=%s html_received=%s",
@@ -3039,17 +3134,9 @@ class DutyModeWidget(QWidget):
         return ticket_number, ticket_id, ticket_url
 
     def build_graph_check_note_text(self):
-        stats = self.duty_trigger_stats or {}
-        from_time = self.last_check_at.strftime("%d.%m.%Y %H:%M:%S") if self.last_check_at else "не указано"
-        to_time = datetime.now(MSK).strftime("%d.%m.%Y %H:%M:%S")
-        return (
-            "Проверка графиков выполнена.\n"
-            f"Период проверки: {from_time} — {to_time}\n"
-            "Результат триггеров: "
-            f"OK={stats.get('ok', 0)}, "
-            f"ALERT={stats.get('alert', 0)}, "
-            f"errors={stats.get('errors', 0)}"
-        )
+        template = get_otrs_graph_check_template(self.config)
+        context = self._build_template_context()
+        return render_template(template.get("text", ""), context)
 
     def open_graph_check_note(self):
         self.logger.info("Duty graph check note requested")

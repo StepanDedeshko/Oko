@@ -23,6 +23,19 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
+from app.templates import (
+    OTRS_GRAPH_CHECK_TEMPLATE_KEY,
+    REDMINE_TASK_TEMPLATE_KEY,
+    OTRS_TEMPLATE_EXAMPLE,
+    REDMINE_ALL_GRAPHS_EXAMPLE,
+    REDMINE_COLLAPSE_EXAMPLE,
+    REDMINE_GRAPH_VARIABLE_DETAILS,
+    OTRS_VARIABLE_DETAILS,
+    ensure_templates_defaults,
+    reset_otrs_graph_check_template,
+    reset_redmine_task_template,
+    variable_details_text,
+)
 from app.credentials import OTRS_CREDENTIALS_KEY, LEGACY_OTRS_CREDENTIALS_KEY, load_otrs_credentials, load_saved_credentials, save_credentials
 from app.theme import get_available_themes
 from app.app_info import APP_NAME, APP_VERSION, APP_DESCRIPTION
@@ -949,6 +962,207 @@ class NotesWidget(QWidget):
 
 
 
+class TemplatesWidget(QWidget):
+    """Редактор пользовательских шаблонов без хранения credentials."""
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = ensure_home_defaults(config)
+        ensure_templates_defaults(self.config)
+
+        root = QVBoxLayout(self)
+        hint = QLabel(
+            "Шаблоны хранят только тексты, URL и идентификаторы настроек. "
+            "Не сохраняйте здесь пароли, токены, cookie, credentials и приватные ключи."
+        )
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        variables_hint = QLabel(
+            "Переменные можно вставлять в текст шаблона. "
+            "При создании заметки или задачи они будут автоматически заменены на реальные значения."
+        )
+        variables_hint.setWordWrap(True)
+        root.addWidget(variables_hint)
+
+        tabs = QHBoxLayout()
+        self.stack = QStackedWidget()
+        self.tab_buttons = []
+        for title, builder in [
+            ("Заметки ОТРС", self._build_otrs_tab),
+            ("Задачи Redmine", self._build_redmine_tab),
+            ("Переменные", self._build_variables_tab),
+            ("Примеры", self._build_examples_tab),
+        ]:
+            button = QPushButton(title)
+            button.setObjectName("SecondaryAction")
+            button.clicked.connect(lambda checked=False, name=title: self.open_tab(name))
+            tabs.addWidget(button)
+            self.tab_buttons.append((title, button))
+            self.stack.addWidget(builder())
+        tabs.addStretch(1)
+        root.addLayout(tabs)
+        root.addWidget(self.stack, stretch=1)
+        self.open_tab("Заметки ОТРС")
+
+    def open_tab(self, title):
+        for index, (name, button) in enumerate(self.tab_buttons):
+            is_current = name == title
+            button.setEnabled(not is_current)
+            if is_current:
+                self.stack.setCurrentIndex(index)
+
+    def _build_otrs_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        templates = ensure_templates_defaults(self.config)
+        current = templates[OTRS_GRAPH_CHECK_TEMPLATE_KEY]
+
+        form = QFormLayout()
+        self.otrs_name_input = QLineEdit(current.get("name", ""))
+        self.otrs_text_input = QTextEdit()
+        self.otrs_text_input.setPlainText(current.get("text", ""))
+        self.otrs_text_input.setMinimumHeight(260)
+        form.addRow("Название шаблона:", self.otrs_name_input)
+        form.addRow("Текст шаблона:", self.otrs_text_input)
+        layout.addLayout(form)
+
+        actions = QHBoxLayout()
+        save_button = QPushButton("Сохранить шаблон ОТРС")
+        save_button.setObjectName("PrimaryAction")
+        save_button.clicked.connect(self.save_otrs_template)
+        reset_button = QPushButton("Сбросить по умолчанию")
+        reset_button.clicked.connect(self.reset_otrs_template)
+        actions.addWidget(save_button)
+        actions.addWidget(reset_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        layout.addWidget(self._readonly_box("Доступные переменные", variable_details_text(OTRS_VARIABLE_DETAILS), minimum_height=220))
+        layout.addWidget(self._readonly_box("Пример", OTRS_TEMPLATE_EXAMPLE))
+        return page
+
+    def _build_redmine_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        templates = ensure_templates_defaults(self.config)
+        current = templates[REDMINE_TASK_TEMPLATE_KEY]
+
+        form = QFormLayout()
+        self.redmine_create_url_input = QLineEdit(current.get("create_url", ""))
+        self.redmine_subject_input = QLineEdit(current.get("subject_template", ""))
+        self.redmine_description_input = QTextEdit()
+        self.redmine_description_input.setPlainText(current.get("description_template", ""))
+        self.redmine_description_input.setMinimumHeight(220)
+        self.redmine_tracker_input = QLineEdit(str(current.get("tracker_id", "")))
+        self.redmine_priority_input = QLineEdit(str(current.get("priority_id", "")))
+        self.redmine_project_input = QLineEdit(current.get("project", ""))
+
+        form.addRow("URL создания задачи Redmine:", self.redmine_create_url_input)
+        form.addRow("Шаблон темы:", self.redmine_subject_input)
+        form.addRow("Шаблон описания:", self.redmine_description_input)
+        form.addRow("tracker_id:", self.redmine_tracker_input)
+        form.addRow("priority_id:", self.redmine_priority_input)
+        form.addRow("project identifier/project URL:", self.redmine_project_input)
+        layout.addLayout(form)
+
+        actions = QHBoxLayout()
+        save_button = QPushButton("Сохранить шаблон Redmine")
+        save_button.setObjectName("PrimaryAction")
+        save_button.clicked.connect(self.save_redmine_template)
+        reset_button = QPushButton("Сбросить по умолчанию")
+        reset_button.clicked.connect(self.reset_redmine_template)
+        actions.addWidget(save_button)
+        actions.addWidget(reset_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        layout.addWidget(self._readonly_box("Доступные переменные", variable_details_text(REDMINE_GRAPH_VARIABLE_DETAILS), minimum_height=260))
+        redmine_warning = QLabel("Изображение вида !filename.png! отобразится в Redmine только если файл с таким именем прикреплён к задаче.")
+        redmine_warning.setWordWrap(True)
+        layout.addWidget(redmine_warning)
+        layout.addWidget(self._readonly_box("Примеры вставки графиков", REDMINE_COLLAPSE_EXAMPLE + "\n" + REDMINE_ALL_GRAPHS_EXAMPLE))
+        period_hint = QLabel("Скриншоты графиков для Redmine должны формироваться за период 3 часа.")
+        period_hint.setWordWrap(True)
+        layout.addWidget(period_hint)
+        return page
+
+    def _build_variables_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self._readonly_box("Переменные заметки ОТРС", variable_details_text(OTRS_VARIABLE_DETAILS), minimum_height=260))
+        layout.addWidget(self._readonly_box("Переменные Redmine для графиков", variable_details_text(REDMINE_GRAPH_VARIABLE_DETAILS), minimum_height=300))
+        redmine_warning = QLabel("Изображение вида !filename.png! отобразится в Redmine только если файл с таким именем прикреплён к задаче.")
+        redmine_warning.setWordWrap(True)
+        layout.addWidget(redmine_warning)
+        layout.addStretch(1)
+        return page
+
+    def _build_examples_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self._readonly_box("Пример заметки ОТРС", OTRS_TEMPLATE_EXAMPLE))
+        layout.addWidget(self._readonly_box("Пример Redmine collapse-картинки", REDMINE_COLLAPSE_EXAMPLE))
+        layout.addWidget(self._readonly_box("Пример всех графиков для Redmine", REDMINE_ALL_GRAPHS_EXAMPLE))
+        period_hint = QLabel("Скриншоты графиков для Redmine должны формироваться за период 3 часа.")
+        period_hint.setWordWrap(True)
+        layout.addWidget(period_hint)
+        layout.addStretch(1)
+        return page
+
+    def _readonly_box(self, title, text, minimum_height=120):
+        box = QGroupBox(title)
+        layout = QVBoxLayout(box)
+        editor = QTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText(text)
+        editor.setMinimumHeight(minimum_height)
+        layout.addWidget(editor)
+        return box
+
+    def save_otrs_template(self):
+        templates = ensure_templates_defaults(self.config)
+        templates[OTRS_GRAPH_CHECK_TEMPLATE_KEY] = {
+            "name": self.otrs_name_input.text().strip() or "Заметка ОТРС: проверка графиков",
+            "text": self.otrs_text_input.toPlainText(),
+        }
+        save_config(self.config)
+        QMessageBox.information(self, "Шаблоны", "Шаблон заметки ОТРС сохранён.")
+
+    def reset_otrs_template(self):
+        template = reset_otrs_graph_check_template(self.config)
+        self.otrs_name_input.setText(template.get("name", ""))
+        self.otrs_text_input.setPlainText(template.get("text", ""))
+        save_config(self.config)
+        QMessageBox.information(self, "Шаблоны", "Шаблон заметки ОТРС сброшен по умолчанию.")
+
+    def save_redmine_template(self):
+        templates = ensure_templates_defaults(self.config)
+        current = templates[REDMINE_TASK_TEMPLATE_KEY]
+        current.update({
+            "name": "Задача Redmine",
+            "create_url": self.redmine_create_url_input.text().strip(),
+            "subject_template": self.redmine_subject_input.text().strip(),
+            "description_template": self.redmine_description_input.toPlainText(),
+            "tracker_id": self.redmine_tracker_input.text().strip(),
+            "priority_id": self.redmine_priority_input.text().strip(),
+            "project": self.redmine_project_input.text().strip(),
+        })
+        save_config(self.config)
+        QMessageBox.information(self, "Шаблоны", "Шаблон задачи Redmine сохранён.")
+
+    def reset_redmine_template(self):
+        template = reset_redmine_task_template(self.config)
+        self.redmine_create_url_input.setText(template.get("create_url", ""))
+        self.redmine_subject_input.setText(template.get("subject_template", ""))
+        self.redmine_description_input.setPlainText(template.get("description_template", ""))
+        self.redmine_tracker_input.setText(str(template.get("tracker_id", "")))
+        self.redmine_priority_input.setText(str(template.get("priority_id", "")))
+        self.redmine_project_input.setText(template.get("project", ""))
+        save_config(self.config)
+        QMessageBox.information(self, "Шаблоны", "Шаблон задачи Redmine сброшен по умолчанию.")
+
+
 class ChangelogWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -989,6 +1203,7 @@ class AppSettingsWidget(QWidget):
         self.add_section("Профиль", ProfileWidget(self.config))
         self.add_section("Продукты и страницы", ProductsWidget(self.config))
         self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config, show_title=False))
+        self.add_section("Шаблоны", TemplatesWidget(self.config))
         self.add_section("Что нового", ChangelogWidget())
         self.add_section("Тема", ThemeWidget(self.config))
         self.add_section("Заметки", NotesWidget(self.config))
@@ -1023,6 +1238,7 @@ class HomePageWidget(QWidget):
         "Профиль",
         "Продукты и страницы",
         "Настройки дежурки",
+        "Шаблоны",
         "Что нового",
         "Тема",
         "Заметки",
