@@ -16,6 +16,8 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from app.time_range import apply_time_range_to_url
 from app.autologin import make_zabbix_login_js
+from app.logger import get_logger
+from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 
 
 def _resolve_web_colors():
@@ -65,6 +67,8 @@ class GraphCard(QFrame):
         self.zoom_factor = float(zoom_factor)
         self.fit_graphs = fit_graphs
         self.credentials = credentials or {}
+        self.logger = get_logger()
+        self._cleaned_up = False
 
         self.setObjectName("GraphCard")
         self.initial_view_height = max(260, min(int(min_height), 520))
@@ -84,7 +88,7 @@ class GraphCard(QFrame):
         self.open_button.setToolTip("Открыть этот график во внешнем браузере")
         self.open_button.clicked.connect(self.open_in_external_browser)
 
-        self.view = QWebEngineView()
+        self.view = register_web_view(QWebEngineView())
         self.view.setObjectName("GraphWebView")
         self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setZoomFactor(self.zoom_factor)
@@ -147,9 +151,13 @@ class GraphCard(QFrame):
         return open_url if open_url else self.build_url()
 
     def load(self):
+        if self._cleaned_up or self.view is None:
+            return
         self.view.load(QUrl(self.build_url()))
 
     def reload(self):
+        if self._cleaned_up or self.view is None:
+            return
         self.view.reload()
 
     def open_in_external_browser(self):
@@ -203,7 +211,7 @@ class GraphCard(QFrame):
         self.duty_trigger_status_label.setVisible(False)
 
     def on_load_finished(self, ok):
-        if not ok:
+        if self._cleaned_up or self.view is None or not ok:
             return
 
         self.inject_auto_login()
@@ -229,10 +237,12 @@ class GraphCard(QFrame):
             self.credentials.get("login", ""),
             self.credentials.get("password", "")
         )
-        if js:
+        if js and not self._cleaned_up and self.view is not None:
             self.view.page().runJavaScript(js)
 
     def inject_fit_script(self):
+        if self._cleaned_up or self.view is None:
+            return
         js = """
         (function() {
             const styleId = 'dezhurka-graph-fit';
@@ -296,7 +306,41 @@ class GraphCard(QFrame):
             return height;
         })();
         """
-        self.view.page().runJavaScript(js, self.apply_content_height)
+        if not self._cleaned_up and self.view is not None:
+            self.view.page().runJavaScript(js, self.apply_content_height)
+
+    def pause_refresh(self):
+        if getattr(self, "timer", None) is not None:
+            self.timer.stop()
+
+    def resume_refresh(self):
+        if self._cleaned_up:
+            return
+        if getattr(self, "timer", None) is not None and not self.timer.isActive():
+            self.timer.start(self.refresh_seconds * 1000)
+
+    def cleanup(self):
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+        title = self.graph_config.get("title", "График")
+        self.logger.info("Graph WebView cleanup started: title=%s", title)
+        if getattr(self, "timer", None) is not None:
+            try:
+                self.timer.stop()
+                self.timer.deleteLater()
+            except RuntimeError:
+                pass
+            self.timer = None
+        view = self.view
+        self.view = None
+        self.page = None
+        safe_delete_web_view(view, logger=self.logger, context=f"GraphCard title={title}", load_handler=self.on_load_finished)
+        self.logger.info("Graph WebView cleanup finished: title=%s", title)
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
 
 
 class GraphsDashboard(QWidget):
@@ -335,26 +379,31 @@ class GraphsDashboard(QWidget):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(10)
+        self.cards_layout = layout
 
         refresh_seconds = int(settings.get("graph_refresh_seconds", 300))
         zoom_factor = float(settings.get("web_zoom_factor", 0.85))
         fit_graphs = bool(settings.get("fit_graphs_to_window", True))
         min_height = int(settings.get("graph_card_min_height", 420))
+        self.refresh_seconds = refresh_seconds
+        self.zoom_factor = zoom_factor
+        self.fit_graphs = fit_graphs
+        self.min_height = min_height
 
-        enabled_graphs = [
+        self.enabled_graphs = [
             g for g in dashboard_config.get("graphs", [])
             if g.get("enabled", True)
         ]
 
-        for graph in enabled_graphs:
+        for graph in self.enabled_graphs:
             card = GraphCard(
                 graph_config=graph,
                 profile=profile,
                 time_range=time_range,
-                refresh_seconds=refresh_seconds,
-                zoom_factor=zoom_factor,
-                fit_graphs=fit_graphs,
-                min_height=min_height,
+                refresh_seconds=self.refresh_seconds,
+                zoom_factor=self.zoom_factor,
+                fit_graphs=self.fit_graphs,
+                min_height=self.min_height,
                 credentials=self.credentials,
             )
             self.graph_cards.append(card)
@@ -387,8 +436,64 @@ class GraphsDashboard(QWidget):
             card.set_time_range(range_value)
 
     def reload_all(self):
-        for card in self.graph_cards:
+        for card in list(self.graph_cards):
             card.reload()
+
+    def pause_refresh(self):
+        for card in list(self.graph_cards):
+            if hasattr(card, "pause_refresh"):
+                card.pause_refresh()
+
+    def resume_refresh(self):
+        if not self.graph_cards:
+            self.rebuild_graph_cards()
+        for card in list(self.graph_cards):
+            if hasattr(card, "resume_refresh"):
+                card.resume_refresh()
+
+    def rebuild_graph_cards(self):
+        self.logger = get_logger()
+        self.logger.info("Graph cards cleanup started")
+        self.graph_cards.clear()
+        self.graph_cards_by_title.clear()
+        for graph in self.enabled_graphs:
+            card = GraphCard(
+                graph_config=graph,
+                profile=self.profile,
+                time_range=self.time_range,
+                refresh_seconds=self.refresh_seconds,
+                zoom_factor=self.zoom_factor,
+                fit_graphs=self.fit_graphs,
+                min_height=self.min_height,
+                credentials=self.credentials,
+            )
+            self.graph_cards.append(card)
+            normalized_title = self._normalize_graph_title(graph.get("title", ""))
+            if normalized_title and normalized_title not in self.graph_cards_by_title:
+                self.graph_cards_by_title[normalized_title] = card
+            self.cards_layout.addWidget(card)
+        self.cards_layout.addStretch(1)
+        self.logger.info("Graph cards cleanup finished: count=%s", len(self.graph_cards))
+
+    def cleanup(self):
+        count = len(self.graph_cards)
+        self.logger = get_logger()
+        self.logger.info("Graph cards cleanup started")
+        while self.cards_layout.count():
+            item = self.cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                if hasattr(widget, "cleanup"):
+                    widget.cleanup()
+                widget.setParent(None)
+                widget.deleteLater()
+        self.graph_cards.clear()
+        self.graph_cards_by_title.clear()
+        self.logger.info("Graph cards cleanup finished: count=%s", count)
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
 
 
 class SimplePageDashboard(QWidget):
@@ -403,6 +508,8 @@ class SimplePageDashboard(QWidget):
         self.dashboard_config = dashboard_config
         self.profile = profile
         self.credentials = credentials or {}
+        self.logger = get_logger()
+        self._cleaned_up = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
@@ -417,7 +524,7 @@ class SimplePageDashboard(QWidget):
         open_external_button = QPushButton("Открыть в браузере")
         open_external_button.clicked.connect(self.open_current_external)
 
-        self.view = QWebEngineView()
+        self.view = register_web_view(QWebEngineView())
         self.view.setObjectName("GraphWebView")
         self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setStyleSheet("background: transparent; border: 0;")
@@ -437,7 +544,7 @@ class SimplePageDashboard(QWidget):
         self.view.load(QUrl(dashboard_config.get("url", "")))
 
     def on_page_loaded(self, ok):
-        if ok:
+        if ok and not self._cleaned_up and self.view is not None:
             self.inject_auto_login()
 
 
@@ -456,7 +563,7 @@ class SimplePageDashboard(QWidget):
             self.credentials.get("login", ""),
             self.credentials.get("password", "")
         )
-        if js:
+        if js and not self._cleaned_up and self.view is not None:
             self.view.page().runJavaScript(js)
 
     def open_current_external(self):
@@ -465,7 +572,38 @@ class SimplePageDashboard(QWidget):
             QDesktopServices.openUrl(QUrl(current_url))
 
     def reload_all(self):
-        self.view.reload()
+        if not self._cleaned_up and self.view is not None:
+            self.view.reload()
+
+    def pause_refresh(self):
+        if getattr(self, "timer", None) is not None:
+            self.timer.stop()
+
+    def resume_refresh(self):
+        if self._cleaned_up:
+            return
+        if getattr(self, "timer", None) is not None and not self.timer.isActive():
+            self.timer.start(int(self.timer.interval()))
+
+    def cleanup(self):
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+        if getattr(self, "timer", None) is not None:
+            try:
+                self.timer.stop()
+                self.timer.deleteLater()
+            except RuntimeError:
+                pass
+            self.timer = None
+        view = self.view
+        self.view = None
+        self.page = None
+        safe_delete_web_view(view, logger=self.logger, context=f"SimplePageDashboard {self.dashboard_config.get('name', '')}", load_handler=self.on_page_loaded)
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
 
 
 class ModePagesDashboard(QWidget):
@@ -479,6 +617,8 @@ class ModePagesDashboard(QWidget):
         self.dashboard_config = dashboard_config
         self.profile = profile
         self.credentials = credentials or {}
+        self.logger = get_logger()
+        self._cleaned_up = False
         self.modes = dashboard_config.get("modes", [])
         self.current_mode_index = 0
 
@@ -511,7 +651,7 @@ class ModePagesDashboard(QWidget):
 
         root.addLayout(button_row)
 
-        self.view = QWebEngineView()
+        self.view = register_web_view(QWebEngineView())
         self.view.setObjectName("GraphWebView")
         self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setStyleSheet("background: transparent; border: 0;")
@@ -546,6 +686,8 @@ class ModePagesDashboard(QWidget):
         self.load_current_mode()
 
     def load_current_mode(self):
+        if self._cleaned_up or self.view is None:
+            return
         colors = _resolve_web_colors()
         url = self.get_current_url()
         if not url:
@@ -562,7 +704,7 @@ class ModePagesDashboard(QWidget):
         self.view.load(QUrl(url))
 
     def on_page_loaded(self, ok):
-        if ok:
+        if ok and not self._cleaned_up and self.view is not None:
             self.inject_auto_login()
 
 
@@ -590,10 +732,42 @@ class ModePagesDashboard(QWidget):
             QDesktopServices.openUrl(QUrl(url))
 
     def reload_all(self):
+        if self._cleaned_up or self.view is None:
+            return
         if self.get_current_url():
             self.view.reload()
         else:
             self.load_current_mode()
+
+    def pause_refresh(self):
+        if getattr(self, "timer", None) is not None:
+            self.timer.stop()
+
+    def resume_refresh(self):
+        if self._cleaned_up:
+            return
+        if getattr(self, "timer", None) is not None and not self.timer.isActive():
+            self.timer.start(int(self.timer.interval()))
+
+    def cleanup(self):
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+        if getattr(self, "timer", None) is not None:
+            try:
+                self.timer.stop()
+                self.timer.deleteLater()
+            except RuntimeError:
+                pass
+            self.timer = None
+        view = self.view
+        self.view = None
+        self.page = None
+        safe_delete_web_view(view, logger=self.logger, context=f"ModePagesDashboard {self.dashboard_config.get('name', '')}", load_handler=self.on_page_loaded)
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
 
 
 class ProblemPageDashboard(SimplePageDashboard):

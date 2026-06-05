@@ -31,6 +31,7 @@ from app.theme import apply_theme
 from app.theme_logo import load_theme_logo
 from app.app_info import APP_NAME
 from app.logger import get_logger
+from app.webengine_lifecycle import current_rss_mb, register_web_view, safe_delete_web_view, tracked_web_view_count
 
 
 class MainWindow(QMainWindow):
@@ -68,6 +69,8 @@ class MainWindow(QMainWindow):
         self.hotkeys_page_index = None
         self.system_info_page_index = None
         self.auth_page_index = None
+        self.auth_web_views = []
+        self._last_memory_warning = False
 
         self.is_updating_selectors = False
         self.metrics_provider = SystemMetricsProvider()
@@ -134,7 +137,12 @@ class MainWindow(QMainWindow):
         self.metrics_timer.timeout.connect(self.update_bottom_hud)
         self.metrics_timer.start(2000)
 
+        self.memory_diagnostics_timer = QTimer(self)
+        self.memory_diagnostics_timer.timeout.connect(self.log_memory_status)
+        self.memory_diagnostics_timer.start(60000)
+
         self.update_bottom_hud()
+        self.log_memory_status()
 
     def update_bottom_hud(self):
         metrics = self.metrics_provider.get_metrics()
@@ -252,12 +260,13 @@ class MainWindow(QMainWindow):
             profile = self.profiles.get(zabbix_id)
             creds = self.credentials.get(zabbix_id, {})
 
-            view = QWebEngineView()
+            view = register_web_view(QWebEngineView())
             page = QWebEnginePage(profile, view)
             view.setPage(page)
             view.loadFinished.connect(lambda ok, v=view, c=creds: self.inject_login(v, c))
             view.load(QUrl(login_url))
 
+            self.auth_web_views.append((view, page))
             auth_tabs.addTab(view, name)
 
         self.auth_page_index = self.stack.addWidget(container)
@@ -311,6 +320,7 @@ class MainWindow(QMainWindow):
 
             self.stack.setCurrentIndex(self.system_info_page_index)
             self.set_time_selector_visible(False)
+            self.pause_inactive_web_dashboards()
 
     def create_dashboard_pages(self):
         self.product_dashboard_indexes = {}
@@ -406,11 +416,15 @@ class MainWindow(QMainWindow):
         if self.home_page_index is not None:
             self.stack.setCurrentIndex(self.home_page_index)
             self.set_time_selector_visible(False)
+            self.pause_inactive_web_dashboards()
+            self.log_memory_status()
 
     def open_duty_page(self):
         pages = self.product_dashboard_indexes.get("Дежурство", [])
         if pages:
             self.stack.setCurrentIndex(pages[0]["index"])
+            self.pause_inactive_web_dashboards()
+            self.log_memory_status()
 
     def create_duty_mode_page(self):
         self.duty_mode_widget = DutyModeWidget(
@@ -517,6 +531,8 @@ class MainWindow(QMainWindow):
         index = section["index"]
         self.stack.setCurrentIndex(index)
         self.update_toolbar_for_current_page(index)
+        self.pause_inactive_web_dashboards()
+        self.log_memory_status()
 
 
     def on_time_changed(self):
@@ -530,6 +546,7 @@ class MainWindow(QMainWindow):
         """
         if self.home_page_index is not None:
             self.open_home_page()
+            self.pause_inactive_web_dashboards()
             return
 
         if self.product_combo.count() <= 0:
@@ -559,6 +576,7 @@ class MainWindow(QMainWindow):
                 widget.open_section(section_name)
             self.stack.setCurrentIndex(self.settings_page_index)
             self.set_time_selector_visible(False)
+            self.pause_inactive_web_dashboards()
 
     def check_for_updates_from_settings(self, interactive=False, auto_start_install=False):
         if self.settings_page_index is None:
@@ -569,6 +587,64 @@ class MainWindow(QMainWindow):
                 interactive=interactive,
                 auto_start_install=auto_start_install,
             )
+
+    def pause_inactive_web_dashboards(self):
+        current = self.stack.currentWidget()
+        for widget in self.dashboard_widgets:
+            if widget is current:
+                if hasattr(widget, "resume_refresh"):
+                    widget.resume_refresh()
+            elif isinstance(widget, GraphsDashboard):
+                widget.cleanup()
+            elif hasattr(widget, "pause_refresh"):
+                widget.pause_refresh()
+
+    def count_graph_cards(self):
+        total = 0
+        for widget in self.dashboard_widgets:
+            total += len(getattr(widget, "graph_cards", []) or [])
+            total += len(getattr(widget, "cards", []) or [])
+        return total
+
+    def active_product_section(self):
+        product = self.product_combo.currentData() if hasattr(self, "product_combo") else ""
+        section = ""
+        current_section = self.section_combo.currentData() if hasattr(self, "section_combo") else None
+        if isinstance(current_section, dict):
+            section = current_section.get("name", "")
+        return product or "", section or ""
+
+    def log_memory_status(self):
+        rss_mb = current_rss_mb()
+        product, section = self.active_product_section()
+        graph_cards = self.count_graph_cards()
+        web_views = tracked_web_view_count()
+        rss_text = "n/a" if rss_mb is None else f"{rss_mb:.1f}"
+        self.logger.info(
+            "Memory status: rss_mb=%s graph_cards=%s web_views=%s active_product=%s active_section=%s",
+            rss_text,
+            graph_cards,
+            web_views,
+            product,
+            section,
+        )
+        if rss_mb is not None and rss_mb > 3000:
+            self.logger.warning("High memory usage detected: rss_mb=%.1f", rss_mb)
+            if not self._last_memory_warning:
+                self.statusBar().showMessage("Высокое потребление памяти", 10000)
+            self._last_memory_warning = True
+        elif rss_mb is not None and rss_mb < 2500:
+            self._last_memory_warning = False
+
+    def cleanup_web_resources(self):
+        self.logger.info("Main window WebEngine cleanup started")
+        for widget in list(self.dashboard_widgets):
+            if hasattr(widget, "cleanup"):
+                widget.cleanup()
+        for view, _page in list(self.auth_web_views):
+            safe_delete_web_view(view, logger=self.logger, context="auth hidden WebView")
+        self.auth_web_views.clear()
+        self.logger.info("Main window WebEngine cleanup finished")
 
     def inject_login(self, view, creds):
         login = creds.get("login", "")
@@ -628,6 +704,11 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self.duty_mode_widget is not None:
             self.duty_mode_widget.disable_for_shutdown()
+        if getattr(self, "metrics_timer", None) is not None:
+            self.metrics_timer.stop()
+        if getattr(self, "memory_diagnostics_timer", None) is not None:
+            self.memory_diagnostics_timer.stop()
+        self.cleanup_web_resources()
         super().closeEvent(event)
 
     def set_time_range(self, range_value):
