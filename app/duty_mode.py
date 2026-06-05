@@ -41,6 +41,7 @@ from app.duty_settings import DutyModeSettingsWidget
 from app.duty_triggers import evaluate_stagnation_trigger
 from app.logger import get_logger
 from app.time_range import apply_time_range_to_url
+from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 from app.templates import (
     format_dt,
     format_numbered_lines,
@@ -376,7 +377,25 @@ class GraphCheckOverlayDialog(QDialog):
             return
         super().keyPressEvent(event)
 
+    def cleanup(self):
+        if getattr(self, "_cleanup_started", False):
+            return
+        self._cleanup_started = True
+        self.logger.info("Graph check overlay cleanup started")
+        count = len(self.cards)
+        while self.cards_layout.count():
+            item = self.cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                if hasattr(widget, "cleanup"):
+                    widget.cleanup()
+                widget.setParent(None)
+                widget.deleteLater()
+        self.cards.clear()
+        self.logger.info("Graph check overlay cleanup finished")
+
     def closeEvent(self, event):
+        self.cleanup()
         super().closeEvent(event)
 
 
@@ -457,8 +476,9 @@ class AttachExistingTaskDialog(QDialog):
         self.pending_ticket_url = ""
         self.detect_attempt = 0
         self.max_detect_attempts = 8
+        self._cleaned_up = False
 
-        self.view = QWebEngineView()
+        self.view = register_web_view(QWebEngineView())
         self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
 
         self.page = QWebEnginePage(self.view)
@@ -938,6 +958,19 @@ class AttachExistingTaskDialog(QDialog):
         self.accept()
 
 
+    def cleanup(self):
+        if getattr(self, "_cleaned_up", False):
+            return
+        self._cleaned_up = True
+        view = getattr(self, "view", None)
+        self.view = None
+        self.page = None
+        safe_delete_web_view(view, logger=get_logger(), context="AttachExistingTaskDialog", load_handler=self.on_loaded)
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
+
 
 class OtrsCreateTaskDialog(QDialog):
     """
@@ -1023,7 +1056,7 @@ class OtrsCreateTaskDialog(QDialog):
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
 
-        self.view = QWebEngineView()
+        self.view = register_web_view(QWebEngineView())
         self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
 
         self.page = QWebEnginePage(self.view)
@@ -1256,6 +1289,20 @@ class OtrsCreateTaskDialog(QDialog):
         )
 
 
+    def cleanup(self):
+        if getattr(self, "_cleaned_up", False):
+            return
+        self._cleaned_up = True
+        view = getattr(self, "view", None)
+        self.view = None
+        self.page = None
+        safe_delete_web_view(view, logger=get_logger(), context="OtrsCreateTaskDialog", load_handler=self.on_loaded)
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
+
+
 class OtrsNoteDialog(QDialog):
     """
     Окно добавления заметки в задачу ОТРС.
@@ -1335,7 +1382,7 @@ class OtrsNoteDialog(QDialog):
         self.note_editor.setPlainText(note_text)
         root.addWidget(self.note_editor, stretch=1)
 
-        self.view = QWebEngineView()
+        self.view = register_web_view(QWebEngineView())
         self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
 
         self.page = QWebEnginePage(self.view)
@@ -1728,6 +1775,27 @@ class OtrsNoteDialog(QDialog):
             )
 
 
+    def cleanup(self):
+        if getattr(self, "_cleaned_up", False):
+            return
+        self._cleaned_up = True
+        if getattr(self, "send_watch_timer", None) is not None:
+            try:
+                self.send_watch_timer.stop()
+                self.send_watch_timer.deleteLater()
+            except RuntimeError:
+                pass
+            self.send_watch_timer = None
+        view = getattr(self, "view", None)
+        self.view = None
+        self.page = None
+        safe_delete_web_view(view, logger=get_logger(), context="OtrsNoteDialog", load_handler=self.on_loaded)
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
+
+
 class ProblemTemplateDialog(QDialog):
     def __init__(self, graphs, config=None, parent=None):
         super().__init__(parent)
@@ -1858,6 +1926,8 @@ class DutyGraphCard(QFrame):
         self.profile = profile
         self.credentials = credentials or {}
         self.time_range = time_range
+        self.logger = get_logger()
+        self._cleaned_up = False
 
         self.setObjectName("GraphCard")
         self.initial_view_height = 430
@@ -1884,7 +1954,7 @@ class DutyGraphCard(QFrame):
         open_button.clicked.connect(self.open_external)
         open_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
-        self.view = QWebEngineView()
+        self.view = register_web_view(QWebEngineView())
         self.view.setObjectName("GraphWebView")
         self.view.setAttribute(Qt.WA_TranslucentBackground, False)
         self.view.setMinimumWidth(0)
@@ -1984,23 +2054,27 @@ class DutyGraphCard(QFrame):
         )
 
     def load(self):
+        if self._cleaned_up or self.view is None:
+            return
         self.view.load(QUrl(self.build_url()))
 
     def on_loaded(self, ok):
-        if not ok:
+        if self._cleaned_up or self.view is None or not ok:
             return
 
         js = make_zabbix_login_js(
             self.credentials.get("login", ""),
             self.credentials.get("password", "")
         )
-        if js:
+        if js and not self._cleaned_up and self.view is not None:
             self.view.page().runJavaScript(js)
         QTimer.singleShot(500, self.fit_content_height)
         QTimer.singleShot(1500, self.fit_content_height)
         QTimer.singleShot(2500, self.fit_content_height)
 
     def fit_content_height(self):
+        if self._cleaned_up or self.view is None:
+            return
         js = """
         (function() {
             const styleId = 'oko-duty-graph-fit';
@@ -2052,9 +2126,12 @@ class DutyGraphCard(QFrame):
             return height;
         })();
         """
-        self.view.page().runJavaScript(js, self.apply_content_height)
+        if not self._cleaned_up and self.view is not None:
+            self.view.page().runJavaScript(js, self.apply_content_height)
 
     def apply_content_height(self, height):
+        if self._cleaned_up or self.view is None:
+            return
         try:
             height = int(float(height))
         except (TypeError, ValueError):
@@ -2068,6 +2145,22 @@ class DutyGraphCard(QFrame):
         url = self.build_open_url()
         if url:
             QDesktopServices.openUrl(QUrl(url))
+
+    def cleanup(self):
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+        title = self.graph_config.get("title", "График")
+        self.logger.info("Graph WebView cleanup started: title=%s", title)
+        view = self.view
+        self.view = None
+        self.page = None
+        safe_delete_web_view(view, logger=self.logger, context=f"DutyGraphCard title={title}", load_handler=self.on_loaded)
+        self.logger.info("Graph WebView cleanup finished: title=%s", title)
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
 
 
 class DutyModeWidget(QWidget):
@@ -2446,13 +2539,19 @@ class DutyModeWidget(QWidget):
         self.check_graphs = [g for g in self.all_graphs() if g["id"] in ids]
 
     def clear_cards(self):
+        self.logger.info("Graph cards cleanup started")
+        count = len(self.cards)
         self.cards = []
 
         while self.cards_layout.count():
             item = self.cards_layout.takeAt(0)
             widget = item.widget()
             if widget:
+                if hasattr(widget, "cleanup"):
+                    widget.cleanup()
+                widget.setParent(None)
                 widget.deleteLater()
+        self.logger.info("Graph cards cleanup finished: count=%s", count)
 
     def render_empty_hint(self):
         self.clear_cards()
@@ -2817,7 +2916,7 @@ class DutyModeWidget(QWidget):
             self._finish_trigger_without_html(trigger, "SOURCE_NOT_FOUND")
             return
 
-        view = QWebEngineView(self)
+        view = register_web_view(QWebEngineView(self))
         view.setVisible(False)
         page = QWebEnginePage(profile, view)
         view.setPage(page)
@@ -2949,29 +3048,13 @@ class DutyModeWidget(QWidget):
                         pass
 
         def delete_objects(ctx=context, hidden_view=view, tid=trigger_id):
-            hidden_page = (ctx or {}).get("page")
             load_handler = (ctx or {}).get("load_handler")
-            try:
-                if hidden_view is not None and load_handler is not None:
-                    hidden_view.loadFinished.disconnect(load_handler)
-            except (RuntimeError, TypeError):
-                pass
-            try:
-                if hidden_view is not None:
-                    hidden_view.stop()
-            except RuntimeError:
-                pass
-            try:
-                if hidden_page is not None:
-                    hidden_page.deleteLater()
-            except RuntimeError:
-                pass
-            try:
-                if hidden_view is not None:
-                    hidden_view.setParent(None)
-                    hidden_view.deleteLater()
-            except RuntimeError:
-                pass
+            safe_delete_web_view(
+                hidden_view,
+                logger=self.logger,
+                context=f"Duty trigger hidden WebView id={tid}",
+                load_handler=load_handler,
+            )
             if hidden_view in self.hidden_trigger_views:
                 self.hidden_trigger_views.remove(hidden_view)
             if ctx in self._hidden_trigger_contexts:
@@ -2980,6 +3063,8 @@ class DutyModeWidget(QWidget):
                 ctx["view"] = None
                 ctx["page"] = None
                 ctx["load_handler"] = None
+                ctx["timeout_timer"] = None
+                ctx["read_timer"] = None
             self.logger.info("Duty trigger hidden WebView cleanup finished: id=%s", tid)
 
         QTimer.singleShot(0, delete_objects)
