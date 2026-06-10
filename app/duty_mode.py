@@ -51,6 +51,7 @@ from app.service_checks import (
     build_auth_form_js,
     build_auth_form_presence_js,
     build_autofill_error_message,
+    build_result_selector_check_js,
     make_service_result,
     parse_autofill_callback_result,
     safe_autofill_result_repr,
@@ -2459,19 +2460,41 @@ class ServiceCheckVisibleDialog(QDialog):
     def read_page_text(self):
         if self.finished:
             return
+        self.page.runJavaScript(build_result_selector_check_js(self.service), self.after_result_selector_check)
+
+    def after_result_selector_check(self, result):
+        if self.finished:
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None:
+            self.logger.warning("Service check result selector parse failed: service_id=%s reason=%s", service_id, parse_error.get("error", "invalid_result"))
+            result = {}
+        self.result_selector_result = result
+        success_found = bool(result.get("success_found"))
+        error_found = bool(result.get("error_found"))
+        self.logger.info("Service check result selector check: service_id=%s success_found=%s error_found=%s", service_id, success_found, error_found)
+        if success_found:
+            self.logger.info("Service check result success selector matched: service_id=%s selector=%s", service_id, result.get("matched_success_selector", ""))
+        if error_found:
+            self.logger.info("Service check result error selector matched: service_id=%s selector=%s", service_id, result.get("matched_error_selector", ""))
         self.page.runJavaScript("document.body ? document.body.innerText : ''", self.analyze_text)
 
     def analyze_text(self, text):
-        status, matched_success, matched_error, error = evaluate_service_check_page(self.service, text, loaded=True)
+        selector_result = getattr(self, "result_selector_result", {})
+        status, matched_success, matched_error, error = evaluate_service_check_page(self.service, text, loaded=True, selector_result=selector_result)
+        details = error if status == "ok" and str(error).startswith("Успешный признак найден по CSS selector:") else ""
         self.finish(
             status,
-            error=error,
+            error="" if details else error,
             html_text=text,
             matched_success=matched_success,
             matched_error=matched_error,
+            details=details,
         )
 
-    def finish(self, status, error="", html_text="", matched_success="", matched_error="", wait_for_manual=False):
+    def finish(self, status, error="", html_text="", matched_success="", matched_error="", wait_for_manual=False, details=""):
+
         if self.finished:
             return
         try:
@@ -2497,6 +2520,7 @@ class ServiceCheckVisibleDialog(QDialog):
             page_excerpt=html_text,
             duration_ms=self.duration_ms(),
             warning=self.ssl_warning,
+            details=details,
         )
         self.status_label.setText(f"Результат: {service_status_label(status)}" + (f"\n{error}" if error else ""))
         if should_close:
@@ -2882,7 +2906,8 @@ class DutyModeWidget(QWidget):
         def duration_ms():
             return int((datetime.now() - started).total_seconds() * 1000)
 
-        def finish(status, error="", html_text="", matched_success="", matched_error="", warning=""):
+        def finish(status, error="", html_text="", matched_success="", matched_error="", warning="", details=""):
+
             if context.get("finished"):
                 return
             context["finished"] = True
@@ -2896,17 +2921,38 @@ class DutyModeWidget(QWidget):
                 page_excerpt=html_text,
                 duration_ms=duration_ms(),
                 warning=warning or context.get("ssl_warning", ""),
+                details=details,
             )
             self._finish_single_service_check(service, result)
 
         def analyze_text(text):
-            status, matched_success, matched_error, error = evaluate_service_check_page(service, text, loaded=True)
-            finish(status, error=error, html_text=text, matched_success=matched_success, matched_error=matched_error)
+            selector_result = context.get("result_selector_result") if isinstance(context.get("result_selector_result"), dict) else {}
+            status, matched_success, matched_error, error = evaluate_service_check_page(service, text, loaded=True, selector_result=selector_result)
+            details = error if status == "ok" and str(error).startswith("Успешный признак найден по CSS selector:") else ""
+            finish(status, error="" if details else error, html_text=text, matched_success=matched_success, matched_error=matched_error, details=details)
+
+        def after_result_selector_check(result):
+            if context.get("finished"):
+                return
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is not None:
+                self.logger.warning("Service check result selector parse failed: service_id=%s reason=%s", service_id, parse_error.get("error", "invalid_result"))
+                result = {}
+            context["result_selector_result"] = result
+            success_found = bool(result.get("success_found"))
+            error_found = bool(result.get("error_found"))
+            self.logger.info("Service check result selector check: service_id=%s success_found=%s error_found=%s", service_id, success_found, error_found)
+            if success_found:
+                self.logger.info("Service check result success selector matched: service_id=%s selector=%s", service_id, result.get("matched_success_selector", ""))
+            if error_found:
+                self.logger.info("Service check result error selector matched: service_id=%s selector=%s", service_id, result.get("matched_error_selector", ""))
+            page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)
 
         def read_text_after_login():
             if context.get("finished"):
                 return
-            page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)
+            page.runJavaScript(build_result_selector_check_js(service), after_result_selector_check)
 
         def after_login_js(result):
             service_id = service.get("id", "")
@@ -3005,7 +3051,7 @@ class DutyModeWidget(QWidget):
             if service.get("auth_type") == AUTH_HTML_FORM:
                 start_autofill_wait()
             else:
-                page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)
+                read_text_after_login()
 
         def on_timeout():
             context["timed_out"] = True

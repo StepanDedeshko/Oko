@@ -28,6 +28,7 @@ from app.service_checks import (
     AUTH_VISIBLE_HTML_FORM,
     default_service_item,
     ensure_service_checks_defaults,
+    parse_selector_markers,
     parse_text_markers,
     unique_service_id,
 )
@@ -146,8 +147,16 @@ class ServiceChecksSettingsWidget(QWidget):
         self.error_texts_input = QTextEdit()
         self.error_texts_input.setPlaceholderText("Ошибка авторизации; Неверный пароль; Access denied; Login failed")
         self.error_texts_input.setMaximumHeight(80)
+        self.success_selectors_input = QTextEdit()
+        self.success_selectors_input.setPlaceholderText(".account-menu\nbutton.logout\n[data-test=dashboard]")
+        self.success_selectors_input.setMaximumHeight(80)
+        self.error_selectors_input = QTextEdit()
+        self.error_selectors_input.setPlaceholderText(".login-error\n.el-message--error\n.alert-danger")
+        self.error_selectors_input.setMaximumHeight(80)
         markers_form.addRow("Текст успеха:", self.success_texts_input)
         markers_form.addRow("Текст ошибки:", self.error_texts_input)
+        markers_form.addRow("CSS selectors признаков успеха:", self.success_selectors_input)
+        markers_form.addRow("CSS selectors признаков ошибки:", self.error_selectors_input)
         form_layout.addWidget(markers)
         form_layout.addStretch(1)
         splitter.addWidget(form_container)
@@ -174,6 +183,8 @@ class ServiceChecksSettingsWidget(QWidget):
         self.visible_close_delay_input.valueChanged.connect(self.update_current_from_form)
         self.success_texts_input.textChanged.connect(self.update_current_from_form)
         self.error_texts_input.textChanged.connect(self.update_current_from_form)
+        self.success_selectors_input.textChanged.connect(self.update_current_from_form)
+        self.error_selectors_input.textChanged.connect(self.update_current_from_form)
         self.login_input.textChanged.connect(self.update_credentials)
         self.password_input.textChanged.connect(self.update_credentials)
 
@@ -202,7 +213,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item = self.current_item()
         self._loading = True
         enabled = item is not None
-        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input):
+        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input):
             widget.setEnabled(enabled)
         self.otrs_task_url_input.setText(self.settings.get("otrs_task_url", ""))
         if item:
@@ -225,6 +236,8 @@ class ServiceChecksSettingsWidget(QWidget):
             self.post_login_delay_input.setValue(int(item.get("post_login_delay_ms", 1500)) // 1000)
             self.success_texts_input.setPlainText("; ".join(item.get("success_texts", [])))
             self.error_texts_input.setPlainText("; ".join(item.get("error_texts", [])))
+            self.success_selectors_input.setPlainText("\n".join(item.get("success_selectors", [])))
+            self.error_selectors_input.setPlainText("\n".join(item.get("error_selectors", [])))
         self._loading = False
         self.update_visible_window_visibility()
 
@@ -269,6 +282,8 @@ class ServiceChecksSettingsWidget(QWidget):
         item["post_login_delay_ms"] = int(self.post_login_delay_input.value()) * 1000
         item["success_texts"] = parse_text_markers(self.success_texts_input.toPlainText())
         item["error_texts"] = parse_text_markers(self.error_texts_input.toPlainText())
+        item["success_selectors"] = parse_selector_markers(self.success_selectors_input.toPlainText())
+        item["error_selectors"] = parse_selector_markers(self.error_selectors_input.toPlainText())
         index = self.current_index
         self.refresh_list()
         self.current_index = index

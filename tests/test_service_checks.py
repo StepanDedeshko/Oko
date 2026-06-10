@@ -7,6 +7,7 @@ from app.service_checks import (
     build_auth_form_js,
     build_auth_form_presence_js,
     build_autofill_error_message,
+    build_result_selector_check_js,
     build_service_check_note_text,
     default_service_item,
     ensure_service_checks_defaults,
@@ -14,6 +15,7 @@ from app.service_checks import (
     make_service_result,
     normalize_service_id,
     parse_autofill_callback_result,
+    parse_selector_markers,
     parse_text_markers,
     safe_autofill_script_preview,
     service_result_display_label,
@@ -89,6 +91,23 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertNotIn("new Promise", js)
         self.assertNotIn("async", js)
         self.assertNotIn("await", js)
+
+
+    def test_parse_selector_markers_by_semicolon_and_newline(self):
+        self.assertEqual(parse_selector_markers(".ok; #logout\n[data-test=main]; .ok"), [".ok", "#logout", "[data-test=main]"])
+
+    def test_result_selector_check_js_returns_json_without_credentials(self):
+        js = build_result_selector_check_js({
+            "success_selectors": [".account-menu"],
+            "error_selectors": [".login-error"],
+        })
+        self.assertIn("JSON.stringify", js)
+        self.assertIn("success_found", js)
+        self.assertIn("error_found", js)
+        self.assertIn("document.querySelector", js)
+        self.assertNotIn(".value", js.lower())
+        self.assertNotIn('getattribute("value")', js.lower())
+        self.assertTrue(js.strip().endswith(")()") or js.strip().endswith(")();"))
 
     def test_autofill_script_preview_redacts_credentials(self):
         js = build_auth_form_js(
@@ -182,6 +201,43 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Access denied", error)
         self.assertEqual(evaluate_service_check_page(service, "plain page", loaded=True)[0], "unknown")
 
+
+    def test_evaluate_selector_results_priority_and_invalid_selector(self):
+        service = {"success_texts": ["Главная"], "error_texts": ["Access denied"]}
+        status, matched_success, _matched_error, error = evaluate_service_check_page(
+            service,
+            "plain",
+            loaded=True,
+            selector_result={"success_found": True, "matched_success_selector": ".dashboard", "matched_success_summary": "div class=dashboard"},
+        )
+        self.assertEqual(status, "ok")
+        self.assertEqual(matched_success, ".dashboard")
+        self.assertIn("Успешный признак найден по CSS selector: .dashboard", error)
+
+        status, _matched_success, matched_error, error = evaluate_service_check_page(
+            service,
+            "Главная",
+            loaded=True,
+            selector_result={
+                "success_found": True,
+                "matched_success_selector": ".dashboard",
+                "error_found": True,
+                "matched_error_selector": ".login-error",
+            },
+        )
+        self.assertEqual(status, "error")
+        self.assertEqual(matched_error, ".login-error")
+        self.assertIn("Ошибочный признак найден по CSS selector: .login-error", error)
+
+        status, _matched_success, _matched_error, error = evaluate_service_check_page(
+            service,
+            "plain",
+            loaded=True,
+            selector_result={"invalid_success_selectors": [{"selector": "div[", "error": "failed"}]},
+        )
+        self.assertEqual(status, "error")
+        self.assertIn("Некорректный CSS selector признака успеха: div[", error)
+
     def test_build_service_check_note_text_without_secret_fields(self):
         config = {}
         result = make_service_result(
@@ -195,6 +251,17 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Access denied", text)
         self.assertNotIn("password", text.lower())
         self.assertNotIn("secret", text.lower())
+
+
+    def test_selector_success_details_are_rendered_in_note(self):
+        result = make_service_result(
+            {"id": "svc", "name": "FacePay"},
+            status="ok",
+            details="Успешный признак найден по CSS selector: .dashboard",
+        )
+        text = build_service_check_note_text({}, [result], checked_at="2026-06-10 13:30")
+        self.assertIn("FacePay — ОК", text)
+        self.assertIn("Детали: Успешный признак найден по CSS selector: .dashboard", text)
 
     def test_service_template_variables_are_substituted(self):
         config = {}
@@ -317,6 +384,8 @@ class ServiceChecksLogicTest(unittest.TestCase):
                     "visible_window_close_delay_seconds": 3,
                     "success_texts": ["Главная"],
                     "error_texts": ["Access denied"],
+                    "success_selectors": [".dashboard"],
+                    "error_selectors": [".login-error"],
                     "login": "must-not-export",
                     "password": "must-not-export",
                 }],
@@ -328,6 +397,8 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(item["auth_type"], "visible_html_form")
         self.assertIn("login_selector", item)
         self.assertTrue(item["allow_insecure_ssl"])
+        self.assertEqual(item["success_selectors"], [".dashboard"])
+        self.assertEqual(item["error_selectors"], [".login-error"])
         self.assertEqual(item["visible_window_close_delay_seconds"], 3)
         serialized = json.dumps(exported, ensure_ascii=False).lower()
         self.assertNotIn("must-not-export", serialized)

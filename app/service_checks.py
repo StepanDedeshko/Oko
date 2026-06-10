@@ -46,6 +46,8 @@ DEFAULT_SERVICE_ITEM = {
     "submit_selector": "",
     "success_texts": [],
     "error_texts": [],
+    "success_selectors": [],
+    "error_selectors": [],
     "timeout_seconds": 15,
     "post_login_delay_ms": 1500,
     "allow_insecure_ssl": False,
@@ -65,12 +67,7 @@ def default_service_item(item_id=""):
     return item
 
 
-def parse_text_markers(value):
-    """Parse semicolon-separated success/error markers, preserving order."""
-    if isinstance(value, list):
-        raw_items = value
-    else:
-        raw_items = str(value or "").split(";")
+def _dedupe_markers(raw_items):
     result = []
     seen = set()
     for item in raw_items:
@@ -80,6 +77,24 @@ def parse_text_markers(value):
             seen.add(key)
             result.append(text)
     return result
+
+
+def parse_text_markers(value):
+    """Parse semicolon-separated success/error text markers, preserving order."""
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = str(value or "").split(";")
+    return _dedupe_markers(raw_items)
+
+
+def parse_selector_markers(value):
+    """Parse semicolon/newline-separated CSS selectors, preserving order."""
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = re.split(r"[;\n]+", str(value or ""))
+    return _dedupe_markers(raw_items)
 
 
 def normalize_service_id(value):
@@ -134,6 +149,8 @@ def ensure_service_checks_defaults(config):
             merged["visible_window_close_delay_seconds"] = 3
         merged["success_texts"] = parse_text_markers(merged.get("success_texts", []))
         merged["error_texts"] = parse_text_markers(merged.get("error_texts", []))
+        merged["success_selectors"] = parse_selector_markers(merged.get("success_selectors", []))
+        merged["error_selectors"] = parse_selector_markers(merged.get("error_selectors", []))
         try:
             merged["timeout_seconds"] = max(1, int(merged.get("timeout_seconds", 15)))
         except Exception:
@@ -380,6 +397,79 @@ def build_auth_form_presence_js(service):
 """.strip()
 
 
+
+def build_result_selector_check_js(service):
+    """Build a script that checks success/error CSS selectors and returns JSON."""
+    success_selectors = json.dumps(parse_selector_markers(service.get("success_selectors", [])), ensure_ascii=False)
+    error_selectors = json.dumps(parse_selector_markers(service.get("error_selectors", [])), ensure_ascii=False)
+    return f"""
+(function () {{
+  function safeText(value) {{
+    return String(value || "").replace(/[\\r\\n\\t]+/g, " ").replace(/\\s+/g, " ").trim().slice(0, 120);
+  }}
+  function elementSummary(element) {{
+    if (!element) return "";
+    const tag = String(element.tagName || "").toLowerCase();
+    const type = element.getAttribute && element.getAttribute("type");
+    const id = element.getAttribute && element.getAttribute("id");
+    const className = element.getAttribute && element.getAttribute("class");
+    const ariaLabel = element.getAttribute && element.getAttribute("aria-label");
+    const name = element.getAttribute && element.getAttribute("name");
+    const text = tag === "input" || tag === "textarea" ? "" : safeText(element.innerText || element.textContent || "");
+    const parts = [tag];
+    if (type) parts.push("type=" + safeText(type));
+    if (id) parts.push("id=" + safeText(id));
+    if (className) parts.push("class=" + safeText(className));
+    if (ariaLabel) parts.push("aria-label=" + safeText(ariaLabel));
+    if (name) parts.push("name=" + safeText(name));
+    if (text) parts.push("text=" + text);
+    return parts.join(" ");
+  }}
+  function checkSelector(kind, selector) {{
+    try {{
+      const element = document.querySelector(selector);
+      return {{
+        kind: kind,
+        selector: selector,
+        found: !!element,
+        summary: elementSummary(element),
+        error: ""
+      }};
+    }} catch (error) {{
+      return {{
+        kind: kind,
+        selector: selector,
+        found: false,
+        summary: "",
+        error: String(error && error.message ? error.message : error)
+      }};
+    }}
+  }}
+  const successSelectors = {success_selectors};
+  const errorSelectors = {error_selectors};
+  const success = successSelectors.map(function (selector) {{ return checkSelector("success", selector); }});
+  const errors = errorSelectors.map(function (selector) {{ return checkSelector("error", selector); }});
+  const successMatch = success.find(function (item) {{ return item.found; }}) || null;
+  const errorMatch = errors.find(function (item) {{ return item.found; }}) || null;
+  const invalidSuccess = success.filter(function (item) {{ return !!item.error; }});
+  const invalidErrors = errors.filter(function (item) {{ return !!item.error; }});
+  return JSON.stringify({{
+    ok: true,
+    success_found: !!successMatch,
+    error_found: !!errorMatch,
+    matched_success_selector: successMatch ? successMatch.selector : "",
+    matched_error_selector: errorMatch ? errorMatch.selector : "",
+    matched_success_summary: successMatch ? successMatch.summary : "",
+    matched_error_summary: errorMatch ? errorMatch.summary : "",
+    invalid_success_selectors: invalidSuccess,
+    invalid_error_selectors: invalidErrors,
+    success_results: success,
+    error_results: errors
+  }});
+}})()
+""".strip()
+
+
 def parse_autofill_callback_result(result):
     if isinstance(result, dict):
         return result, None
@@ -495,17 +585,44 @@ def service_result_display_label(result):
             return "Пропущено вручную"
     return service_status_label(status)
 
-def evaluate_service_check_page(service, page_text, loaded=True, timed_out=False, error=""):
+def evaluate_service_check_page(service, page_text, loaded=True, timed_out=False, error="", selector_result=None):
     if timed_out:
         return "timeout", "", "", error or "Истёк таймаут проверки"
     if not loaded:
         return "load_error", "", "", error or "Страница не загрузилась"
+
+    selector_result = selector_result if isinstance(selector_result, dict) else {}
+    invalid_error = (selector_result.get("invalid_error_selectors") or [])
+    if invalid_error:
+        selector = str(invalid_error[0].get("selector", ""))
+        return "error", "", selector, f"Некорректный CSS selector признака ошибки: {selector}"
+    invalid_success = (selector_result.get("invalid_success_selectors") or [])
+    if invalid_success:
+        selector = str(invalid_success[0].get("selector", ""))
+        return "error", selector, "", f"Некорректный CSS selector признака успеха: {selector}"
+
+    if selector_result.get("error_found"):
+        selector = str(selector_result.get("matched_error_selector") or "")
+        summary = str(selector_result.get("matched_error_summary") or "")
+        detail = f"Ошибочный признак найден по CSS selector: {selector}"
+        if summary:
+            detail += f" ({summary})"
+        return "error", "", selector, detail
 
     text = str(page_text or "")
     lowered = text.casefold()
     for marker in parse_text_markers(service.get("error_texts", [])):
         if marker.casefold() in lowered:
             return "auth_error", "", marker, f"найден текст “{marker}”"
+
+    if selector_result.get("success_found"):
+        selector = str(selector_result.get("matched_success_selector") or "")
+        summary = str(selector_result.get("matched_success_summary") or "")
+        detail = f"Успешный признак найден по CSS selector: {selector}"
+        if summary:
+            detail += f" ({summary})"
+        return "ok", selector, "", detail
+
     for marker in parse_text_markers(service.get("success_texts", [])):
         if marker.casefold() in lowered:
             return "ok", marker, "", ""
