@@ -149,7 +149,7 @@ def ensure_service_checks_defaults(config):
 
 
 def build_auth_form_js(service, credentials, blur_fields=True):
-    """Build a self-contained autofill script for hidden and visible WebEngine checks."""
+    """Build a synchronous autofill script returning a plain object for Qt WebEngine."""
     login_selector = json.dumps(service.get("login_selector", ""))
     password_selector = json.dumps(service.get("password_selector", ""))
     submit_selector = json.dumps(service.get("submit_selector", ""))
@@ -157,7 +157,35 @@ def build_auth_form_js(service, credentials, blur_fields=True):
     password_value = json.dumps(credentials.get("password", ""))
     blur_line = 'element.dispatchEvent(new Event("blur", { bubbles: true }));' if blur_fields else ""
     return f"""
-(async function () {{
+(function () {{
+  function selectorSummary(element) {{
+    if (!element) return "";
+    const parts = [String(element.tagName || "").toLowerCase()];
+    const type = element.getAttribute && element.getAttribute("type");
+    const id = element.getAttribute && element.getAttribute("id");
+    const className = element.getAttribute && element.getAttribute("class");
+    if (type) parts.push("[type=" + type + "]");
+    if (id) parts.push("#" + id);
+    if (className) parts.push("." + String(className).trim().split(/\\s+/).filter(Boolean).join("."));
+    return parts.join("");
+  }}
+  function diagnostics(login, password, submit) {{
+    const textInputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type]), textarea')).slice(0, 8).map(selectorSummary);
+    const passwordInputs = Array.from(document.querySelectorAll('input[type="password"]')).slice(0, 8).map(selectorSummary);
+    const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]')).slice(0, 8).map(selectorSummary);
+    return {{
+      login_found: !!login,
+      password_found: !!password,
+      submit_found: !!submit,
+      ready_state: document.readyState || "",
+      iframe_count: document.querySelectorAll("iframe").length,
+      text_input_count: document.querySelectorAll('input[type="text"], input:not([type]), textarea').length,
+      password_input_count: document.querySelectorAll('input[type="password"]').length,
+      button_count: document.querySelectorAll('button, input[type="submit"], input[type="button"]').length,
+      found_inputs: textInputs.concat(passwordInputs),
+      found_buttons: buttons
+    }};
+  }}
   function setNativeValue(element, value) {{
     const prototype = Object.getPrototypeOf(element);
     const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
@@ -175,9 +203,6 @@ def build_auth_form_js(service, credentials, blur_fields=True):
     element.dispatchEvent(new MouseEvent("mouseup", {{ bubbles: true, cancelable: true, view: window }}));
     element.dispatchEvent(new MouseEvent("click", {{ bubbles: true, cancelable: true, view: window }}));
   }}
-  function sleep(ms) {{
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }}
   try {{
     const loginSelector = {login_selector};
     const passwordSelector = {password_selector};
@@ -185,29 +210,53 @@ def build_auth_form_js(service, credentials, blur_fields=True):
     const login = document.querySelector(loginSelector);
     const password = document.querySelector(passwordSelector);
     const submit = document.querySelector(submitSelector);
+    const info = diagnostics(login, password, submit);
     const missing = [];
     if (!login) missing.push("login");
     if (!password) missing.push("password");
     if (!submit) missing.push("submit");
     if (missing.length) {{
-      return {{ ok: false, error: "missing_form_elements", missing: missing }};
+      return Object.assign({{ ok: false, error: "missing_form_elements", missing: missing }}, info);
     }}
     login.focus();
     setNativeValue(login, {login_value});
     password.focus();
     setNativeValue(password, {password_value});
-    await sleep(300);
     clickElement(submit);
-    return {{ ok: true, clicked: true }};
+    return Object.assign({{ ok: true, clicked: true }}, info);
   }} catch (error) {{
     return {{
       ok: false,
       error: "autofill_failed",
-      message: String(error && error.message ? error.message : error)
+      message: String(error && error.message ? error.message : error),
+      ready_state: document.readyState || "",
+      iframe_count: document.querySelectorAll("iframe").length,
+      text_input_count: document.querySelectorAll('input[type="text"], input:not([type]), textarea').length,
+      password_input_count: document.querySelectorAll('input[type="password"]').length,
+      button_count: document.querySelectorAll('button, input[type="submit"], input[type="button"]').length
     }};
   }}
 }})()
 """
+
+
+def _autofill_diagnostics_lines(result):
+    if not isinstance(result, dict):
+        return []
+    lines = [
+        f"document.readyState: {result.get('ready_state', '')}",
+        f"iframe на странице: {result.get('iframe_count', 0)}",
+        f"input[type=text]/textarea: {result.get('text_input_count', 0)}",
+        f"input[type=password]: {result.get('password_input_count', 0)}",
+        f"button/input submit: {result.get('button_count', 0)}",
+    ]
+    found_inputs = [str(item) for item in (result.get("found_inputs") or []) if str(item).strip()]
+    found_buttons = [str(item) for item in (result.get("found_buttons") or []) if str(item).strip()]
+    if found_inputs:
+        lines.append("Найдены input: " + ", ".join(found_inputs))
+    if found_buttons:
+        lines.append("Найдены button: " + ", ".join(found_buttons))
+    return lines
 
 
 def build_autofill_error_message(service, result):
@@ -222,11 +271,13 @@ def build_autofill_error_message(service, result):
             lines.append(f"- поле пароля: {service.get('password_selector', '')}")
         if "submit" in missing:
             lines.append(f"- кнопка входа: {service.get('submit_selector', '')}")
+        lines.extend(_autofill_diagnostics_lines(result))
         return "\n".join(lines)
     if result.get("error") == "autofill_failed":
-        return "Ошибка автозаполнения формы: " + str(result.get("message") or "неизвестная ошибка")
+        lines = ["Ошибка автозаполнения формы: " + str(result.get("message") or "неизвестная ошибка")]
+        lines.extend(_autofill_diagnostics_lines(result))
+        return "\n".join(lines)
     return "Ошибка автозаполнения формы: JS автозаполнения не вернул корректный результат."
-
 
 def service_result_display_label(result):
     status = result.get("status") if isinstance(result, dict) else str(result or "")

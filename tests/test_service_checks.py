@@ -51,7 +51,13 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("MouseEvent", js)
         self.assertIn("missing_form_elements", js)
         self.assertIn("autofill_failed", js)
+        self.assertIn("document.readyState", js)
+        self.assertIn("iframe_count", js)
+        self.assertIn("text_input_count", js)
         self.assertNotIn(".then", js)
+        self.assertNotIn("new Promise", js)
+        self.assertNotIn("async function", js)
+        self.assertNotIn("await ", js)
 
     def test_missing_selector_error_message_uses_selectors_only(self):
         service = {
@@ -61,10 +67,14 @@ class ServiceChecksLogicTest(unittest.TestCase):
         }
         message = build_autofill_error_message(
             service,
-            {"ok": False, "error": "missing_form_elements", "missing": ["login", "submit"]},
+            {"ok": False, "error": "missing_form_elements", "missing": ["login", "submit"], "ready_state": "complete", "iframe_count": 1, "text_input_count": 2, "password_input_count": 1, "button_count": 3, "found_inputs": ["input[type=text].el-input__inner"], "found_buttons": ["button.login_btn"]},
         )
         self.assertIn("поле логина: input.login", message)
         self.assertIn("кнопка входа: button.submit", message)
+        self.assertIn("document.readyState: complete", message)
+        self.assertIn("iframe на странице: 1", message)
+        self.assertIn("Найдены input: input[type=text].el-input__inner", message)
+        self.assertIn("Найдены button: button.login_btn", message)
         self.assertNotIn("input.pass", message)
         self.assertNotIn("secret", message.lower())
 
