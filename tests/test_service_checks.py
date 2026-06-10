@@ -5,6 +5,7 @@ from app.config import build_settings_export, collect_exportable_settings
 from app.service_checks import (
     AUTH_VISIBLE_HTML_FORM,
     build_auth_form_js,
+    build_auth_form_presence_js,
     build_autofill_error_message,
     build_service_check_note_text,
     default_service_item,
@@ -66,6 +67,24 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertTrue(stripped.endswith(")()") or stripped.endswith(")();"))
         self.assertIn("return JSON.stringify", js)
         self.assertIn("ok: true", js)
+        self.assertNotIn(".then", js)
+        self.assertNotIn("new Promise", js)
+        self.assertNotIn("async", js)
+        self.assertNotIn("await", js)
+
+
+    def test_auth_form_presence_js_returns_json_diagnostics(self):
+        js = build_auth_form_presence_js({
+            "login_selector": "#login",
+            "password_selector": "#password",
+            "submit_selector": "button[type=submit]",
+        })
+        self.assertIn("JSON.stringify", js)
+        self.assertIn("missing_form_elements", js)
+        self.assertIn("diagnostics", js)
+        self.assertIn("iframe_count", js)
+        self.assertIn("input_text_count", js)
+        self.assertTrue(js.strip().endswith(")()") or js.strip().endswith(")();"))
         self.assertNotIn(".then", js)
         self.assertNotIn("new Promise", js)
         self.assertNotIn("async", js)

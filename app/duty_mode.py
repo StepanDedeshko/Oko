@@ -49,6 +49,7 @@ from app.service_checks import (
     ensure_service_checks_defaults,
     evaluate_service_check_page,
     build_auth_form_js,
+    build_auth_form_presence_js,
     build_autofill_error_message,
     make_service_result,
     parse_autofill_callback_result,
@@ -2349,6 +2350,63 @@ class ServiceCheckVisibleDialog(QDialog):
         if not ok:
             self.finish("load_error", error="Страница не загрузилась")
             return
+        self.start_autofill_wait()
+
+    def autofill_wait_seconds(self):
+        try:
+            return max(1, int(self.service.get("autofill_wait_seconds") or self.service.get("timeout_seconds", 15)))
+        except Exception:
+            return 15
+
+    def start_autofill_wait(self):
+        self.autofill_wait_attempt = 0
+        self.autofill_wait_deadline = datetime.now() + timedelta(seconds=self.autofill_wait_seconds())
+        service_id = self.service.get("id", "")
+        self.logger.info("Service check autofill wait started: service_id=%s", service_id)
+        self.status_label.setText("Ожидание появления формы авторизации…")
+        self.check_autofill_form_presence()
+
+    def check_autofill_form_presence(self):
+        if self.finished:
+            return
+        self.autofill_wait_attempt += 1
+        self.page.runJavaScript(build_auth_form_presence_js(self.service), self.after_autofill_wait_js)
+
+    def after_autofill_wait_js(self, result):
+        if self.finished:
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None:
+            self.logger.warning("Service check autofill wait failed: service_id=%s reason=%s", service_id, parse_error.get("error", "invalid_result"))
+            self.finish("autofill_error", error=build_autofill_error_message(self.service, parse_error), wait_for_manual=True)
+            return
+        diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else result
+        login_found = bool(diagnostics.get("login_found"))
+        password_found = bool(diagnostics.get("password_found"))
+        submit_found = bool(diagnostics.get("submit_found"))
+        self.logger.info(
+            "Service check autofill wait attempt: service_id=%s attempt=%s login_found=%s password_found=%s submit_found=%s",
+            service_id,
+            self.autofill_wait_attempt,
+            login_found,
+            password_found,
+            submit_found,
+        )
+        if login_found and password_found and submit_found:
+            self.logger.info("Service check autofill form ready: service_id=%s", service_id)
+            self.run_visible_autofill()
+            return
+        if datetime.now() >= self.autofill_wait_deadline:
+            self.logger.warning("Service check autofill wait timeout: service_id=%s", service_id)
+            wait_result = dict(result)
+            wait_result["error"] = "missing_form_elements"
+            wait_result["missing"] = [name for name, found in (("login", login_found), ("password", password_found), ("submit", submit_found)) if not found]
+            self.finish("autofill_error", error=build_autofill_error_message(self.service, wait_result), wait_for_manual=True)
+            return
+        QTimer.singleShot(500, self.check_autofill_form_presence)
+
+    def run_visible_autofill(self):
         creds = load_service_credentials(self.service.get("id", ""))
         js = self.make_visible_login_js(creds)
         service_id = self.service.get("id", "")
@@ -2874,6 +2932,69 @@ class DutyModeWidget(QWidget):
                 return
             QTimer.singleShot(max(0, int(service.get("post_login_delay_ms", 1500))), read_text_after_login)
 
+        def autofill_wait_seconds():
+            try:
+                return max(1, int(service.get("autofill_wait_seconds") or service.get("timeout_seconds", 15)))
+            except Exception:
+                return 15
+
+        def run_hidden_autofill():
+            if context.get("finished"):
+                return
+            creds = load_service_credentials(service.get("id", ""))
+            js = self._make_service_login_js(service, creds)
+            service_id = service.get("id", "")
+            self.logger.info("Service check autofill script length: service_id=%s length=%s", service_id, len(js))
+            head, tail = safe_autofill_script_preview(js, creds)
+            self.logger.info("Service check autofill script preview: service_id=%s head=%s tail=%s", service_id, head, tail)
+            page.runJavaScript(js, after_login_js)
+
+        def start_autofill_wait():
+            context["autofill_wait_attempt"] = 0
+            context["autofill_wait_deadline"] = datetime.now() + timedelta(seconds=autofill_wait_seconds())
+            self.logger.info("Service check autofill wait started: service_id=%s", service.get("id", ""))
+            check_autofill_form_presence()
+
+        def check_autofill_form_presence():
+            if context.get("finished") or context.get("timed_out"):
+                return
+            context["autofill_wait_attempt"] = int(context.get("autofill_wait_attempt", 0)) + 1
+            page.runJavaScript(build_auth_form_presence_js(service), after_autofill_wait_js)
+
+        def after_autofill_wait_js(result):
+            if context.get("finished") or context.get("timed_out"):
+                return
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is not None:
+                self.logger.warning("Service check autofill wait failed: service_id=%s reason=%s", service_id, parse_error.get("error", "invalid_result"))
+                finish("autofill_error", error=build_autofill_error_message(service, parse_error))
+                return
+            diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else result
+            login_found = bool(diagnostics.get("login_found"))
+            password_found = bool(diagnostics.get("password_found"))
+            submit_found = bool(diagnostics.get("submit_found"))
+            self.logger.info(
+                "Service check autofill wait attempt: service_id=%s attempt=%s login_found=%s password_found=%s submit_found=%s",
+                service_id,
+                context.get("autofill_wait_attempt", 0),
+                login_found,
+                password_found,
+                submit_found,
+            )
+            if login_found and password_found and submit_found:
+                self.logger.info("Service check autofill form ready: service_id=%s", service_id)
+                run_hidden_autofill()
+                return
+            if datetime.now() >= context.get("autofill_wait_deadline"):
+                self.logger.warning("Service check autofill wait timeout: service_id=%s", service_id)
+                wait_result = dict(result)
+                wait_result["error"] = "missing_form_elements"
+                wait_result["missing"] = [name for name, found in (("login", login_found), ("password", password_found), ("submit", submit_found)) if not found]
+                finish("autofill_error", error=build_autofill_error_message(service, wait_result))
+                return
+            QTimer.singleShot(500, check_autofill_form_presence)
+
         def on_loaded(ok):
             if context.get("timed_out"):
                 return
@@ -2882,13 +3003,7 @@ class DutyModeWidget(QWidget):
                 finish("load_error", error="Страница не загрузилась")
                 return
             if service.get("auth_type") == AUTH_HTML_FORM:
-                creds = load_service_credentials(service.get("id", ""))
-                js = self._make_service_login_js(service, creds)
-                service_id = service.get("id", "")
-                self.logger.info("Service check autofill script length: service_id=%s length=%s", service_id, len(js))
-                head, tail = safe_autofill_script_preview(js, creds)
-                self.logger.info("Service check autofill script preview: service_id=%s head=%s tail=%s", service_id, head, tail)
-                page.runJavaScript(js, after_login_js)
+                start_autofill_wait()
             else:
                 page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)
 

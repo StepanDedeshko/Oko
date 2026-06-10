@@ -277,6 +277,109 @@ def build_auth_form_js(service, credentials, blur_fields=True):
 """.strip()
 
 
+
+def build_auth_form_presence_js(service):
+    """Build a synchronous script that checks auth form presence and returns JSON diagnostics."""
+    login_selector = json.dumps(service.get("login_selector", ""))
+    password_selector = json.dumps(service.get("password_selector", ""))
+    submit_selector = json.dumps(service.get("submit_selector", ""))
+    return f"""
+(function () {{
+  function safeText(value) {{
+    return String(value || "").replace(/[\\r\\n\\t]+/g, " ").replace(/\\s+/g, " ").trim().slice(0, 120);
+  }}
+  function safeLocationHref() {{
+    try {{
+      return String(window.location.origin || "") + String(window.location.pathname || "");
+    }} catch (error) {{
+      return "";
+    }}
+  }}
+  function selectorSummary(element) {{
+    if (!element) return "";
+    const tag = String(element.tagName || "").toLowerCase();
+    const type = element.getAttribute && element.getAttribute("type");
+    const id = element.getAttribute && element.getAttribute("id");
+    const className = element.getAttribute && element.getAttribute("class");
+    const placeholder = element.getAttribute && element.getAttribute("placeholder");
+    const ariaLabel = element.getAttribute && element.getAttribute("aria-label");
+    const name = element.getAttribute && element.getAttribute("name");
+    const text = tag === "button" ? safeText(element.innerText || element.textContent || "") : "";
+    const span = tag === "button" && element.querySelector ? safeText((element.querySelector("span") || {{}}).innerText || "") : "";
+    const parts = [tag];
+    if (type) parts.push("type=" + safeText(type));
+    if (id) parts.push("id=" + safeText(id));
+    if (className) parts.push("class=" + safeText(className));
+    if (placeholder) parts.push("placeholder=" + safeText(placeholder));
+    if (ariaLabel) parts.push("aria-label=" + safeText(ariaLabel));
+    if (name) parts.push("name=" + safeText(name));
+    if (text) parts.push("text=" + text);
+    if (span && span !== text) parts.push("span=" + span);
+    return parts.join(" ");
+  }}
+  function diagnostics(login, password, submit) {{
+    const textInputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type]), input[type="email"], input[type="tel"], textarea')).slice(0, 12).map(selectorSummary);
+    const passwordInputs = Array.from(document.querySelectorAll('input[type="password"]')).slice(0, 12).map(selectorSummary);
+    const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]')).slice(0, 12).map(selectorSummary);
+    const textInputCount = document.querySelectorAll('input[type="text"], input:not([type]), input[type="email"], input[type="tel"], textarea').length;
+    return {{
+      login_found: !!login,
+      password_found: !!password,
+      submit_found: !!submit,
+      ready_state: document.readyState || "",
+      location_href: safeLocationHref(),
+      iframe_count: document.querySelectorAll("iframe").length,
+      input_text_count: textInputCount,
+      text_input_count: textInputCount,
+      input_password_count: document.querySelectorAll('input[type="password"]').length,
+      password_input_count: document.querySelectorAll('input[type="password"]').length,
+      button_count: document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]').length,
+      found_inputs: textInputs.concat(passwordInputs),
+      found_buttons: buttons
+    }};
+  }}
+  try {{
+    const login = document.querySelector({login_selector});
+    const password = document.querySelector({password_selector});
+    const submit = document.querySelector({submit_selector});
+    const info = diagnostics(login, password, submit);
+    const missing = [];
+    if (!login) missing.push("login");
+    if (!password) missing.push("password");
+    if (!submit) missing.push("submit");
+    return JSON.stringify({{
+      ok: missing.length === 0,
+      error: missing.length ? "missing_form_elements" : "",
+      missing: missing,
+      login_found: info.login_found,
+      password_found: info.password_found,
+      submit_found: info.submit_found,
+      diagnostics: info
+    }});
+  }} catch (error) {{
+    return JSON.stringify({{
+      ok: false,
+      error: "autofill_wait_failed",
+      message: String(error && error.message ? error.message : error),
+      diagnostics: {{
+        ready_state: document.readyState || "",
+        location_href: safeLocationHref(),
+        iframe_count: document.querySelectorAll("iframe").length,
+        input_text_count: document.querySelectorAll('input[type="text"], input:not([type]), input[type="email"], input[type="tel"], textarea').length,
+        input_password_count: document.querySelectorAll('input[type="password"]').length,
+        button_count: document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]').length,
+        login_found: false,
+        password_found: false,
+        submit_found: false,
+        found_inputs: [],
+        found_buttons: []
+      }}
+    }});
+  }}
+}})()
+""".strip()
+
+
 def parse_autofill_callback_result(result):
     if isinstance(result, dict):
         return result, None
