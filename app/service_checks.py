@@ -222,7 +222,7 @@ def build_auth_form_js(service, credentials, blur_fields=True):
     setNativeValue(login, {login_value});
     password.focus();
     setNativeValue(password, {password_value});
-    clickElement(submit);
+    window.setTimeout(function () {{ clickElement(submit); }}, 0);
     return Object.assign({{ ok: true, clicked: true }}, info);
   }} catch (error) {{
     return {{
@@ -260,6 +260,8 @@ def _autofill_diagnostics_lines(result):
 
 
 def build_autofill_error_message(service, result):
+    if result is None:
+        return "JS автозаполнения не вернул результат. Возможно, QtWebEngine получил undefined из runJavaScript."
     if not isinstance(result, dict):
         return "Ошибка автозаполнения формы: JS автозаполнения не вернул корректный результат."
     if result.get("error") == "missing_form_elements":
@@ -277,7 +279,19 @@ def build_autofill_error_message(service, result):
         lines = ["Ошибка автозаполнения формы: " + str(result.get("message") or "неизвестная ошибка")]
         lines.extend(_autofill_diagnostics_lines(result))
         return "\n".join(lines)
-    return "Ошибка автозаполнения формы: JS автозаполнения не вернул корректный результат."
+    lines = ["Ошибка автозаполнения формы: JS автозаполнения не вернул корректный результат."]
+    lines.extend(_autofill_diagnostics_lines(result))
+    return "\n".join(lines)
+
+
+def safe_autofill_result_repr(result, max_length=800):
+    text = repr(result)
+    for marker in ("password", "passwd", "token", "cookie", "session", "credential", "secret"):
+        text = re.sub(marker + r"[^,;}\n]*", marker + "=<redacted>", text, flags=re.IGNORECASE)
+    if len(text) > max_length:
+        text = text[:max_length] + "…"
+    return text
+
 
 def service_result_display_label(result):
     status = result.get("status") if isinstance(result, dict) else str(result or "")

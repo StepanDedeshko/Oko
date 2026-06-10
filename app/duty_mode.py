@@ -51,6 +51,7 @@ from app.service_checks import (
     build_auth_form_js,
     build_autofill_error_message,
     make_service_result,
+    safe_autofill_result_repr,
     service_result_display_label,
     service_status_label,
     summarize_service_results,
@@ -2311,7 +2312,10 @@ class ServiceCheckVisibleDialog(QDialog):
             self.finish("load_error", error="Страница не загрузилась")
             return
         creds = load_service_credentials(self.service.get("id", ""))
-        self.page.runJavaScript(self.make_visible_login_js(creds), self.after_login_js)
+        js = self.make_visible_login_js(creds)
+        service_id = self.service.get("id", "")
+        self.logger.info("Service check autofill script length: service_id=%s length=%s", service_id, len(js))
+        self.page.runJavaScript(js, self.after_login_js)
 
     def make_visible_login_js(self, creds):
         return build_auth_form_js(self.service, creds, blur_fields=True)
@@ -2320,7 +2324,14 @@ class ServiceCheckVisibleDialog(QDialog):
         if self.finished:
             return
         service_id = self.service.get("id", "")
+        self.logger.info("Service check autofill callback received: service_id=%s result_type=%s", service_id, type(result).__name__)
         if not isinstance(result, dict):
+            self.logger.warning(
+                "Service check autofill raw result invalid: service_id=%s result_type=%s result_repr=%s",
+                service_id,
+                type(result).__name__,
+                safe_autofill_result_repr(result),
+            )
             error_message = build_autofill_error_message(self.service, result)
             self.logger.warning("Service check autofill failed: service_id=%s reason=invalid_result", service_id)
             self.finish("autofill_error", error=error_message, wait_for_manual=True)
@@ -2335,6 +2346,13 @@ class ServiceCheckVisibleDialog(QDialog):
         )
         if not result.get("ok"):
             reason = str(result.get("error") or "unknown")
+            if reason == "unknown":
+                self.logger.warning(
+                    "Service check autofill raw result invalid: service_id=%s result_type=%s result_repr=%s",
+                    service_id,
+                    type(result).__name__,
+                    safe_autofill_result_repr(result),
+                )
             self.logger.warning("Service check autofill failed: service_id=%s reason=%s", service_id, reason)
             self.finish("autofill_error", error=build_autofill_error_message(self.service, result), wait_for_manual=True)
             return
@@ -2797,7 +2815,25 @@ class DutyModeWidget(QWidget):
             page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)
 
         def after_login_js(result):
-            if not isinstance(result, dict) or not result.get("ok"):
+            service_id = service.get("id", "")
+            self.logger.info("Service check autofill callback received: service_id=%s result_type=%s", service_id, type(result).__name__)
+            if not isinstance(result, dict):
+                self.logger.warning(
+                    "Service check autofill raw result invalid: service_id=%s result_type=%s result_repr=%s",
+                    service_id,
+                    type(result).__name__,
+                    safe_autofill_result_repr(result),
+                )
+                finish("autofill_error", error=build_autofill_error_message(service, result))
+                return
+            if not result.get("ok"):
+                if not result.get("error"):
+                    self.logger.warning(
+                        "Service check autofill raw result invalid: service_id=%s result_type=%s result_repr=%s",
+                        service_id,
+                        type(result).__name__,
+                        safe_autofill_result_repr(result),
+                    )
                 finish("autofill_error", error=build_autofill_error_message(service, result))
                 return
             QTimer.singleShot(max(0, int(service.get("post_login_delay_ms", 1500))), read_text_after_login)
@@ -2812,6 +2848,7 @@ class DutyModeWidget(QWidget):
             if service.get("auth_type") == AUTH_HTML_FORM:
                 creds = load_service_credentials(service.get("id", ""))
                 js = self._make_service_login_js(service, creds)
+                self.logger.info("Service check autofill script length: service_id=%s length=%s", service.get("id", ""), len(js))
                 page.runJavaScript(js, after_login_js)
             else:
                 page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)

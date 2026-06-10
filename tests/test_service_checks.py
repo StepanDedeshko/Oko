@@ -54,6 +54,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("document.readyState", js)
         self.assertIn("iframe_count", js)
         self.assertIn("text_input_count", js)
+        self.assertTrue(js.strip().endswith(")()"))
         self.assertNotIn(".then", js)
         self.assertNotIn("new Promise", js)
         self.assertNotIn("async function", js)
@@ -80,7 +81,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
 
     def test_invalid_js_result_has_safe_autofill_error(self):
         message = build_autofill_error_message({}, None)
-        self.assertIn("JS автозаполнения не вернул корректный результат", message)
+        self.assertIn("JS автозаполнения не вернул результат", message)
 
     def test_evaluate_ok_auth_error_unknown(self):
         service = {"success_texts": ["Главная", "Dashboard"], "error_texts": ["Access denied"]}
