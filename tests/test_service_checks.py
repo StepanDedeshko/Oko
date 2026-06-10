@@ -9,6 +9,7 @@ from app.service_checks import (
     build_autofill_error_message,
     build_result_selector_check_js,
     build_service_check_note_text,
+    can_open_next_visible_service_after_cleanup,
     default_service_item,
     ensure_service_checks_defaults,
     evaluate_service_check_page,
@@ -21,6 +22,8 @@ from app.service_checks import (
     service_result_display_label,
     service_status_label,
     summarize_service_results,
+    visible_html_form_should_start_autofill_wait,
+    visible_service_start_diagnostics,
 )
 from app.templates import (
     OTRS_SERVICE_CHECK_TEMPLATE_KEY,
@@ -344,6 +347,48 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Детали: Проверка пропущена вручную.", text)
         self.assertTrue(all(item["manual"] for item in results))
         self.assertEqual(service_result_display_label(results[0]), "ОК — подтверждено вручную")
+
+
+    def test_visible_queue_opens_next_only_after_cleanup(self):
+        self.assertFalse(can_open_next_visible_service_after_cleanup(False, current_dialog_active=False))
+        self.assertFalse(can_open_next_visible_service_after_cleanup(True, current_dialog_active=True))
+        self.assertTrue(can_open_next_visible_service_after_cleanup(True, current_dialog_active=False))
+
+
+    def test_visible_queue_continues_for_four_services_after_cleanup(self):
+        services = ["service", "service_2", "service_3", "service_4"]
+        opened = []
+        for service_id in services:
+            self.assertTrue(can_open_next_visible_service_after_cleanup(True, current_dialog_active=False))
+            opened.append(service_id)
+        self.assertEqual(opened, services)
+
+    def test_visible_html_form_with_valid_fields_starts_autofill_wait(self):
+        service = {
+            "id": "service_4",
+            "auth_type": "visible_html_form",
+            "url": "https://example.local",
+            "login_selector": "#login",
+            "password_selector": "#password",
+            "submit_selector": "button[type=submit]",
+        }
+        diagnostics = visible_service_start_diagnostics(service)
+        self.assertTrue(diagnostics["has_url"])
+        self.assertTrue(diagnostics["has_login_selector"])
+        self.assertTrue(diagnostics["has_password_selector"])
+        self.assertTrue(diagnostics["has_submit_selector"])
+        self.assertTrue(visible_html_form_should_start_autofill_wait(service))
+
+    def test_visible_html_form_missing_selector_does_not_start_autofill_wait(self):
+        service = {
+            "id": "service_4",
+            "auth_type": "visible_html_form",
+            "url": "https://example.local",
+            "login_selector": "#login",
+            "password_selector": "",
+            "submit_selector": "button[type=submit]",
+        }
+        self.assertFalse(visible_html_form_should_start_autofill_wait(service))
 
     def test_visible_html_form_auth_type_is_preserved(self):
         config = {

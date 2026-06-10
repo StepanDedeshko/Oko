@@ -57,6 +57,32 @@ DEFAULT_SERVICE_ITEM = {
 }
 
 
+
+def visible_service_start_diagnostics(service):
+    service = service or {}
+    return {
+        "service_id": service.get("id", ""),
+        "auth_type": service.get("auth_type", ""),
+        "has_url": bool(service.get("url")),
+        "has_login_selector": bool(service.get("login_selector")),
+        "has_password_selector": bool(service.get("password_selector")),
+        "has_submit_selector": bool(service.get("submit_selector")),
+    }
+
+
+def visible_html_form_should_start_autofill_wait(service):
+    diagnostics = visible_service_start_diagnostics(service)
+    return all([
+        diagnostics["has_url"],
+        diagnostics["has_login_selector"],
+        diagnostics["has_password_selector"],
+        diagnostics["has_submit_selector"],
+    ])
+
+
+def can_open_next_visible_service_after_cleanup(cleanup_completed, current_dialog_active=False):
+    return bool(cleanup_completed) and not bool(current_dialog_active)
+
 def default_service_checks_config():
     return deepcopy(DEFAULT_SERVICE_CHECKS)
 

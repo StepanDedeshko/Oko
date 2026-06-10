@@ -60,6 +60,8 @@ from app.service_checks import (
     service_status_label,
     summarize_service_results,
     build_service_check_note_text,
+    visible_service_start_diagnostics,
+    visible_html_form_should_start_autofill_wait,
 )
 from app.templates import (
     format_dt,
@@ -546,6 +548,8 @@ class AttachExistingTaskDialog(QDialog):
         self.detect_attempt = 0
         self.max_detect_attempts = 8
         self._cleaned_up = False
+        self._pending_result = None
+        self._pending_continue_queue = True
 
         self.view = register_web_view(QWebEngineView())
         self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
@@ -2001,6 +2005,8 @@ class DutyGraphCard(QFrame):
         self.time_range = time_range
         self.logger = get_logger()
         self._cleaned_up = False
+        self._pending_result = None
+        self._pending_continue_queue = True
 
         self.setObjectName("GraphCard")
         self.initial_view_height = 430
@@ -2244,6 +2250,7 @@ class DutyGraphCard(QFrame):
 
 class ServiceCheckVisibleDialog(QDialog):
     completed = Signal(dict, bool)
+    cleanup_completed = Signal(str)
 
     def __init__(self, service, parent=None):
         super().__init__(parent)
@@ -2254,6 +2261,8 @@ class ServiceCheckVisibleDialog(QDialog):
         self.emitted = False
         self.ssl_warning = ""
         self._cleaned_up = False
+        self._pending_result = None
+        self._pending_continue_queue = True
 
         self.setWindowTitle(f"Проверка сервиса: {service.get('name') or service.get('id') or 'Сервис'}")
         self.resize(1100, 760)
@@ -2298,8 +2307,19 @@ class ServiceCheckVisibleDialog(QDialog):
     def start(self):
         self.started_at = datetime.now()
         service_id = self.service.get("id", "")
+        diagnostics = visible_service_start_diagnostics(self.service)
+        self.logger.info(
+            "Service check visible start: service_id=%s auth_type=%s has_url=%s has_login_selector=%s has_password_selector=%s has_submit_selector=%s",
+            service_id,
+            diagnostics["auth_type"],
+            diagnostics["has_url"],
+            diagnostics["has_login_selector"],
+            diagnostics["has_password_selector"],
+            diagnostics["has_submit_selector"],
+        )
         self.logger.info("Service check visible dialog opened: service_id=%s", service_id)
         self.timeout_timer.start(max(1, int(self.service.get("timeout_seconds", 15))) * 1000)
+        self.logger.info("Service check visible load started: service_id=%s", service_id)
         self.view.load(QUrl(self.service.get("url", "")))
 
     def duration_ms(self):
@@ -2346,10 +2366,25 @@ class ServiceCheckVisibleDialog(QDialog):
         self.finish("timeout", error=f"страница не загрузилась за {self.service.get('timeout_seconds', 15)} секунд")
 
     def on_loaded(self, ok):
+        service_id = self.service.get("id", "")
+        self.logger.info("Service check visible load finished: service_id=%s ok=%s", service_id, ok)
         if self.finished:
             return
         if not ok:
+            self.logger.warning("Service check visible load failed: service_id=%s error=%s", service_id, "Страница не загрузилась")
             self.finish("load_error", error="Страница не загрузилась")
+            return
+        missing_reasons = []
+        if not self.service.get("login_selector"):
+            missing_reasons.append("login_selector")
+        if not self.service.get("password_selector"):
+            missing_reasons.append("password_selector")
+        if not self.service.get("submit_selector"):
+            missing_reasons.append("submit_selector")
+        if not visible_html_form_should_start_autofill_wait(self.service):
+            reason = ", ".join(missing_reasons)
+            self.logger.warning("Service check visible autofill wait not started: service_id=%s reason=%s", service_id, reason)
+            self.finish("autofill_error", error=f"Не заполнены обязательные selector поля: {reason}", wait_for_manual=True)
             return
         self.start_autofill_wait()
 
@@ -2564,7 +2599,10 @@ class ServiceCheckVisibleDialog(QDialog):
         self.finish_manual("manual_required", "Окно проверки закрыто вручную без подтверждения результата.")
 
     def close_and_emit(self, result, continue_queue):
-        self.emit_completed(result, continue_queue)
+        self._pending_result = result
+        self._pending_continue_queue = continue_queue
+        if continue_queue:
+            self.logger.info("Service check queue waiting for visible cleanup: previous_service_id=%s", result.get("service_id", ""))
         self.close()
 
     def emit_completed(self, result, continue_queue):
@@ -2576,23 +2614,26 @@ class ServiceCheckVisibleDialog(QDialog):
         self.completed.emit(result, continue_queue)
 
     def cleanup(self):
+        service_id = self.service.get("id", "")
         if self._cleaned_up:
             return
         self._cleaned_up = True
         view = getattr(self, "view", None)
         self.view = None
         self.page = None
-        safe_delete_web_view(view, logger=self.logger, context="ServiceCheckVisibleDialog", load_handler=self.on_loaded)
+        safe_delete_web_view(view, logger=self.logger, context=f"ServiceCheckVisibleDialog service_id={service_id}", load_handler=self.on_loaded)
+        self.logger.info("Service check visible cleanup completed: service_id=%s", service_id)
+        self.cleanup_completed.emit(service_id)
 
     def closeEvent(self, event):
-        if not self.emitted:
+        if not self.emitted and self._pending_result is None:
             try:
                 self.timeout_timer.stop()
             except Exception:
                 pass
             service_id = self.service.get("id", "")
             self.logger.info("Service check visible manual result: service_id=%s status=manual_required", service_id)
-            result = make_service_result(
+            self._pending_result = make_service_result(
                 self.service,
                 status="manual_required",
                 duration_ms=self.duration_ms(),
@@ -2600,8 +2641,14 @@ class ServiceCheckVisibleDialog(QDialog):
                 manual=True,
                 details="Окно проверки закрыто вручную без подтверждения результата.",
             )
-            self.emit_completed(result, True)
+            self._pending_continue_queue = True
+            self.logger.info("Service check queue waiting for visible cleanup: previous_service_id=%s", service_id)
         self.cleanup()
+        if self._pending_result is not None and not self.emitted:
+            result = self._pending_result
+            continue_queue = self._pending_continue_queue
+            self._pending_result = None
+            self.emit_completed(result, continue_queue)
         super().closeEvent(event)
 
 
@@ -2856,7 +2903,7 @@ class DutyModeWidget(QWidget):
         dialog = ServiceCheckVisibleDialog(service, parent=self)
         self.visible_service_dialog = dialog
         dialog.completed.connect(self._finish_visible_service_check)
-        dialog.destroyed.connect(lambda: setattr(self, "visible_service_dialog", None))
+        dialog.destroyed.connect(lambda _obj=None, d=dialog: self._clear_visible_dialog_if_current(d))
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -2870,7 +2917,11 @@ class DutyModeWidget(QWidget):
         self.service_check_results.append(result)
         self.render_service_results()
         if continue_queue:
-            self.visible_service_dialog = None
+            if self.visible_service_dialog is not None and self.visible_service_dialog.service.get("id") == result.get("service_id"):
+                self.visible_service_dialog = None
+            next_service_id = self.service_check_queue[0].get("id", "") if self.service_check_queue else ""
+            if next_service_id:
+                self.logger.info("Service check queue opening next after cleanup: next_service_id=%s", next_service_id)
             QTimer.singleShot(0, self._run_next_service_check)
             return
         self.service_check_queue = []
@@ -2878,6 +2929,11 @@ class DutyModeWidget(QWidget):
         self.service_summary_label.setText(
             "Проверка остановлена: окно сервиса оставлено открытым для диагностики."
         )
+
+    def _clear_visible_dialog_if_current(self, dialog):
+        if self.visible_service_dialog is dialog:
+            self.visible_service_dialog = None
+
 
     def _run_single_service_check(self, service):
         if not service.get("url"):
