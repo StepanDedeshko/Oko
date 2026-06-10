@@ -216,42 +216,63 @@ def build_auth_form_js(service, credentials, blur_fields=True):
     if (!password) missing.push("password");
     if (!submit) missing.push("submit");
     if (missing.length) {{
-      return Object.assign({{ ok: false, error: "missing_form_elements", missing: missing }}, info);
+      return {{
+        ok: false,
+        error: "missing_form_elements",
+        missing: missing,
+        login_found: info.login_found,
+        password_found: info.password_found,
+        submit_found: info.submit_found,
+        diagnostics: info
+      }};
     }}
     login.focus();
     setNativeValue(login, {login_value});
     password.focus();
     setNativeValue(password, {password_value});
-    window.setTimeout(function () {{ clickElement(submit); }}, 0);
-    return Object.assign({{ ok: true, clicked: true }}, info);
-  }} catch (error) {{
+    window.setTimeout(function () {{ clickElement(submit); }}, 100);
     return {{
-      ok: false,
-      error: "autofill_failed",
-      message: String(error && error.message ? error.message : error),
+      ok: true,
+      clicked: true,
+      login_found: info.login_found,
+      password_found: info.password_found,
+      submit_found: info.submit_found,
+      diagnostics: info
+    }};
+  }} catch (error) {{
+    const fallbackDiagnostics = {{
       ready_state: document.readyState || "",
       iframe_count: document.querySelectorAll("iframe").length,
       text_input_count: document.querySelectorAll('input[type="text"], input:not([type]), textarea').length,
       password_input_count: document.querySelectorAll('input[type="password"]').length,
-      button_count: document.querySelectorAll('button, input[type="submit"], input[type="button"]').length
+      button_count: document.querySelectorAll('button, input[type="submit"], input[type="button"]').length,
+      found_inputs: [],
+      found_buttons: []
+    }};
+    return {{
+      ok: false,
+      error: "autofill_failed",
+      message: String(error && error.message ? error.message : error),
+      diagnostics: fallbackDiagnostics
     }};
   }}
 }})()
-"""
+""".strip()
 
 
 def _autofill_diagnostics_lines(result):
     if not isinstance(result, dict):
         return []
+    diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else result
     lines = [
-        f"document.readyState: {result.get('ready_state', '')}",
-        f"iframe на странице: {result.get('iframe_count', 0)}",
-        f"input[type=text]/textarea: {result.get('text_input_count', 0)}",
-        f"input[type=password]: {result.get('password_input_count', 0)}",
-        f"button/input submit: {result.get('button_count', 0)}",
+        f"document.readyState: {diagnostics.get('ready_state', '')}",
+        f"iframe на странице: {diagnostics.get('iframe_count', 0)}",
+        f"input[type=text]/textarea: {diagnostics.get('text_input_count', 0)}",
+        f"input[type=password]: {diagnostics.get('password_input_count', 0)}",
+        f"button/input submit: {diagnostics.get('button_count', 0)}",
     ]
-    found_inputs = [str(item) for item in (result.get("found_inputs") or []) if str(item).strip()]
-    found_buttons = [str(item) for item in (result.get("found_buttons") or []) if str(item).strip()]
+    found_inputs = [str(item) for item in (diagnostics.get("found_inputs") or []) if str(item).strip()]
+    found_buttons = [str(item) for item in (diagnostics.get("found_buttons") or []) if str(item).strip()]
     if found_inputs:
         lines.append("Найдены input: " + ", ".join(found_inputs))
     if found_buttons:
@@ -262,6 +283,8 @@ def _autofill_diagnostics_lines(result):
 def build_autofill_error_message(service, result):
     if result is None:
         return "JS автозаполнения не вернул результат. Возможно, QtWebEngine получил undefined из runJavaScript."
+    if isinstance(result, str) and result == "":
+        return "JS автозаполнения вернул пустую строку вместо объекта. Проверьте формирование autofill-скрипта."
     if not isinstance(result, dict):
         return "Ошибка автозаполнения формы: JS автозаполнения не вернул корректный результат."
     if result.get("error") == "missing_form_elements":
@@ -292,6 +315,20 @@ def safe_autofill_result_repr(result, max_length=800):
         text = text[:max_length] + "…"
     return text
 
+
+
+def safe_autofill_script_preview(script, credentials=None, size=180):
+    text = str(script or "")
+    for value in (credentials or {}).values():
+        value = str(value or "")
+        if not value:
+            continue
+        text = text.replace(json.dumps(value), '"<redacted>"')
+        if len(value) >= 4:
+            text = text.replace(value, "<redacted>")
+    redacted = re.sub(r'(const\s+(?:login_value|password_value)\s*=\s*)"(?:\\.|[^"\\])*"', r'\1"<redacted>"', text)
+    compact = " ".join(redacted.split())
+    return compact[:size], compact[-size:] if len(compact) > size else compact
 
 def service_result_display_label(result):
     status = result.get("status") if isinstance(result, dict) else str(result or "")

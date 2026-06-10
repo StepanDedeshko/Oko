@@ -52,6 +52,7 @@ from app.service_checks import (
     build_autofill_error_message,
     make_service_result,
     safe_autofill_result_repr,
+    safe_autofill_script_preview,
     service_result_display_label,
     service_status_label,
     summarize_service_results,
@@ -2315,6 +2316,8 @@ class ServiceCheckVisibleDialog(QDialog):
         js = self.make_visible_login_js(creds)
         service_id = self.service.get("id", "")
         self.logger.info("Service check autofill script length: service_id=%s length=%s", service_id, len(js))
+        head, tail = safe_autofill_script_preview(js, creds)
+        self.logger.info("Service check autofill script preview: service_id=%s head=%s tail=%s", service_id, head, tail)
         self.page.runJavaScript(js, self.after_login_js)
 
     def make_visible_login_js(self, creds):
@@ -2848,7 +2851,10 @@ class DutyModeWidget(QWidget):
             if service.get("auth_type") == AUTH_HTML_FORM:
                 creds = load_service_credentials(service.get("id", ""))
                 js = self._make_service_login_js(service, creds)
-                self.logger.info("Service check autofill script length: service_id=%s length=%s", service.get("id", ""), len(js))
+                service_id = service.get("id", "")
+                self.logger.info("Service check autofill script length: service_id=%s length=%s", service_id, len(js))
+                head, tail = safe_autofill_script_preview(js, creds)
+                self.logger.info("Service check autofill script preview: service_id=%s head=%s tail=%s", service_id, head, tail)
                 page.runJavaScript(js, after_login_js)
             else:
                 page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)

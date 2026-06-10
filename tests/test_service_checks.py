@@ -13,6 +13,7 @@ from app.service_checks import (
     make_service_result,
     normalize_service_id,
     parse_text_markers,
+    safe_autofill_script_preview,
     service_result_display_label,
     service_status_label,
     summarize_service_results,
@@ -54,11 +55,28 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("document.readyState", js)
         self.assertIn("iframe_count", js)
         self.assertIn("text_input_count", js)
-        self.assertTrue(js.strip().endswith(")()"))
+        stripped = js.strip()
+        self.assertTrue(stripped)
+        self.assertFalse(stripped.startswith(("'", '"')))
+        self.assertFalse(stripped.endswith(("'", '"')))
+        self.assertTrue(stripped.endswith(")()") or stripped.endswith(")();"))
+        self.assertIn("return {", js)
+        self.assertIn("ok: true", js)
         self.assertNotIn(".then", js)
         self.assertNotIn("new Promise", js)
-        self.assertNotIn("async function", js)
-        self.assertNotIn("await ", js)
+        self.assertNotIn("async", js)
+        self.assertNotIn("await", js)
+
+    def test_autofill_script_preview_redacts_credentials(self):
+        js = build_auth_form_js(
+            {"login_selector": "#login", "password_selector": "#password", "submit_selector": "button"},
+            {"login": "user@example.local", "password": "super-secret-password"},
+        )
+        head, tail = safe_autofill_script_preview(js, {"login": "user@example.local", "password": "super-secret-password"}, size=10000)
+        preview = head + tail
+        self.assertNotIn("user@example.local", preview)
+        self.assertNotIn("super-secret-password", preview)
+        self.assertIn("<redacted>", preview)
 
     def test_missing_selector_error_message_uses_selectors_only(self):
         service = {
@@ -82,6 +100,8 @@ class ServiceChecksLogicTest(unittest.TestCase):
     def test_invalid_js_result_has_safe_autofill_error(self):
         message = build_autofill_error_message({}, None)
         self.assertIn("JS автозаполнения не вернул результат", message)
+        empty_message = build_autofill_error_message({}, "")
+        self.assertIn("JS автозаполнения вернул пустую строку вместо объекта", empty_message)
 
     def test_evaluate_ok_auth_error_unknown(self):
         service = {"success_texts": ["Главная", "Dashboard"], "error_texts": ["Access denied"]}
