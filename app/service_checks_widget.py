@@ -84,6 +84,7 @@ class ServiceChecksSettingsWidget(QWidget):
         self.timeout_input = QSpinBox()
         self.timeout_input.setRange(1, 300)
         self.timeout_input.setSuffix(" сек")
+        self.allow_insecure_ssl_input = QCheckBox("Разрешить внутренний/самоподписанный SSL-сертификат")
         self.otrs_task_url_input = QLineEdit()
         self.otrs_task_url_input.setPlaceholderText("https://itsm...Action=AgentTicketNote;TicketID=...")
         general_form.addRow("Задача ОТРС для проверки сервисов:", self.otrs_task_url_input)
@@ -91,6 +92,7 @@ class ServiceChecksSettingsWidget(QWidget):
         general_form.addRow("Состояние:", self.enabled_input)
         general_form.addRow("URL проверки:", self.url_input)
         general_form.addRow("Таймаут:", self.timeout_input)
+        general_form.addRow("SSL:", self.allow_insecure_ssl_input)
         form_layout.addWidget(general)
 
         auth = QGroupBox("Авторизация")
@@ -148,6 +150,7 @@ class ServiceChecksSettingsWidget(QWidget):
             widget.textChanged.connect(self.update_current_from_form)
         self.otrs_task_url_input.textChanged.connect(lambda text: self.settings.__setitem__("otrs_task_url", text.strip()))
         self.enabled_input.toggled.connect(self.update_current_from_form)
+        self.allow_insecure_ssl_input.toggled.connect(self.update_current_from_form)
         self.timeout_input.valueChanged.connect(self.update_current_from_form)
         self.auth_type_input.currentIndexChanged.connect(self.update_current_from_form)
         self.post_login_delay_input.valueChanged.connect(self.update_current_from_form)
@@ -173,7 +176,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item = self.current_item()
         self._loading = True
         enabled = item is not None
-        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.success_texts_input, self.error_texts_input):
+        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.success_texts_input, self.error_texts_input):
             widget.setEnabled(enabled)
         self.otrs_task_url_input.setText(self.settings.get("otrs_task_url", ""))
         if item:
@@ -181,6 +184,7 @@ class ServiceChecksSettingsWidget(QWidget):
             self.enabled_input.setChecked(item.get("enabled", True))
             self.url_input.setText(item.get("url", ""))
             self.timeout_input.setValue(int(item.get("timeout_seconds", 15)))
+            self.allow_insecure_ssl_input.setChecked(bool(item.get("allow_insecure_ssl", False)))
             idx = self.auth_type_input.findData(item.get("auth_type", AUTH_NONE))
             self.auth_type_input.setCurrentIndex(max(0, idx))
             creds = load_service_credentials(item.get("id", ""))
@@ -224,6 +228,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item["enabled"] = self.enabled_input.isChecked()
         item["url"] = self.url_input.text().strip()
         item["timeout_seconds"] = int(self.timeout_input.value())
+        item["allow_insecure_ssl"] = self.allow_insecure_ssl_input.isChecked()
         item["auth_type"] = self.auth_type_input.currentData() or AUTH_NONE
         item["login_selector"] = self.login_selector_input.text().strip()
         item["password_selector"] = self.password_selector_input.text().strip()

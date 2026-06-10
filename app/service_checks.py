@@ -22,6 +22,7 @@ SERVICE_CHECK_STATUSES = {
     "timeout": "Таймаут",
     "unknown": "Неизвестно",
     "error": "Ошибка",
+    "ssl_error": "Ошибка SSL-сертификата",
 }
 
 DEFAULT_SERVICE_CHECKS = {
@@ -42,6 +43,7 @@ DEFAULT_SERVICE_ITEM = {
     "error_texts": [],
     "timeout_seconds": 15,
     "post_login_delay_ms": 1500,
+    "allow_insecure_ssl": False,
 }
 
 
@@ -113,6 +115,7 @@ def ensure_service_checks_defaults(config):
         merged["id"] = unique_service_id(merged.get("id") or merged.get("name") or f"service_{index + 1}", normalized)
         merged["name"] = str(merged.get("name") or merged["id"]).strip() or "Новый продукт"
         merged["enabled"] = bool(merged.get("enabled", True))
+        merged["allow_insecure_ssl"] = bool(merged.get("allow_insecure_ssl", False))
         merged["auth_type"] = merged.get("auth_type") if merged.get("auth_type") in {AUTH_NONE, AUTH_HTML_FORM, AUTH_WEBENGINE_SESSION} else AUTH_NONE
         merged["success_texts"] = parse_text_markers(merged.get("success_texts", []))
         merged["error_texts"] = parse_text_markers(merged.get("error_texts", []))
@@ -146,7 +149,7 @@ def evaluate_service_check_page(service, page_text, loaded=True, timed_out=False
     return "unknown", "", "", "Не найдены признаки успеха или ошибки"
 
 
-def make_service_result(service, status="not_checked", error="", matched_success_text="", matched_error_text="", page_excerpt="", duration_ms=0, checked_at=None):
+def make_service_result(service, status="not_checked", error="", matched_success_text="", matched_error_text="", page_excerpt="", duration_ms=0, checked_at=None, warning=""):
     return {
         "service_id": service.get("id", ""),
         "name": service.get("name", ""),
@@ -158,6 +161,7 @@ def make_service_result(service, status="not_checked", error="", matched_success
         "matched_error_text": matched_error_text or "",
         "page_excerpt": str(page_excerpt or "")[:500],
         "duration_ms": int(duration_ms or 0),
+        "warning": warning or "",
     }
 
 
@@ -192,11 +196,15 @@ def build_service_note_context(results, checked_at=None):
         details = []
         if result.get("error"):
             details.append(f"Ошибка: {result.get('error')}")
+        if result.get("warning"):
+            details.append(f"Предупреждение: {result.get('warning')}")
         if result.get("url"):
             details.append(f"URL: {result.get('url')}")
-        if details and result.get("status") != "ok":
-            lines.extend(f"   {detail}" for detail in details)
-            error_lines.append(f"{result.get('name') or result.get('service_id')}: {'; '.join(details)}")
+        if details:
+            if result.get("status") != "ok" or result.get("warning"):
+                lines.extend(f"   {detail}" for detail in details)
+            if result.get("status") != "ok":
+                error_lines.append(f"{result.get('name') or result.get('service_id')}: {'; '.join(details)}")
     return {
         "checked_at": checked_at,
         "services_total_count": stats["total"],

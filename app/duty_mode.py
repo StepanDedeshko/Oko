@@ -2382,9 +2382,18 @@ class DutyModeWidget(QWidget):
         for service in self.service_settings().get("items", []):
             result = result_by_id.get(service.get("id")) or make_service_result(service, status="not_checked")
             label = f"{service.get('name') or service.get('id')} — {service_status_label(result.get('status'))}"
+            if result.get("warning"):
+                label += " (SSL-сертификат принят)"
             if not service.get("enabled", True):
                 label += " (выключен)"
-            self.service_results_list.addItem(label)
+            list_item = QListWidgetItem(label)
+            if result.get("status") in {"auth_error", "load_error", "timeout", "error", "ssl_error"}:
+                list_item.setForeground(QColor("#ff5c5c"))
+            elif result.get("status") == "ok":
+                list_item.setForeground(QColor("#7CFC98"))
+            if result.get("error") or result.get("warning"):
+                list_item.setToolTip("\n".join(part for part in [result.get("error", ""), result.get("warning", "")] if part))
+            self.service_results_list.addItem(list_item)
         stats = summarize_service_results(self.service_check_results)
         if self.service_check_results:
             self.service_summary_label.setText(
@@ -2452,7 +2461,7 @@ class DutyModeWidget(QWidget):
         def duration_ms():
             return int((datetime.now() - started).total_seconds() * 1000)
 
-        def finish(status, error="", html_text="", matched_success="", matched_error=""):
+        def finish(status, error="", html_text="", matched_success="", matched_error="", warning=""):
             if context.get("finished"):
                 return
             context["finished"] = True
@@ -2465,6 +2474,7 @@ class DutyModeWidget(QWidget):
                 matched_error_text=matched_error,
                 page_excerpt=html_text,
                 duration_ms=duration_ms(),
+                warning=warning or context.get("ssl_warning", ""),
             )
             self._finish_single_service_check(service, result)
 
@@ -2500,6 +2510,47 @@ class DutyModeWidget(QWidget):
         def on_timeout():
             context["timed_out"] = True
             finish("timeout", error=f"страница не загрузилась за {service.get('timeout_seconds', 15)} секунд")
+
+        def on_certificate_error(error):
+            service_id = service.get("id", "")
+            service_name = service.get("name", "")
+            service_url = service.get("url", "")
+            self.logger.warning(
+                "Service check SSL error: service_id=%s name=%s url=%s",
+                service_id,
+                service_name,
+                service_url,
+            )
+            allow_insecure_ssl = bool(service.get("allow_insecure_ssl", False))
+            description = ""
+            try:
+                description = str(error.description() or "")
+            except Exception:
+                description = ""
+            if allow_insecure_ssl:
+                self.logger.warning("Service check SSL error accepted by config: service_id=%s", service_id)
+                context["ssl_warning"] = "SSL-сертификат был принят как внутренний/самоподписанный."
+                try:
+                    error.acceptCertificate()
+                except Exception:
+                    self.logger.exception("Service check SSL accept failed: service_id=%s", service_id)
+                    finish("ssl_error", error="Ошибка SSL-сертификата: не удалось принять сертификат сервиса.")
+                return
+
+            self.logger.warning("Service check SSL error rejected: service_id=%s", service_id)
+            try:
+                error.rejectCertificate()
+            except Exception:
+                pass
+            detail = "Ошибка SSL-сертификата: проверьте сертификат сервиса или включите “Разрешить внутренний/самоподписанный SSL-сертификат” в настройках сервиса."
+            if description:
+                detail += f" Подробности: {description}"
+            finish("ssl_error", error=detail)
+
+        try:
+            page.certificateError.connect(on_certificate_error)
+        except Exception:
+            self.logger.warning("Service check certificateError signal is not available")
 
         timer.timeout.connect(on_timeout)
         view.loadFinished.connect(on_loaded)

@@ -10,6 +10,8 @@ from app.service_checks import (
     make_service_result,
     normalize_service_id,
     parse_text_markers,
+    service_status_label,
+    summarize_service_results,
 )
 from app.templates import (
     OTRS_SERVICE_CHECK_TEMPLATE_KEY,
@@ -73,10 +75,39 @@ class ServiceChecksLogicTest(unittest.TestCase):
         settings = ensure_service_checks_defaults(config)
         self.assertIn("service_checks", config)
         self.assertEqual(settings["otrs_task_url"], "")
+        self.assertFalse(default_service_item("FacePay")["allow_insecure_ssl"])
         item = default_service_item("FacePay")
         config["service_checks"]["items"].append(item)
         ensure_service_checks_defaults(config)
         self.assertEqual(config["service_checks"]["items"][0]["id"], "facepay")
+        self.assertFalse(config["service_checks"]["items"][0]["allow_insecure_ssl"])
+
+    def test_ssl_error_status_is_error_and_has_label(self):
+        result = make_service_result({"id": "svc", "name": "Svc"}, status="ssl_error")
+        stats = summarize_service_results([result])
+        self.assertEqual(stats["errors"], 1)
+        self.assertEqual(service_status_label("ssl_error"), "Ошибка SSL-сертификата")
+
+    def test_ssl_error_note_contains_clear_error(self):
+        result = make_service_result(
+            {"id": "svc", "name": "Сервис", "url": "https://internal.local"},
+            status="ssl_error",
+            error="Ошибка SSL-сертификата: проверьте сертификат сервиса",
+        )
+        text = build_service_check_note_text({}, [result], checked_at="2026-06-10 13:30")
+        self.assertIn("Сервис — Ошибка SSL-сертификата", text)
+        self.assertIn("Ошибка SSL-сертификата: проверьте сертификат сервиса", text)
+        self.assertIn("https://internal.local", text)
+
+    def test_ssl_warning_note_contains_warning_for_ok_result(self):
+        result = make_service_result(
+            {"id": "svc", "name": "Сервис", "url": "https://internal.local"},
+            status="ok",
+            warning="SSL-сертификат был принят как внутренний/самоподписанный.",
+        )
+        text = build_service_check_note_text({}, [result], checked_at="2026-06-10 13:30")
+        self.assertIn("Сервис — ОК", text)
+        self.assertIn("Предупреждение: SSL-сертификат был принят как внутренний/самоподписанный.", text)
 
     def test_export_includes_service_checks_but_not_credentials(self):
         config = {
@@ -91,6 +122,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
                     "login_selector": "input[name=login]",
                     "password_selector": "input[type=password]",
                     "submit_selector": "button[type=submit]",
+                    "allow_insecure_ssl": True,
                     "success_texts": ["Главная"],
                     "error_texts": ["Access denied"],
                     "login": "must-not-export",
@@ -103,6 +135,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
         item = exported["settings"]["service_checks"]["items"][0]
         self.assertEqual(item["auth_type"], "html_form")
         self.assertIn("login_selector", item)
+        self.assertTrue(item["allow_insecure_ssl"])
         serialized = json.dumps(exported, ensure_ascii=False).lower()
         self.assertNotIn("must-not-export", serialized)
         self.assertNotIn('"login"', serialized)
