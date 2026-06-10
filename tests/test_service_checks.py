@@ -12,6 +12,7 @@ from app.service_checks import (
     evaluate_service_check_page,
     make_service_result,
     normalize_service_id,
+    parse_autofill_callback_result,
     parse_text_markers,
     safe_autofill_script_preview,
     service_result_display_label,
@@ -55,12 +56,15 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("document.readyState", js)
         self.assertIn("iframe_count", js)
         self.assertIn("text_input_count", js)
+        self.assertIn("input_text_count", js)
+        self.assertIn("location_href", js)
+        self.assertIn("JSON.stringify", js)
         stripped = js.strip()
         self.assertTrue(stripped)
         self.assertFalse(stripped.startswith(("'", '"')))
         self.assertFalse(stripped.endswith(("'", '"')))
         self.assertTrue(stripped.endswith(")()") or stripped.endswith(")();"))
-        self.assertIn("return {", js)
+        self.assertIn("return JSON.stringify", js)
         self.assertIn("ok: true", js)
         self.assertNotIn(".then", js)
         self.assertNotIn("new Promise", js)
@@ -86,14 +90,36 @@ class ServiceChecksLogicTest(unittest.TestCase):
         }
         message = build_autofill_error_message(
             service,
-            {"ok": False, "error": "missing_form_elements", "missing": ["login", "submit"], "ready_state": "complete", "iframe_count": 1, "text_input_count": 2, "password_input_count": 1, "button_count": 3, "found_inputs": ["input[type=text].el-input__inner"], "found_buttons": ["button.login_btn"]},
+            {
+                "ok": False,
+                "error": "missing_form_elements",
+                "missing": ["login", "submit"],
+                "diagnostics": {
+                    "ready_state": "complete",
+                    "location_href": "https://example.local/login",
+                    "iframe_count": 1,
+                    "input_text_count": 2,
+                    "input_password_count": 1,
+                    "button_count": 3,
+                    "login_found": False,
+                    "password_found": True,
+                    "submit_found": False,
+                    "found_inputs": ["input type=text class=el-input__inner"],
+                    "found_buttons": ["button class=login_btn text=Вход"],
+                },
+            },
         )
         self.assertIn("поле логина: input.login", message)
         self.assertIn("кнопка входа: button.submit", message)
-        self.assertIn("document.readyState: complete", message)
-        self.assertIn("iframe на странице: 1", message)
-        self.assertIn("Найдены input: input[type=text].el-input__inner", message)
-        self.assertIn("Найдены button: button.login_btn", message)
+        self.assertIn("readyState=complete", message)
+        self.assertIn("location=https://example.local/login", message)
+        self.assertIn("iframe_count=1", message)
+        self.assertIn("input_text_count=2", message)
+        self.assertIn("input_password_count=1", message)
+        self.assertIn("login_found=False", message)
+        self.assertIn("found_inputs=input type=text class=el-input__inner", message)
+        self.assertIn("found_buttons=button class=login_btn text=Вход", message)
+        self.assertIn("форма авторизации находится внутри iframe", message)
         self.assertNotIn("input.pass", message)
         self.assertNotIn("secret", message.lower())
 
@@ -101,7 +127,32 @@ class ServiceChecksLogicTest(unittest.TestCase):
         message = build_autofill_error_message({}, None)
         self.assertIn("JS автозаполнения не вернул результат", message)
         empty_message = build_autofill_error_message({}, "")
-        self.assertIn("JS автозаполнения вернул пустую строку вместо объекта", empty_message)
+        self.assertIn("JS автозаполнения вернул пустую строку вместо JSON", empty_message)
+
+    def test_parse_autofill_callback_result_supports_json_string_and_errors(self):
+        parsed, error = parse_autofill_callback_result('{"ok": true, "clicked": true}')
+        self.assertIsNone(error)
+        self.assertTrue(parsed["ok"])
+        self.assertTrue(parsed["clicked"])
+
+        parsed, error = parse_autofill_callback_result({"ok": True, "clicked": True})
+        self.assertIsNone(error)
+        self.assertTrue(parsed["ok"])
+
+        parsed, error = parse_autofill_callback_result("")
+        self.assertIsNone(parsed)
+        self.assertEqual(error["error"], "empty_string_result")
+        self.assertIn("пустую строку вместо JSON", build_autofill_error_message({}, error))
+
+        parsed, error = parse_autofill_callback_result("not json")
+        self.assertIsNone(parsed)
+        self.assertEqual(error["error"], "invalid_json")
+        self.assertIn("невалидный JSON", build_autofill_error_message({}, error))
+
+        parsed, error = parse_autofill_callback_result("[]")
+        self.assertIsNone(parsed)
+        self.assertEqual(error["error"], "invalid_json_type")
+        self.assertIn("JSON неверного типа", build_autofill_error_message({}, error))
 
     def test_evaluate_ok_auth_error_unknown(self):
         service = {"success_texts": ["Главная", "Dashboard"], "error_texts": ["Access denied"]}

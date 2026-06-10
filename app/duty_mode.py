@@ -51,6 +51,7 @@ from app.service_checks import (
     build_auth_form_js,
     build_autofill_error_message,
     make_service_result,
+    parse_autofill_callback_result,
     safe_autofill_result_repr,
     safe_autofill_script_preview,
     service_result_display_label,
@@ -67,6 +68,42 @@ from app.templates import (
 
 
 MSK = timezone(timedelta(hours=3))
+
+
+def normalize_service_autofill_result(logger, service_id, result):
+    parsed, parse_error = parse_autofill_callback_result(result)
+    if parse_error is None:
+        if isinstance(result, str):
+            logger.info(
+                "Service check autofill JSON parsed: service_id=%s ok=%s clicked=%s",
+                service_id,
+                bool(parsed.get("ok")),
+                bool(parsed.get("clicked")),
+            )
+        return parsed, None
+
+    reason = str(parse_error.get("error") or "invalid_result")
+    if reason == "empty_string_result":
+        logger.warning("Service check autofill empty string result: service_id=%s", service_id)
+    elif reason == "invalid_json":
+        logger.warning(
+            "Service check autofill JSON parse failed: service_id=%s reason=%s",
+            service_id,
+            parse_error.get("details", ""),
+        )
+    elif reason == "invalid_json_type":
+        logger.warning(
+            "Service check autofill JSON type invalid: service_id=%s json_type=%s",
+            service_id,
+            parse_error.get("json_type", ""),
+        )
+    logger.warning(
+        "Service check autofill raw result invalid: service_id=%s result_type=%s result_repr=%s",
+        service_id,
+        type(result).__name__,
+        safe_autofill_result_repr(result),
+    )
+    return None, parse_error
 
 
 DUTY_TRIGGER_STATUS_MESSAGES = {
@@ -2328,15 +2365,11 @@ class ServiceCheckVisibleDialog(QDialog):
             return
         service_id = self.service.get("id", "")
         self.logger.info("Service check autofill callback received: service_id=%s result_type=%s", service_id, type(result).__name__)
-        if not isinstance(result, dict):
-            self.logger.warning(
-                "Service check autofill raw result invalid: service_id=%s result_type=%s result_repr=%s",
-                service_id,
-                type(result).__name__,
-                safe_autofill_result_repr(result),
-            )
-            error_message = build_autofill_error_message(self.service, result)
-            self.logger.warning("Service check autofill failed: service_id=%s reason=invalid_result", service_id)
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None:
+            reason = str(parse_error.get("error") or "invalid_result")
+            error_message = build_autofill_error_message(self.service, parse_error)
+            self.logger.warning("Service check autofill failed: service_id=%s reason=%s", service_id, reason)
             self.finish("autofill_error", error=error_message, wait_for_manual=True)
             return
         missing = set(result.get("missing") or [])
@@ -2820,14 +2853,14 @@ class DutyModeWidget(QWidget):
         def after_login_js(result):
             service_id = service.get("id", "")
             self.logger.info("Service check autofill callback received: service_id=%s result_type=%s", service_id, type(result).__name__)
-            if not isinstance(result, dict):
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is not None:
                 self.logger.warning(
-                    "Service check autofill raw result invalid: service_id=%s result_type=%s result_repr=%s",
+                    "Service check autofill failed: service_id=%s reason=%s",
                     service_id,
-                    type(result).__name__,
-                    safe_autofill_result_repr(result),
+                    parse_error.get("error", "invalid_result"),
                 )
-                finish("autofill_error", error=build_autofill_error_message(service, result))
+                finish("autofill_error", error=build_autofill_error_message(service, parse_error))
                 return
             if not result.get("ok"):
                 if not result.get("error"):

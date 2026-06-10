@@ -149,7 +149,7 @@ def ensure_service_checks_defaults(config):
 
 
 def build_auth_form_js(service, credentials, blur_fields=True):
-    """Build a synchronous autofill script returning a plain object for Qt WebEngine."""
+    """Build a synchronous autofill script returning a JSON string for Qt WebEngine."""
     login_selector = json.dumps(service.get("login_selector", ""))
     password_selector = json.dumps(service.get("password_selector", ""))
     submit_selector = json.dumps(service.get("submit_selector", ""))
@@ -158,30 +158,55 @@ def build_auth_form_js(service, credentials, blur_fields=True):
     blur_line = 'element.dispatchEvent(new Event("blur", { bubbles: true }));' if blur_fields else ""
     return f"""
 (function () {{
+  function safeText(value) {{
+    return String(value || "").replace(/[\\r\\n\\t]+/g, " ").replace(/\\s+/g, " ").trim().slice(0, 120);
+  }}
+  function safeLocationHref() {{
+    try {{
+      return String(window.location.origin || "") + String(window.location.pathname || "");
+    }} catch (error) {{
+      return "";
+    }}
+  }}
   function selectorSummary(element) {{
     if (!element) return "";
-    const parts = [String(element.tagName || "").toLowerCase()];
+    const tag = String(element.tagName || "").toLowerCase();
     const type = element.getAttribute && element.getAttribute("type");
     const id = element.getAttribute && element.getAttribute("id");
     const className = element.getAttribute && element.getAttribute("class");
-    if (type) parts.push("[type=" + type + "]");
-    if (id) parts.push("#" + id);
-    if (className) parts.push("." + String(className).trim().split(/\\s+/).filter(Boolean).join("."));
-    return parts.join("");
+    const placeholder = element.getAttribute && element.getAttribute("placeholder");
+    const ariaLabel = element.getAttribute && element.getAttribute("aria-label");
+    const name = element.getAttribute && element.getAttribute("name");
+    const text = tag === "button" ? safeText(element.innerText || element.textContent || "") : "";
+    const span = tag === "button" && element.querySelector ? safeText((element.querySelector("span") || {{}}).innerText || "") : "";
+    const parts = [tag];
+    if (type) parts.push("type=" + safeText(type));
+    if (id) parts.push("id=" + safeText(id));
+    if (className) parts.push("class=" + safeText(className));
+    if (placeholder) parts.push("placeholder=" + safeText(placeholder));
+    if (ariaLabel) parts.push("aria-label=" + safeText(ariaLabel));
+    if (name) parts.push("name=" + safeText(name));
+    if (text) parts.push("text=" + text);
+    if (span && span !== text) parts.push("span=" + span);
+    return parts.join(" ");
   }}
   function diagnostics(login, password, submit) {{
-    const textInputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type]), textarea')).slice(0, 8).map(selectorSummary);
-    const passwordInputs = Array.from(document.querySelectorAll('input[type="password"]')).slice(0, 8).map(selectorSummary);
-    const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]')).slice(0, 8).map(selectorSummary);
+    const textInputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type]), input[type="email"], input[type="tel"], textarea')).slice(0, 12).map(selectorSummary);
+    const passwordInputs = Array.from(document.querySelectorAll('input[type="password"]')).slice(0, 12).map(selectorSummary);
+    const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]')).slice(0, 12).map(selectorSummary);
+    const textInputCount = document.querySelectorAll('input[type="text"], input:not([type]), input[type="email"], input[type="tel"], textarea').length;
     return {{
       login_found: !!login,
       password_found: !!password,
       submit_found: !!submit,
       ready_state: document.readyState || "",
+      location_href: safeLocationHref(),
       iframe_count: document.querySelectorAll("iframe").length,
-      text_input_count: document.querySelectorAll('input[type="text"], input:not([type]), textarea').length,
+      input_text_count: textInputCount,
+      text_input_count: textInputCount,
+      input_password_count: document.querySelectorAll('input[type="password"]').length,
       password_input_count: document.querySelectorAll('input[type="password"]').length,
-      button_count: document.querySelectorAll('button, input[type="submit"], input[type="button"]').length,
+      button_count: document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]').length,
       found_inputs: textInputs.concat(passwordInputs),
       found_buttons: buttons
     }};
@@ -216,7 +241,7 @@ def build_auth_form_js(service, credentials, blur_fields=True):
     if (!password) missing.push("password");
     if (!submit) missing.push("submit");
     if (missing.length) {{
-      return {{
+      return JSON.stringify({{
         ok: false,
         error: "missing_form_elements",
         missing: missing,
@@ -224,69 +249,94 @@ def build_auth_form_js(service, credentials, blur_fields=True):
         password_found: info.password_found,
         submit_found: info.submit_found,
         diagnostics: info
-      }};
+      }});
     }}
     login.focus();
     setNativeValue(login, {login_value});
     password.focus();
     setNativeValue(password, {password_value});
     window.setTimeout(function () {{ clickElement(submit); }}, 100);
-    return {{
+    return JSON.stringify({{
       ok: true,
       clicked: true,
       login_found: info.login_found,
       password_found: info.password_found,
       submit_found: info.submit_found,
       diagnostics: info
-    }};
+    }});
   }} catch (error) {{
-    const fallbackDiagnostics = {{
-      ready_state: document.readyState || "",
-      iframe_count: document.querySelectorAll("iframe").length,
-      text_input_count: document.querySelectorAll('input[type="text"], input:not([type]), textarea').length,
-      password_input_count: document.querySelectorAll('input[type="password"]').length,
-      button_count: document.querySelectorAll('button, input[type="submit"], input[type="button"]').length,
-      found_inputs: [],
-      found_buttons: []
-    }};
-    return {{
+    const fallbackDiagnostics = diagnostics(null, null, null);
+    return JSON.stringify({{
       ok: false,
       error: "autofill_failed",
       message: String(error && error.message ? error.message : error),
       diagnostics: fallbackDiagnostics
-    }};
+    }});
   }}
 }})()
 """.strip()
 
 
+def parse_autofill_callback_result(result):
+    if isinstance(result, dict):
+        return result, None
+    if isinstance(result, str):
+        if not result.strip():
+            return None, {"error": "empty_string_result", "message": "JS автозаполнения вернул пустую строку вместо JSON."}
+        try:
+            parsed = json.loads(result)
+        except Exception as exc:
+            return None, {"error": "invalid_json", "message": "JS автозаполнения вернул невалидный JSON.", "details": str(exc)}
+        if not isinstance(parsed, dict):
+            return None, {"error": "invalid_json_type", "message": "JS автозаполнения вернул JSON неверного типа.", "json_type": type(parsed).__name__}
+        return parsed, None
+    return None, {"error": "invalid_result", "message": "Ошибка автозаполнения формы: JS автозаполнения не вернул корректный результат."}
+
 def _autofill_diagnostics_lines(result):
     if not isinstance(result, dict):
         return []
     diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else result
+    input_text_count = diagnostics.get("input_text_count", diagnostics.get("text_input_count", 0))
+    input_password_count = diagnostics.get("input_password_count", diagnostics.get("password_input_count", 0))
     lines = [
-        f"document.readyState: {diagnostics.get('ready_state', '')}",
-        f"iframe на странице: {diagnostics.get('iframe_count', 0)}",
-        f"input[type=text]/textarea: {diagnostics.get('text_input_count', 0)}",
-        f"input[type=password]: {diagnostics.get('password_input_count', 0)}",
-        f"button/input submit: {diagnostics.get('button_count', 0)}",
+        f"readyState={diagnostics.get('ready_state', '')}",
+        f"location={diagnostics.get('location_href', '')}",
+        f"iframe_count={diagnostics.get('iframe_count', 0)}",
+        f"input_text_count={input_text_count}",
+        f"input_password_count={input_password_count}",
+        f"button_count={diagnostics.get('button_count', 0)}",
+        f"login_found={bool(diagnostics.get('login_found', False))}",
+        f"password_found={bool(diagnostics.get('password_found', False))}",
+        f"submit_found={bool(diagnostics.get('submit_found', False))}",
     ]
     found_inputs = [str(item) for item in (diagnostics.get("found_inputs") or []) if str(item).strip()]
     found_buttons = [str(item) for item in (diagnostics.get("found_buttons") or []) if str(item).strip()]
     if found_inputs:
-        lines.append("Найдены input: " + ", ".join(found_inputs))
+        lines.append("found_inputs=" + "; ".join(found_inputs))
     if found_buttons:
-        lines.append("Найдены button: " + ", ".join(found_buttons))
+        lines.append("found_buttons=" + "; ".join(found_buttons))
+    if int(diagnostics.get("iframe_count") or 0) > 0 and not all([
+        diagnostics.get("login_found"),
+        diagnostics.get("password_found"),
+        diagnostics.get("submit_found"),
+    ]):
+        lines.append("Возможно, форма авторизации находится внутри iframe. Текущая проверка ищет элементы в основном document.")
     return lines
 
 
 def build_autofill_error_message(service, result):
     if result is None:
         return "JS автозаполнения не вернул результат. Возможно, QtWebEngine получил undefined из runJavaScript."
-    if isinstance(result, str) and result == "":
-        return "JS автозаполнения вернул пустую строку вместо объекта. Проверьте формирование autofill-скрипта."
+    if isinstance(result, str) and not result.strip():
+        return "JS автозаполнения вернул пустую строку вместо JSON."
     if not isinstance(result, dict):
         return "Ошибка автозаполнения формы: JS автозаполнения не вернул корректный результат."
+    if result.get("error") == "empty_string_result":
+        return "JS автозаполнения вернул пустую строку вместо JSON."
+    if result.get("error") == "invalid_json":
+        return "JS автозаполнения вернул невалидный JSON."
+    if result.get("error") == "invalid_json_type":
+        return "JS автозаполнения вернул JSON неверного типа."
     if result.get("error") == "missing_form_elements":
         missing = set(result.get("missing") or [])
         lines = ["Не найдены элементы формы авторизации:"]
