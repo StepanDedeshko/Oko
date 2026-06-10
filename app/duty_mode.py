@@ -40,7 +40,7 @@ from app.credentials import load_otrs_credentials
 from app.duty_settings import DutyModeSettingsWidget
 from app.duty_triggers import evaluate_stagnation_trigger
 from app.logger import get_logger
-from app.time_range import apply_time_range_to_url
+from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 from app.templates import (
     format_dt,
@@ -306,6 +306,12 @@ class GraphCheckOverlayDialog(QDialog):
 
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 4, 0, 0)
+        refresh_button = QPushButton("Обновить")
+        refresh_button.setObjectName("GraphManualRefreshButton")
+        refresh_button.setMinimumHeight(38)
+        refresh_button.setToolTip("Перезагрузить графики в текущем окне проверки")
+        refresh_button.clicked.connect(self.refresh_graphs)
+
         confirm_button = QPushButton("Проверено")
         confirm_button.setObjectName("PrimaryAction")
         confirm_button.setMinimumHeight(38)
@@ -317,8 +323,9 @@ class GraphCheckOverlayDialog(QDialog):
         bottom_close_button.setMinimumHeight(38)
         bottom_close_button.clicked.connect(self.close)
 
-        actions.addWidget(confirm_button)
+        actions.addWidget(refresh_button)
         actions.addStretch(1)
+        actions.addWidget(confirm_button)
         actions.addWidget(bottom_close_button)
         content_root.addLayout(actions)
 
@@ -366,6 +373,13 @@ class GraphCheckOverlayDialog(QDialog):
             self.cards_layout.addWidget(card)
         self.cards_layout.addStretch(1)
 
+    def refresh_graphs(self):
+        self.logger.info("Duty graph overlay manual refresh requested")
+        self.logger.info("Duty graph overlay manual refresh started: cards=%s", len(self.cards))
+        for card in list(self.cards):
+            if hasattr(card, "refresh_graph"):
+                card.refresh_graph()
+        self.logger.info("Duty graph overlay manual refresh finished")
 
     def confirm_check(self):
         self.logger.info("Duty graph check confirmed")
@@ -2057,6 +2071,11 @@ class DutyGraphCard(QFrame):
         if self._cleaned_up or self.view is None:
             return
         self.view.load(QUrl(self.build_url()))
+
+    def refresh_graph(self):
+        if self._cleaned_up or self.view is None:
+            return
+        self.view.load(QUrl(add_graph_cache_buster(self.build_url())))
 
     def on_loaded(self, ok):
         if self._cleaned_up or self.view is None or not ok:

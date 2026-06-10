@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from app.time_range import apply_time_range_to_url
+from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.autologin import make_zabbix_login_js
 from app.logger import get_logger
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
@@ -159,6 +159,11 @@ class GraphCard(QFrame):
         if self._cleaned_up or self.view is None:
             return
         self.view.reload()
+
+    def refresh_graph(self):
+        if self._cleaned_up or self.view is None:
+            return
+        self.view.load(QUrl(add_graph_cache_buster(self.build_url())))
 
     def open_in_external_browser(self):
         QDesktopServices.openUrl(QUrl(self.build_open_url()))
@@ -348,7 +353,7 @@ class GraphsDashboard(QWidget):
     Дашборд с графиками.
     """
 
-    def __init__(self, dashboard_config, profile, time_range, settings, credentials=None):
+    def __init__(self, dashboard_config, profile, time_range, settings, credentials=None, product_name=""):
         super().__init__()
 
         self.dashboard_config = dashboard_config
@@ -356,6 +361,8 @@ class GraphsDashboard(QWidget):
         self.time_range = time_range
         self.settings = settings
         self.credentials = credentials or {}
+        self.product_name = product_name
+        self.logger = get_logger()
         self.colors = _resolve_web_colors()
         self.graph_cards = []
         self.graph_cards_by_title = {}
@@ -363,9 +370,17 @@ class GraphsDashboard(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
 
+        header = QHBoxLayout()
         title = QLabel(dashboard_config.get("name", "Графики"))
         title.setObjectName("PageTitle")
-        root.addWidget(title)
+        self.manual_refresh_button = QPushButton("Обновить")
+        self.manual_refresh_button.setObjectName("GraphManualRefreshButton")
+        self.manual_refresh_button.setToolTip("Перезагрузить графики текущего раздела без изменения выбранного периода")
+        self.manual_refresh_button.clicked.connect(self.refresh_graphs)
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(self.manual_refresh_button)
+        root.addLayout(header)
 
         scroll = QScrollArea()
         scroll.setObjectName("GraphScrollArea")
@@ -438,6 +453,26 @@ class GraphsDashboard(QWidget):
     def reload_all(self):
         for card in list(self.graph_cards):
             card.reload()
+
+    def refresh_graphs(self):
+        section_name = self.dashboard_config.get("name", "Графики")
+        self.logger.info("Product graphs manual refresh requested")
+        self.logger.info(
+            "Product graphs manual refresh started: product=%s section=%s cards=%s",
+            self.product_name,
+            section_name,
+            len(self.graph_cards),
+        )
+        for card in list(self.graph_cards):
+            if hasattr(card, "refresh_graph"):
+                card.refresh_graph()
+            else:
+                card.reload()
+        self.logger.info(
+            "Product graphs manual refresh finished: product=%s section=%s",
+            self.product_name,
+            section_name,
+        )
 
     def pause_refresh(self):
         for card in list(self.graph_cards):
