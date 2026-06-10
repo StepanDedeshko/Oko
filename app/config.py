@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.logger import get_logger
+from app.service_checks import default_service_checks_config
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 CONFIG_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "config.example.json"
@@ -117,6 +118,7 @@ def _default_config():
             "expected_ticket_subject": "Проверка Zabbix (Важных IT-сервисов)",
         },
         "duty_triggers": default_duty_triggers_config(),
+        "service_checks": default_service_checks_config(),
         "app": {"name": "Око"},
     }
 
@@ -147,6 +149,7 @@ EXPORTABLE_CONFIG_KEYS = (
     "mode_pages",
     "duty_mode",
     "duty_triggers",
+    "service_checks",
     "templates",
     "app",
 )
@@ -162,18 +165,37 @@ def _is_secret_key(key):
     return any(part in lowered for part in SECRET_KEY_PARTS)
 
 
-def sanitize_export_data(value):
-    """Return a deep copy without secret-like keys, preserving lists and safe values."""
+SERVICE_CHECK_EXPORT_SAFE_SECRET_KEYS = {
+    "auth_type",
+    "login_selector",
+    "password_selector",
+    "submit_selector",
+}
+
+
+def _is_service_check_path(path):
+    return "service_checks" in path
+
+
+def _sanitize_export_data(value, path=()):
     if isinstance(value, dict):
         sanitized = {}
         for key, item in value.items():
-            if _is_secret_key(key):
+            key_text = str(key)
+            if _is_secret_key(key_text) and not (
+                _is_service_check_path(path) and key_text in SERVICE_CHECK_EXPORT_SAFE_SECRET_KEYS
+            ):
                 continue
-            sanitized[key] = sanitize_export_data(item)
+            sanitized[key] = _sanitize_export_data(item, path + (key_text,))
         return sanitized
     if isinstance(value, list):
-        return [sanitize_export_data(item) for item in value]
+        return [_sanitize_export_data(item, path) for item in value]
     return deepcopy(value)
+
+
+def sanitize_export_data(value):
+    """Return a deep copy without credentials, preserving safe service-check selectors."""
+    return _sanitize_export_data(value)
 
 
 def collect_exportable_settings(config):

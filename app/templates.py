@@ -7,6 +7,7 @@ import re
 
 OTRS_GRAPH_CHECK_TEMPLATE_KEY = "otrs_graph_check"
 REDMINE_TASK_TEMPLATE_KEY = "redmine_task"
+OTRS_SERVICE_CHECK_TEMPLATE_KEY = "otrs_service_check"
 
 DEFAULT_OTRS_GRAPH_CHECK_TEMPLATE_NAME = "Заметка ОТРС: проверка графиков"
 DEFAULT_OTRS_GRAPH_CHECK_TEMPLATE_TEXT = """Проверка выполнена.
@@ -27,6 +28,29 @@ ALERT: {alert_count}
 
 Связанные графики:
 {related_graphs}
+
+Комментарий дежурного:
+[заполнить при необходимости]
+"""
+
+DEFAULT_OTRS_SERVICE_CHECK_TEMPLATE_NAME = "ОТРС: Проверка сервисов"
+DEFAULT_OTRS_SERVICE_CHECK_TEMPLATE_TEXT = """Проверка сервисов выполнена.
+
+Время проверки:
+{checked_at}
+
+Результат:
+Всего сервисов: {services_total_count}
+OK: {services_ok_count}
+Ошибки: {services_error_count}
+Таймауты: {services_timeout_count}
+Неизвестно: {services_unknown_count}
+
+Сервисы:
+{services_results}
+
+Ошибки:
+{services_errors}
 
 Комментарий дежурного:
 [заполнить при необходимости]
@@ -147,6 +171,18 @@ OTRS_VARIABLE_DETAILS = [
     },
 ]
 
+
+SERVICE_CHECK_VARIABLE_DETAILS = [
+    {"group": "Проверка сервисов", "name": "{checked_at}", "description": "дата и время проверки сервисов", "example": "2026-06-10 13:30"},
+    {"group": "Проверка сервисов", "name": "{services_total_count}", "description": "всего сервисов", "example": "14"},
+    {"group": "Проверка сервисов", "name": "{services_ok_count}", "description": "количество сервисов со статусом ОК", "example": "12"},
+    {"group": "Проверка сервисов", "name": "{services_error_count}", "description": "количество ошибок", "example": "1"},
+    {"group": "Проверка сервисов", "name": "{services_timeout_count}", "description": "количество таймаутов", "example": "1"},
+    {"group": "Проверка сервисов", "name": "{services_unknown_count}", "description": "количество неизвестных результатов", "example": "0"},
+    {"group": "Проверка сервисов", "name": "{services_results}", "description": "нумерованный список результатов", "example": "1. FacePay — ОК"},
+    {"group": "Проверка сервисов", "name": "{services_errors}", "description": "подробности ошибок", "example": "Биометрик: Ошибка: Access denied"},
+]
+
 REDMINE_GRAPH_VARIABLE_DETAILS = []
 for graph_index in range(1, 5):
     REDMINE_GRAPH_VARIABLE_DETAILS.extend([
@@ -251,6 +287,10 @@ def ensure_templates_defaults(config):
     otrs.setdefault("name", otrs_defaults["name"])
     otrs.setdefault("text", otrs_defaults["text"])
 
+    service = templates.setdefault(OTRS_SERVICE_CHECK_TEMPLATE_KEY, {})
+    service.setdefault("name", DEFAULT_OTRS_SERVICE_CHECK_TEMPLATE_NAME)
+    service.setdefault("text", DEFAULT_OTRS_SERVICE_CHECK_TEMPLATE_TEXT.strip())
+
     redmine = templates.setdefault(REDMINE_TASK_TEMPLATE_KEY, {})
     for key, value in default_redmine_task_template().items():
         redmine.setdefault(key, value)
@@ -268,6 +308,27 @@ def get_otrs_graph_check_template(config):
         "name": str(template.get("name") or DEFAULT_OTRS_GRAPH_CHECK_TEMPLATE_NAME),
         "text": text,
     }
+
+
+def get_otrs_service_check_template(config):
+    templates = ensure_templates_defaults(config)
+    template = templates.get(OTRS_SERVICE_CHECK_TEMPLATE_KEY) or {}
+    text = str(template.get("text") or "").strip()
+    if not text:
+        text = DEFAULT_OTRS_SERVICE_CHECK_TEMPLATE_TEXT
+    return {
+        "name": str(template.get("name") or DEFAULT_OTRS_SERVICE_CHECK_TEMPLATE_NAME),
+        "text": text,
+    }
+
+
+def reset_otrs_service_check_template(config):
+    templates = config.setdefault("templates", {})
+    templates[OTRS_SERVICE_CHECK_TEMPLATE_KEY] = {
+        "name": DEFAULT_OTRS_SERVICE_CHECK_TEMPLATE_NAME,
+        "text": DEFAULT_OTRS_SERVICE_CHECK_TEMPLATE_TEXT.strip(),
+    }
+    return templates[OTRS_SERVICE_CHECK_TEMPLATE_KEY]
 
 
 def reset_otrs_graph_check_template(config):

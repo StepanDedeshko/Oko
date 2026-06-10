@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 import re
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, QUrl, QUrlQuery, Qt, Signal
@@ -36,12 +37,21 @@ except Exception:
 
 from app.autologin import make_zabbix_login_js
 from app.config import ensure_duty_triggers_defaults, save_config
-from app.credentials import load_otrs_credentials
+from app.credentials import load_otrs_credentials, load_service_credentials
 from app.duty_settings import DutyModeSettingsWidget
 from app.duty_triggers import evaluate_stagnation_trigger
 from app.logger import get_logger
 from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
+from app.service_checks import (
+    AUTH_HTML_FORM,
+    ensure_service_checks_defaults,
+    evaluate_service_check_page,
+    make_service_result,
+    service_status_label,
+    summarize_service_results,
+    build_service_check_note_text,
+)
 from app.templates import (
     format_dt,
     format_numbered_lines,
@@ -505,6 +515,7 @@ class AttachExistingTaskDialog(QDialog):
         self.view.loadFinished.connect(self.on_loaded)
 
         root.addWidget(self.view, stretch=1)
+
 
     def get_settings(self):
         settings = self.config.setdefault("duty_mode", {})
@@ -1088,6 +1099,7 @@ class OtrsCreateTaskDialog(QDialog):
         self.auto_captured_ticket_id = ""
         self.load_create_page()
 
+
     def get_settings(self):
         settings = self.config.setdefault("duty_mode", {})
         settings.setdefault("current_ticket_number", "")
@@ -1329,13 +1341,14 @@ class OtrsNoteDialog(QDialog):
     - вставить текст в CKEditor/contenteditable body.
     """
 
-    def __init__(self, config, note_text, parent=None, on_saved_callback=None, saved_log_message=None):
+    def __init__(self, config, note_text, parent=None, on_saved_callback=None, saved_log_message=None, initial_note_url=None):
         super().__init__(parent)
 
         self.config = config
         self.note_text = note_text
         self.on_saved_callback = on_saved_callback
         self.saved_log_message = saved_log_message
+        self.initial_note_url = str(initial_note_url or "").strip()
         self.note_saved = False
         self.logger = get_logger()
 
@@ -1369,7 +1382,7 @@ class OtrsNoteDialog(QDialog):
         url_row = QHBoxLayout()
 
         self.url_input = QLineEdit()
-        self.url_input.setText(self.build_note_url())
+        self.url_input.setText(self.initial_note_url or self.build_note_url())
 
         open_button = QPushButton("Открыть страницу заметки")
         open_button.clicked.connect(self.load_note_page)
@@ -1465,6 +1478,7 @@ class OtrsNoteDialog(QDialog):
         """
 
         self.view.page().runJavaScript(js)
+
 
     def get_settings(self):
         return self.config.setdefault("duty_mode", {})
@@ -2202,6 +2216,11 @@ class DutyModeWidget(QWidget):
         self.check_graphs = []
         self.cards = []
         self.graph_check_overlay = None
+        self.service_check_queue = []
+        self.service_check_results = []
+        self.service_check_running = False
+        self.service_result_labels = {}
+        self.hidden_service_views = []
 
         self.audio_player = None
         self.audio_output = None
@@ -2296,6 +2315,27 @@ class DutyModeWidget(QWidget):
         actions_layout.addStretch()
         root.addLayout(actions_layout)
 
+        services_group = QGroupBox("Проверка сервисов")
+        services_layout = QVBoxLayout(services_group)
+        services_actions = QHBoxLayout()
+        self.check_services_button = QPushButton("Проверить сервисы")
+        self.check_services_button.setMinimumHeight(34)
+        self.check_services_button.clicked.connect(self.run_service_checks)
+        self.service_note_button = QPushButton("Заметка ОТРС")
+        self.service_note_button.setMinimumHeight(34)
+        self.service_note_button.clicked.connect(self.open_service_check_note)
+        services_actions.addWidget(self.check_services_button)
+        services_actions.addWidget(self.service_note_button)
+        services_actions.addStretch(1)
+        services_layout.addLayout(services_actions)
+        self.service_summary_label = QLabel("Проверка сервисов ещё не выполнялась.")
+        self.service_summary_label.setWordWrap(True)
+        services_layout.addWidget(self.service_summary_label)
+        self.service_results_list = QListWidget()
+        self.service_results_list.setMinimumHeight(120)
+        services_layout.addWidget(self.service_results_list)
+        root.addWidget(services_group)
+
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
         self.status_label.hide()
@@ -2324,6 +2364,210 @@ class DutyModeWidget(QWidget):
         self.tick()
         self.load_check_graphs()
         self.render_empty_hint()
+        self.render_service_results()
+
+
+    def service_settings(self):
+        return ensure_service_checks_defaults(self.config)
+
+    def enabled_services(self):
+        return [item for item in self.service_settings().get("items", []) if item.get("enabled", True)]
+
+    def render_service_results(self):
+        if not hasattr(self, "service_results_list"):
+            return
+        self.service_results_list.clear()
+        self.service_result_labels = {}
+        result_by_id = {item.get("service_id"): item for item in self.service_check_results}
+        for service in self.service_settings().get("items", []):
+            result = result_by_id.get(service.get("id")) or make_service_result(service, status="not_checked")
+            label = f"{service.get('name') or service.get('id')} — {service_status_label(result.get('status'))}"
+            if not service.get("enabled", True):
+                label += " (выключен)"
+            self.service_results_list.addItem(label)
+        stats = summarize_service_results(self.service_check_results)
+        if self.service_check_results:
+            self.service_summary_label.setText(
+                "Проверка сервисов завершена: "
+                f"OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}"
+            )
+
+    def _set_service_check_running(self, running):
+        self.service_check_running = bool(running)
+        if hasattr(self, "check_services_button"):
+            self.check_services_button.setEnabled(not running)
+
+    def run_service_checks(self):
+        if self.service_check_running:
+            self.service_summary_label.setText("Проверка сервисов уже выполняется.")
+            return
+        services = self.enabled_services()
+        self.service_check_queue = list(services)
+        self.service_check_results = []
+        self.render_service_results()
+        self.service_summary_label.setText(f"Запущена проверка сервисов: {len(services)} шт.")
+        self._set_service_check_running(True)
+        if not services:
+            self._finish_service_checks()
+            return
+        self._run_next_service_check()
+
+    def _run_next_service_check(self):
+        if not self.service_check_queue:
+            self._finish_service_checks()
+            return
+        service = self.service_check_queue.pop(0)
+        self.service_check_results.append(make_service_result(service, status="checking"))
+        self.render_service_results()
+        try:
+            self._run_single_service_check(service)
+        except Exception as exc:
+            self.logger.exception("Service check failed: service_id=%s", service.get("id", ""))
+            self._finish_single_service_check(service, make_service_result(service, status="error", error=str(exc)))
+
+    def _run_single_service_check(self, service):
+        if not service.get("url"):
+            self._finish_single_service_check(service, make_service_result(service, status="load_error", error="URL проверки не указан"))
+            return
+        started = datetime.now()
+        context = {"service": service, "started": started, "timed_out": False, "load_finished": False, "finished": False}
+        view = register_web_view(QWebEngineView())
+        page = QWebEnginePage(view)
+        view.setPage(page)
+        self.hidden_service_views.append(view)
+        timeout_ms = max(1, int(service.get("timeout_seconds", 15))) * 1000
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        context["timer"] = timer
+
+        def cleanup():
+            try:
+                timer.stop()
+            except Exception:
+                pass
+            if view in self.hidden_service_views:
+                self.hidden_service_views.remove(view)
+            safe_delete_web_view(view, logger=self.logger, context="hidden WebView service check", load_handler=on_loaded)
+
+        def duration_ms():
+            return int((datetime.now() - started).total_seconds() * 1000)
+
+        def finish(status, error="", html_text="", matched_success="", matched_error=""):
+            if context.get("finished"):
+                return
+            context["finished"] = True
+            cleanup()
+            result = make_service_result(
+                service,
+                status=status,
+                error=error,
+                matched_success_text=matched_success,
+                matched_error_text=matched_error,
+                page_excerpt=html_text,
+                duration_ms=duration_ms(),
+            )
+            self._finish_single_service_check(service, result)
+
+        def analyze_text(text):
+            status, matched_success, matched_error, error = evaluate_service_check_page(service, text, loaded=True)
+            finish(status, error=error, html_text=text, matched_success=matched_success, matched_error=matched_error)
+
+        def read_text_after_login():
+            if context.get("finished"):
+                return
+            page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)
+
+        def after_login_js(result):
+            if not isinstance(result, dict) or not result.get("ok"):
+                finish("auth_error", error=(result or {}).get("error", "Не найдены элементы формы авторизации"))
+                return
+            QTimer.singleShot(max(0, int(service.get("post_login_delay_ms", 1500))), read_text_after_login)
+
+        def on_loaded(ok):
+            if context.get("timed_out"):
+                return
+            context["load_finished"] = True
+            if not ok:
+                finish("load_error", error="Страница не загрузилась")
+                return
+            if service.get("auth_type") == AUTH_HTML_FORM:
+                creds = load_service_credentials(service.get("id", ""))
+                js = self._make_service_login_js(service, creds)
+                page.runJavaScript(js, after_login_js)
+            else:
+                page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)
+
+        def on_timeout():
+            context["timed_out"] = True
+            finish("timeout", error=f"страница не загрузилась за {service.get('timeout_seconds', 15)} секунд")
+
+        timer.timeout.connect(on_timeout)
+        view.loadFinished.connect(on_loaded)
+        timer.start(timeout_ms)
+        view.load(QUrl(service.get("url", "")))
+
+    def _make_service_login_js(self, service, creds):
+        login_selector = json.dumps(service.get("login_selector", ""))
+        password_selector = json.dumps(service.get("password_selector", ""))
+        submit_selector = json.dumps(service.get("submit_selector", ""))
+        login_value = json.dumps(creds.get("login", ""))
+        password_value = json.dumps(creds.get("password", ""))
+        return f"""
+(() => {{
+  try {{
+    const login = document.querySelector({login_selector});
+    const password = document.querySelector({password_selector});
+    const submit = document.querySelector({submit_selector});
+    if (!login || !password || !submit) {{
+      return {{ ok: false, error: "Не найдены элементы формы авторизации" }};
+    }}
+    login.value = {login_value};
+    login.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    login.dispatchEvent(new Event("change", {{ bubbles: true }}));
+    password.value = {password_value};
+    password.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    password.dispatchEvent(new Event("change", {{ bubbles: true }}));
+    submit.click();
+    return {{ ok: true }};
+  }} catch (error) {{
+    return {{ ok: false, error: "Ошибка selector/JS авторизации: " + String(error && error.message ? error.message : error) }};
+  }}
+}})();
+"""
+
+    def _finish_single_service_check(self, service, result):
+        self.service_check_results = [item for item in self.service_check_results if item.get("service_id") != service.get("id")]
+        self.service_check_results.append(result)
+        self.render_service_results()
+        QTimer.singleShot(0, self._run_next_service_check)
+
+    def _finish_service_checks(self):
+        self._set_service_check_running(False)
+        stats = summarize_service_results(self.service_check_results)
+        self.service_summary_label.setText(
+            "Проверка сервисов завершена: "
+            f"OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}"
+        )
+        self.logger.info("Service checks finished: total=%s ok=%s errors=%s timeouts=%s", stats["total"], stats["ok"], stats["errors"], stats["timeouts"])
+
+    def open_service_check_note(self):
+        task_url = self.service_settings().get("otrs_task_url", "").strip()
+        if not task_url:
+            QMessageBox.warning(
+                self,
+                "Проверка сервисов",
+                "Задача ОТРС для проверки сервисов не указана.\nУкажите задачу в настройках проверки сервисов.",
+            )
+            return
+        note_text = build_service_check_note_text(self.config, self.service_check_results)
+        dialog = OtrsNoteDialog(
+            config=self.config,
+            note_text=note_text,
+            parent=self,
+            saved_log_message="Service check OTRS note saved",
+            initial_note_url=task_url,
+        )
+        dialog.exec()
 
     def get_settings(self):
         settings = self.config.setdefault("duty_mode", {})

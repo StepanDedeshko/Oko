@@ -45,6 +45,20 @@ def save_otrs_credentials(login: str, password: str):
     save_credentials(credentials)
 
 
+def load_service_credentials(service_id: str) -> dict:
+    credentials = load_saved_credentials()
+    return credentials.get(f"service_check::{service_id}", {"login": "", "password": ""})
+
+
+def save_service_credentials(service_id: str, login: str, password: str):
+    credentials = load_saved_credentials()
+    credentials[f"service_check::{service_id}"] = {
+        "login": login or "",
+        "password": password or "",
+    }
+    save_credentials(credentials)
+
+
 def _encode(value: str) -> str:
     """
     Это не полноценное шифрование, а простое скрытие от случайного просмотра.

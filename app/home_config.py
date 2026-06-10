@@ -35,12 +35,16 @@ from app.config import (
 )
 from app.templates import (
     OTRS_GRAPH_CHECK_TEMPLATE_KEY,
+    OTRS_SERVICE_CHECK_TEMPLATE_KEY,
     REDMINE_TASK_TEMPLATE_KEY,
     OTRS_TEMPLATE_EXAMPLE,
     REDMINE_ALL_GRAPHS_EXAMPLE,
     REDMINE_COLLAPSE_EXAMPLE,
     REDMINE_GRAPH_VARIABLE_DETAILS,
     OTRS_VARIABLE_DETAILS,
+    SERVICE_CHECK_VARIABLE_DETAILS,
+    DEFAULT_OTRS_SERVICE_CHECK_TEMPLATE_TEXT,
+    reset_otrs_service_check_template,
     ensure_templates_defaults,
     reset_otrs_graph_check_template,
     preview_otrs_template,
@@ -54,7 +58,9 @@ from app.app_info import APP_NAME, APP_VERSION, APP_DESCRIPTION
 from app.update_widget import UpdateWidget
 from app.diagnostics_widget import DiagnosticsWidget
 from app.duty_settings import DutyModeSettingsWidget
+from app.service_checks_widget import ServiceChecksSettingsWidget
 from app.safe_widgets import NoWheelComboBox
+from app.service_checks import ensure_service_checks_defaults
 
 
 def clone(value):
@@ -71,6 +77,7 @@ def ensure_home_defaults(config):
     duty.setdefault("otrs_login_enabled", False)
     duty.setdefault("otrs_auto_submit_login", False)
     duty.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
+    ensure_service_checks_defaults(config)
     return config
 
 
@@ -1097,6 +1104,7 @@ class TemplatesWidget(QWidget):
         self.tab_buttons = []
         for title, builder in [
             ("Заметки ОТРС", self._build_otrs_tab),
+            ("ОТРС: Проверка сервисов", self._build_service_otrs_tab),
             ("Задачи Redmine", self._build_redmine_tab),
             ("Переменные", self._build_variables_tab),
             ("Примеры", self._build_examples_tab),
@@ -1152,6 +1160,37 @@ class TemplatesWidget(QWidget):
         layout.addWidget(self._readonly_box("Пример", OTRS_TEMPLATE_EXAMPLE))
         return page
 
+
+    def _build_service_otrs_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        templates = ensure_templates_defaults(self.config)
+        current = templates[OTRS_SERVICE_CHECK_TEMPLATE_KEY]
+
+        form = QFormLayout()
+        self.service_otrs_name_input = QLineEdit(current.get("name", ""))
+        self.service_otrs_text_input = QTextEdit()
+        self.service_otrs_text_input.setPlainText(current.get("text", ""))
+        self.service_otrs_text_input.setMinimumHeight(260)
+        form.addRow("Название шаблона:", self.service_otrs_name_input)
+        form.addRow("Текст шаблона:", self.service_otrs_text_input)
+        layout.addLayout(form)
+
+        actions = QHBoxLayout()
+        save_button = QPushButton("Сохранить шаблон проверки сервисов")
+        save_button.setObjectName("PrimaryAction")
+        save_button.clicked.connect(self.save_service_otrs_template)
+        reset_button = QPushButton("Сбросить по умолчанию")
+        reset_button.clicked.connect(self.reset_service_otrs_template)
+        actions.addWidget(save_button)
+        actions.addWidget(reset_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        layout.addWidget(self._readonly_box("Доступные переменные", variable_details_text(SERVICE_CHECK_VARIABLE_DETAILS), minimum_height=220))
+        layout.addWidget(self._readonly_box("Пример", DEFAULT_OTRS_SERVICE_CHECK_TEMPLATE_TEXT.strip()))
+        return page
+
     def _build_redmine_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -1204,6 +1243,7 @@ class TemplatesWidget(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.addWidget(self._readonly_box("Переменные заметки ОТРС", variable_details_text(OTRS_VARIABLE_DETAILS), minimum_height=260))
+        layout.addWidget(self._readonly_box("Переменные проверки сервисов", variable_details_text(SERVICE_CHECK_VARIABLE_DETAILS), minimum_height=260))
         layout.addWidget(self._readonly_box("Переменные Redmine для графиков", variable_details_text(REDMINE_GRAPH_VARIABLE_DETAILS), minimum_height=300))
         redmine_warning = QLabel("Изображение вида !filename.png! отобразится в Redmine только если файл с таким именем прикреплён к задаче.")
         redmine_warning.setWordWrap(True)
@@ -1290,6 +1330,25 @@ class TemplatesWidget(QWidget):
         save_config(self.config)
         QMessageBox.information(self, "Шаблоны", "Шаблон заметки ОТРС сброшен по умолчанию.")
 
+
+    def save_service_otrs_template(self):
+        templates = ensure_templates_defaults(self.config)
+        templates[OTRS_SERVICE_CHECK_TEMPLATE_KEY] = {
+            "name": self.service_otrs_name_input.text().strip() or "ОТРС: Проверка сервисов",
+            "text": self.service_otrs_text_input.toPlainText(),
+        }
+        save_config(self.config)
+        QMessageBox.information(self, "Шаблоны", "Шаблон заметки проверки сервисов сохранён.")
+
+    def reset_service_otrs_template(self):
+        if not self.confirm_template_reset():
+            return
+        template = reset_otrs_service_check_template(self.config)
+        self.service_otrs_name_input.setText(template.get("name", ""))
+        self.service_otrs_text_input.setPlainText(template.get("text", ""))
+        save_config(self.config)
+        QMessageBox.information(self, "Шаблоны", "Шаблон проверки сервисов сброшен по умолчанию.")
+
     def save_redmine_template(self):
         templates = ensure_templates_defaults(self.config)
         current = templates[REDMINE_TASK_TEMPLATE_KEY]
@@ -1359,6 +1418,7 @@ class AppSettingsWidget(QWidget):
         self.add_section("Профиль", ProfileWidget(self.config))
         self.add_section("Продукты и страницы", ProductsWidget(self.config))
         self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config, show_title=False))
+        self.add_section("Проверка сервисов", ServiceChecksSettingsWidget(self.config))
         self.add_section("Перенос настроек", SettingsTransferWidget(self.config))
         self.add_section("Шаблоны", TemplatesWidget(self.config))
         self.add_section("Что нового", ChangelogWidget())
@@ -1395,6 +1455,7 @@ class HomePageWidget(QWidget):
         "Профиль",
         "Продукты и страницы",
         "Настройки дежурки",
+        "Проверка сервисов",
         "Перенос настроек",
         "Шаблоны",
         "Что нового",
