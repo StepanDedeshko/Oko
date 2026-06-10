@@ -121,6 +121,124 @@ def _default_config():
     }
 
 
+
+SETTINGS_EXPORT_FORMAT = "oko_settings_export"
+SETTINGS_EXPORT_FORMAT_VERSION = 1
+SECRET_KEY_PARTS = (
+    "password",
+    "passwd",
+    "token",
+    "cookie",
+    "session",
+    "auth",
+    "credential",
+    "secret",
+    "login",
+    "username",
+    "email",
+)
+EXPORTABLE_CONFIG_KEYS = (
+    "settings",
+    "time_ranges",
+    "zabbix_instances",
+    "products",
+    "problems_pages",
+    "dashboard_pages",
+    "mode_pages",
+    "duty_mode",
+    "duty_triggers",
+    "templates",
+    "app",
+)
+
+
+def default_settings_export_filename(now=None):
+    timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    return f"oko_settings_export_{timestamp}.json"
+
+
+def _is_secret_key(key):
+    lowered = str(key or "").lower()
+    return any(part in lowered for part in SECRET_KEY_PARTS)
+
+
+def sanitize_export_data(value):
+    """Return a deep copy without secret-like keys, preserving lists and safe values."""
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            if _is_secret_key(key):
+                continue
+            sanitized[key] = sanitize_export_data(item)
+        return sanitized
+    if isinstance(value, list):
+        return [sanitize_export_data(item) for item in value]
+    return deepcopy(value)
+
+
+def collect_exportable_settings(config):
+    """Collect user configuration that is safe to transfer between installations."""
+    config = config or {}
+    settings = {}
+    for key in EXPORTABLE_CONFIG_KEYS:
+        if key in config:
+            settings[key] = deepcopy(config[key])
+    return sanitize_export_data(settings)
+
+
+def build_settings_export(config, exported_at=None):
+    exported_at = exported_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "app": "Око",
+        "format": SETTINGS_EXPORT_FORMAT,
+        "format_version": SETTINGS_EXPORT_FORMAT_VERSION,
+        "exported_at": exported_at,
+        "settings": collect_exportable_settings(config),
+    }
+
+
+def export_settings_file(config, destination_path):
+    destination_path = Path(destination_path)
+    export_data = sanitize_export_data(build_settings_export(config))
+    with destination_path.open("w", encoding="utf-8") as file:
+        json.dump(export_data, file, ensure_ascii=False, indent=2)
+    return destination_path
+
+
+def load_settings_export(source_path):
+    source_path = Path(source_path)
+    with source_path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    if not isinstance(data, dict):
+        raise ValueError("unsupported settings export format")
+    if data.get("format") != SETTINGS_EXPORT_FORMAT:
+        raise ValueError("unsupported settings export format")
+    if data.get("format_version") != SETTINGS_EXPORT_FORMAT_VERSION:
+        raise ValueError("unsupported settings export version")
+    settings = data.get("settings")
+    if not isinstance(settings, dict):
+        raise ValueError("settings section is missing")
+    return sanitize_export_data(settings)
+
+
+def import_settings_file(source_path, config_path=None):
+    """Import a safe Oko settings export and backup the current config first."""
+    config_path = Path(config_path) if config_path is not None else CONFIG_PATH
+    imported_settings = load_settings_export(source_path)
+
+    backup_path = None
+    if config_path.exists():
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = config_path.with_name(f"config.backup_before_import_{timestamp}.json")
+        shutil.copy2(config_path, backup_path)
+
+    safe_settings = sanitize_export_data(imported_settings)
+    with config_path.open("w", encoding="utf-8") as file:
+        json.dump(safe_settings, file, ensure_ascii=False, indent=2)
+    return backup_path
+
+
 def ensure_config_exists():
     if CONFIG_PATH.exists():
         return

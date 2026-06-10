@@ -292,6 +292,60 @@ def render_template(template_text, context):
     return _TEMPLATE_TOKEN_RE.sub(replace, str(template_text or ""))
 
 
+
+def sample_otrs_preview_context():
+    return {
+        "checked_at": "2026-06-05 12:00",
+        "from_time": "2026-06-05 09:00",
+        "to_time": "2026-06-05 12:00",
+        "duration_minutes": "180",
+        "ok_count": "5",
+        "alert_count": "2",
+        "error_count": "0",
+        "active_triggers": "1. Проверка поступления сработок — ALERT",
+        "active_trigger_names": "Проверка поступления сработок",
+        "active_problems": "1. По графику “Общее количество сработок” наблюдается отклонение.",
+        "related_graphs": "1. (Сфера 1) detects-history-search: Общее количество сработок за опер. сутки",
+        "related_graph_links": "1. https://zabbix.example.local/chart.php?graphid=101",
+        "trigger_name": "Проверка поступления сработок",
+        "trigger_status": "ALERT",
+        "trigger_source_product": "Сфера 1",
+        "trigger_source_section": "Zabbix-графики",
+    }
+
+
+def sample_redmine_preview_context():
+    return {
+        **sample_otrs_preview_context(),
+        "trigger_name": "Проверка поступления сработок",
+        "trigger_status": "ALERT",
+        "graph_1_title": "(Сфера 1) detects-history-search: Общее количество сработок за опер. сутки",
+        "graph_1_url": "https://zabbix.example.local/chart.php?graphid=101",
+        "graph_1_image": "graph_1.png",
+        "graph_1_redmine_image": "!graph_1.png!",
+        "graph_1_collapsed": "{{collapse(скрыть/показать)\n!graph_1.png!\n}}",
+        "graph_2_title": "(Сфера 2) detects-history-search: Общее количество сработок за опер. сутки",
+        "graph_2_url": "https://zabbix.example.local/chart.php?graphid=102",
+        "graph_2_image": "graph_2.png",
+        "graph_2_redmine_image": "!graph_2.png!",
+        "graph_2_collapsed": "{{collapse(скрыть/показать)\n!graph_2.png!\n}}",
+        "graph_images": "!graph_1.png!\n!graph_2.png!",
+        "graph_images_collapsed": "{{collapse(скрыть/показать)\n!graph_1.png!\n!graph_2.png!\n}}",
+        "screenshots_folder": "/tmp/oko_screenshots/example",
+    }
+
+
+def preview_otrs_template(template_text):
+    return render_template(template_text, sample_otrs_preview_context())
+
+
+def preview_redmine_template(subject_template, description_template):
+    context = sample_redmine_preview_context()
+    subject = render_template(subject_template, context)
+    description = render_template(description_template, context)
+    return f"Тема:\n{subject}\n\nОписание:\n{description}"
+
+
 def variable_details_text(details):
     """Format grouped variable help for read-only template editor panels."""
     grouped = {}

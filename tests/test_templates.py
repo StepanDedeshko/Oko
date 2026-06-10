@@ -5,6 +5,8 @@ from app.templates import (
     REDMINE_GRAPH_VARIABLE_DETAILS,
     ensure_templates_defaults,
     get_otrs_graph_check_template,
+    preview_otrs_template,
+    preview_redmine_template,
     render_template,
     variable_details_text,
 )
@@ -33,6 +35,21 @@ class TemplateRenderingTest(unittest.TestCase):
         self.assertIn("{graph_4_collapsed}", help_text)
         self.assertIn("Описание: готовый collapse-блок Redmine для 4-го графика", help_text)
         self.assertIn("Пример:", help_text)
+
+    def test_otrs_preview_substitutes_sample_variables(self):
+        preview = preview_otrs_template("{checked_at} {active_triggers} {missing}")
+
+        self.assertIn("2026-06-05 12:00", preview)
+        self.assertIn("Проверка поступления сработок — ALERT", preview)
+        self.assertNotIn("{missing}", preview)
+
+    def test_redmine_preview_substitutes_sample_variables(self):
+        preview = preview_redmine_template("{trigger_name} {trigger_status}", "{graph_1_redmine_image} {screenshots_folder} {missing}")
+
+        self.assertIn("Проверка поступления сработок ALERT", preview)
+        self.assertIn("!graph_1.png!", preview)
+        self.assertIn("/tmp/oko_screenshots/example", preview)
+        self.assertNotIn("{missing}", preview)
 
 
 if __name__ == "__main__":
