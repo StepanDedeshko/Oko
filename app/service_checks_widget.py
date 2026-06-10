@@ -24,7 +24,8 @@ from app.credentials import load_service_credentials, save_service_credentials
 from app.service_checks import (
     AUTH_HTML_FORM,
     AUTH_NONE,
-    AUTH_WEBENGINE_SESSION,
+    AUTH_EXISTING_SESSION,
+    AUTH_VISIBLE_HTML_FORM,
     default_service_item,
     ensure_service_checks_defaults,
     parse_text_markers,
@@ -35,7 +36,8 @@ from app.service_checks import (
 AUTH_LABELS = [
     ("Без авторизации", AUTH_NONE),
     ("HTML-форма", AUTH_HTML_FORM),
-    ("Использовать существующую сессию WebEngine", AUTH_WEBENGINE_SESSION),
+    ("HTML-форма в видимом окне", AUTH_VISIBLE_HTML_FORM),
+    ("Использовать существующую сессию WebEngine", AUTH_EXISTING_SESSION),
 ]
 
 
@@ -124,6 +126,18 @@ class ServiceChecksSettingsWidget(QWidget):
         auth_form.addRow("Подсказка:", hint)
         form_layout.addWidget(auth)
 
+        self.visible_window_group = QGroupBox("Видимое окно проверки")
+        visible_form = QFormLayout(self.visible_window_group)
+        self.visible_close_success_input = QCheckBox("Закрывать окно после успешной проверки")
+        self.visible_close_error_input = QCheckBox("Закрывать окно при ошибке")
+        self.visible_close_delay_input = QSpinBox()
+        self.visible_close_delay_input.setRange(0, 120)
+        self.visible_close_delay_input.setSuffix(" сек")
+        visible_form.addRow("Успех:", self.visible_close_success_input)
+        visible_form.addRow("Ошибка:", self.visible_close_error_input)
+        visible_form.addRow("Задержка перед закрытием:", self.visible_close_delay_input)
+        form_layout.addWidget(self.visible_window_group)
+
         markers = QGroupBox("Признаки результата")
         markers_form = QFormLayout(markers)
         self.success_texts_input = QTextEdit()
@@ -144,6 +158,7 @@ class ServiceChecksSettingsWidget(QWidget):
         self.refresh_list()
         if self.settings.get("items"):
             self.list_widget.setCurrentRow(0)
+        self.update_visible_window_visibility()
 
     def _connect_changes(self):
         for widget in (self.name_input, self.url_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input):
@@ -152,12 +167,23 @@ class ServiceChecksSettingsWidget(QWidget):
         self.enabled_input.toggled.connect(self.update_current_from_form)
         self.allow_insecure_ssl_input.toggled.connect(self.update_current_from_form)
         self.timeout_input.valueChanged.connect(self.update_current_from_form)
-        self.auth_type_input.currentIndexChanged.connect(self.update_current_from_form)
+        self.auth_type_input.currentIndexChanged.connect(self.on_auth_type_changed)
         self.post_login_delay_input.valueChanged.connect(self.update_current_from_form)
+        self.visible_close_success_input.toggled.connect(self.update_current_from_form)
+        self.visible_close_error_input.toggled.connect(self.update_current_from_form)
+        self.visible_close_delay_input.valueChanged.connect(self.update_current_from_form)
         self.success_texts_input.textChanged.connect(self.update_current_from_form)
         self.error_texts_input.textChanged.connect(self.update_current_from_form)
         self.login_input.textChanged.connect(self.update_credentials)
         self.password_input.textChanged.connect(self.update_credentials)
+
+    def on_auth_type_changed(self, *args):
+        self.update_visible_window_visibility()
+        self.update_current_from_form()
+
+    def update_visible_window_visibility(self):
+        is_visible = self.auth_type_input.currentData() == AUTH_VISIBLE_HTML_FORM
+        self.visible_window_group.setVisible(is_visible)
 
     def refresh_list(self):
         self.list_widget.clear()
@@ -176,7 +202,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item = self.current_item()
         self._loading = True
         enabled = item is not None
-        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.success_texts_input, self.error_texts_input):
+        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input):
             widget.setEnabled(enabled)
         self.otrs_task_url_input.setText(self.settings.get("otrs_task_url", ""))
         if item:
@@ -187,6 +213,9 @@ class ServiceChecksSettingsWidget(QWidget):
             self.allow_insecure_ssl_input.setChecked(bool(item.get("allow_insecure_ssl", False)))
             idx = self.auth_type_input.findData(item.get("auth_type", AUTH_NONE))
             self.auth_type_input.setCurrentIndex(max(0, idx))
+            self.visible_close_success_input.setChecked(bool(item.get("visible_window_close_on_success", True)))
+            self.visible_close_error_input.setChecked(bool(item.get("visible_window_close_on_error", False)))
+            self.visible_close_delay_input.setValue(int(item.get("visible_window_close_delay_seconds", 3)))
             creds = load_service_credentials(item.get("id", ""))
             self.login_input.setText(creds.get("login", ""))
             self.password_input.setText(creds.get("password", ""))
@@ -197,6 +226,7 @@ class ServiceChecksSettingsWidget(QWidget):
             self.success_texts_input.setPlainText("; ".join(item.get("success_texts", [])))
             self.error_texts_input.setPlainText("; ".join(item.get("error_texts", [])))
         self._loading = False
+        self.update_visible_window_visibility()
 
     def add_service(self):
         items = self.settings.setdefault("items", [])
@@ -230,6 +260,9 @@ class ServiceChecksSettingsWidget(QWidget):
         item["timeout_seconds"] = int(self.timeout_input.value())
         item["allow_insecure_ssl"] = self.allow_insecure_ssl_input.isChecked()
         item["auth_type"] = self.auth_type_input.currentData() or AUTH_NONE
+        item["visible_window_close_on_success"] = self.visible_close_success_input.isChecked()
+        item["visible_window_close_on_error"] = self.visible_close_error_input.isChecked()
+        item["visible_window_close_delay_seconds"] = int(self.visible_close_delay_input.value())
         item["login_selector"] = self.login_selector_input.text().strip()
         item["password_selector"] = self.password_selector_input.text().strip()
         item["submit_selector"] = self.submit_selector_input.text().strip()

@@ -3,6 +3,7 @@ import unittest
 
 from app.config import build_settings_export, collect_exportable_settings
 from app.service_checks import (
+    AUTH_VISIBLE_HTML_FORM,
     build_service_check_note_text,
     default_service_item,
     ensure_service_checks_defaults,
@@ -75,12 +76,19 @@ class ServiceChecksLogicTest(unittest.TestCase):
         settings = ensure_service_checks_defaults(config)
         self.assertIn("service_checks", config)
         self.assertEqual(settings["otrs_task_url"], "")
-        self.assertFalse(default_service_item("FacePay")["allow_insecure_ssl"])
+        default_item = default_service_item("FacePay")
+        self.assertFalse(default_item["allow_insecure_ssl"])
+        self.assertTrue(default_item["visible_window_close_on_success"])
+        self.assertFalse(default_item["visible_window_close_on_error"])
+        self.assertEqual(default_item["visible_window_close_delay_seconds"], 3)
         item = default_service_item("FacePay")
         config["service_checks"]["items"].append(item)
         ensure_service_checks_defaults(config)
         self.assertEqual(config["service_checks"]["items"][0]["id"], "facepay")
         self.assertFalse(config["service_checks"]["items"][0]["allow_insecure_ssl"])
+        self.assertTrue(config["service_checks"]["items"][0]["visible_window_close_on_success"])
+        self.assertFalse(config["service_checks"]["items"][0]["visible_window_close_on_error"])
+        self.assertEqual(config["service_checks"]["items"][0]["visible_window_close_delay_seconds"], 3)
 
     def test_ssl_error_status_is_error_and_has_label(self):
         result = make_service_result({"id": "svc", "name": "Svc"}, status="ssl_error")
@@ -109,6 +117,27 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Сервис — ОК", text)
         self.assertIn("Предупреждение: SSL-сертификат был принят как внутренний/самоподписанный.", text)
 
+
+    def test_visible_html_form_auth_type_is_preserved(self):
+        config = {
+            "service_checks": {
+                "items": [{"id": "svc", "name": "Svc", "auth_type": AUTH_VISIBLE_HTML_FORM}]
+            }
+        }
+        ensure_service_checks_defaults(config)
+        item = config["service_checks"]["items"][0]
+        self.assertEqual(item["auth_type"], AUTH_VISIBLE_HTML_FORM)
+
+    def test_manual_required_note_contains_diagnostics_text(self):
+        result = make_service_result(
+            {"id": "svc", "name": "Сервис", "url": "https://internal.local"},
+            status="manual_required",
+            error="Окно проверки оставлено открытым для диагностики.",
+        )
+        text = build_service_check_note_text({}, [result], checked_at="2026-06-10 13:30")
+        self.assertIn("Сервис — Требуется ручная проверка", text)
+        self.assertIn("Окно проверки оставлено открытым для диагностики.", text)
+
     def test_export_includes_service_checks_but_not_credentials(self):
         config = {
             "service_checks": {
@@ -118,11 +147,14 @@ class ServiceChecksLogicTest(unittest.TestCase):
                     "name": "FacePay",
                     "enabled": True,
                     "url": "https://example.local",
-                    "auth_type": "html_form",
                     "login_selector": "input[name=login]",
                     "password_selector": "input[type=password]",
                     "submit_selector": "button[type=submit]",
                     "allow_insecure_ssl": True,
+                    "auth_type": "visible_html_form",
+                    "visible_window_close_on_success": True,
+                    "visible_window_close_on_error": False,
+                    "visible_window_close_delay_seconds": 3,
                     "success_texts": ["Главная"],
                     "error_texts": ["Access denied"],
                     "login": "must-not-export",
@@ -133,9 +165,10 @@ class ServiceChecksLogicTest(unittest.TestCase):
         exported = build_settings_export(config)
         self.assertIn("service_checks", exported["settings"])
         item = exported["settings"]["service_checks"]["items"][0]
-        self.assertEqual(item["auth_type"], "html_form")
+        self.assertEqual(item["auth_type"], "visible_html_form")
         self.assertIn("login_selector", item)
         self.assertTrue(item["allow_insecure_ssl"])
+        self.assertEqual(item["visible_window_close_delay_seconds"], 3)
         serialized = json.dumps(exported, ensure_ascii=False).lower()
         self.assertNotIn("must-not-export", serialized)
         self.assertNotIn('"login"', serialized)

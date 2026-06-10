@@ -12,6 +12,8 @@ from app.templates import get_otrs_service_check_template, render_template
 AUTH_NONE = "none"
 AUTH_HTML_FORM = "html_form"
 AUTH_WEBENGINE_SESSION = "webengine_session"
+AUTH_EXISTING_SESSION = "existing_session"
+AUTH_VISIBLE_HTML_FORM = "visible_html_form"
 
 SERVICE_CHECK_STATUSES = {
     "not_checked": "Не проверено",
@@ -23,6 +25,7 @@ SERVICE_CHECK_STATUSES = {
     "unknown": "Неизвестно",
     "error": "Ошибка",
     "ssl_error": "Ошибка SSL-сертификата",
+    "manual_required": "Требуется ручная проверка",
 }
 
 DEFAULT_SERVICE_CHECKS = {
@@ -44,6 +47,9 @@ DEFAULT_SERVICE_ITEM = {
     "timeout_seconds": 15,
     "post_login_delay_ms": 1500,
     "allow_insecure_ssl": False,
+    "visible_window_close_on_success": True,
+    "visible_window_close_on_error": False,
+    "visible_window_close_delay_seconds": 3,
 }
 
 
@@ -116,7 +122,14 @@ def ensure_service_checks_defaults(config):
         merged["name"] = str(merged.get("name") or merged["id"]).strip() or "Новый продукт"
         merged["enabled"] = bool(merged.get("enabled", True))
         merged["allow_insecure_ssl"] = bool(merged.get("allow_insecure_ssl", False))
-        merged["auth_type"] = merged.get("auth_type") if merged.get("auth_type") in {AUTH_NONE, AUTH_HTML_FORM, AUTH_WEBENGINE_SESSION} else AUTH_NONE
+        valid_auth_types = {AUTH_NONE, AUTH_HTML_FORM, AUTH_WEBENGINE_SESSION, AUTH_EXISTING_SESSION, AUTH_VISIBLE_HTML_FORM}
+        merged["auth_type"] = merged.get("auth_type") if merged.get("auth_type") in valid_auth_types else AUTH_NONE
+        merged["visible_window_close_on_success"] = bool(merged.get("visible_window_close_on_success", True))
+        merged["visible_window_close_on_error"] = bool(merged.get("visible_window_close_on_error", False))
+        try:
+            merged["visible_window_close_delay_seconds"] = max(0, int(merged.get("visible_window_close_delay_seconds", 3)))
+        except Exception:
+            merged["visible_window_close_delay_seconds"] = 3
         merged["success_texts"] = parse_text_markers(merged.get("success_texts", []))
         merged["error_texts"] = parse_text_markers(merged.get("error_texts", []))
         try:
