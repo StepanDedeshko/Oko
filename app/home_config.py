@@ -6,6 +6,9 @@ import sys
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -22,7 +25,14 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 
-from app.config import save_config
+from app.config import (
+    CONFIG_PATH,
+    default_settings_export_filename,
+    export_settings_file,
+    import_settings_file,
+    load_settings_export,
+    save_config,
+)
 from app.templates import (
     OTRS_GRAPH_CHECK_TEMPLATE_KEY,
     REDMINE_TASK_TEMPLATE_KEY,
@@ -33,6 +43,8 @@ from app.templates import (
     OTRS_VARIABLE_DETAILS,
     ensure_templates_defaults,
     reset_otrs_graph_check_template,
+    preview_otrs_template,
+    preview_redmine_template,
     reset_redmine_task_template,
     variable_details_text,
 )
@@ -962,6 +974,101 @@ class NotesWidget(QWidget):
 
 
 
+class SettingsTransferWidget(QWidget):
+    """Export/import safe user settings without credentials."""
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = ensure_home_defaults(config)
+
+        root = QVBoxLayout(self)
+        group = QGroupBox("Перенос настроек")
+        layout = QVBoxLayout(group)
+
+        hint = QLabel(
+            "Экспорт переносит продукты, страницы, графики, duty triggers, шаблоны и тему. "
+            "Логины, пароли, токены, cookie, session и другие auth-данные не сохраняются."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        actions = QHBoxLayout()
+        export_button = QPushButton("Экспорт настроек")
+        export_button.clicked.connect(self.export_settings)
+        import_button = QPushButton("Импорт настроек")
+        import_button.clicked.connect(self.import_settings)
+        actions.addWidget(export_button)
+        actions.addWidget(import_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        root.addWidget(group)
+        root.addStretch(1)
+
+    def export_settings(self):
+        default_path = CONFIG_PATH.parent / default_settings_export_filename()
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт настроек",
+            str(default_path),
+            "JSON (*.json);;Все файлы (*)",
+        )
+        if not selected_path:
+            return
+
+        try:
+            destination = export_settings_file(self.config, selected_path)
+            QMessageBox.information(self, "Экспорт настроек", f"Настройки экспортированы:\n{destination}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Ошибка экспорта", f"Не удалось экспортировать настройки:\n{exc}")
+
+    def import_settings(self):
+        selected_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импорт настроек",
+            str(CONFIG_PATH.parent),
+            "JSON (*.json);;Все файлы (*)",
+        )
+        if not selected_path:
+            return
+
+        try:
+            load_settings_export(selected_path)
+        except Exception:
+            QMessageBox.warning(
+                self,
+                "Ошибка импорта",
+                "Ошибка импорта: файл повреждён или имеет неподдерживаемый формат.",
+            )
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Импорт настроек",
+            "Текущие настройки будут заменены импортированными.\n"
+            "Перед импортом будет создана резервная копия текущего config.\n"
+            "Продолжить?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            import_settings_file(selected_path)
+            QMessageBox.information(
+                self,
+                "Импорт настроек",
+                "Настройки импортированы.\nПерезапустите приложение для применения изменений.",
+            )
+        except Exception:
+            QMessageBox.warning(
+                self,
+                "Ошибка импорта",
+                "Ошибка импорта: файл повреждён или имеет неподдерживаемый формат.",
+            )
+
+
 class TemplatesWidget(QWidget):
     """Редактор пользовательских шаблонов без хранения credentials."""
 
@@ -1031,9 +1138,12 @@ class TemplatesWidget(QWidget):
         save_button = QPushButton("Сохранить шаблон ОТРС")
         save_button.setObjectName("PrimaryAction")
         save_button.clicked.connect(self.save_otrs_template)
+        preview_button = QPushButton("Предпросмотр")
+        preview_button.clicked.connect(self.preview_otrs_template)
         reset_button = QPushButton("Сбросить по умолчанию")
         reset_button.clicked.connect(self.reset_otrs_template)
         actions.addWidget(save_button)
+        actions.addWidget(preview_button)
         actions.addWidget(reset_button)
         actions.addStretch(1)
         layout.addLayout(actions)
@@ -1070,9 +1180,12 @@ class TemplatesWidget(QWidget):
         save_button = QPushButton("Сохранить шаблон Redmine")
         save_button.setObjectName("PrimaryAction")
         save_button.clicked.connect(self.save_redmine_template)
+        preview_button = QPushButton("Предпросмотр")
+        preview_button.clicked.connect(self.preview_redmine_template)
         reset_button = QPushButton("Сбросить по умолчанию")
         reset_button.clicked.connect(self.reset_redmine_template)
         actions.addWidget(save_button)
+        actions.addWidget(preview_button)
         actions.addWidget(reset_button)
         actions.addStretch(1)
         layout.addLayout(actions)
@@ -1120,6 +1233,45 @@ class TemplatesWidget(QWidget):
         layout.addWidget(editor)
         return box
 
+    def _show_preview_dialog(self, title, text):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(760, 560)
+        layout = QVBoxLayout(dialog)
+        editor = QTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText(text)
+        layout.addWidget(editor, stretch=1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        copy_button = buttons.addButton("Скопировать", QDialogButtonBox.ActionRole)
+        buttons.rejected.connect(dialog.reject)
+        copy_button.clicked.connect(lambda: QApplication.clipboard().setText(editor.toPlainText()))
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def preview_otrs_template(self):
+        preview_text = preview_otrs_template(self.otrs_text_input.toPlainText())
+        self._show_preview_dialog("Предпросмотр заметки ОТРС", preview_text)
+
+    def preview_redmine_template(self):
+        preview_text = preview_redmine_template(
+            self.redmine_subject_input.text(),
+            self.redmine_description_input.toPlainText(),
+        )
+        self._show_preview_dialog("Предпросмотр задачи Redmine", preview_text)
+
+    def confirm_template_reset(self):
+        answer = QMessageBox.question(
+            self,
+            "Сбросить шаблон?",
+            "Сбросить шаблон?\n"
+            "Текущий текст будет заменён шаблоном по умолчанию.\n"
+            "Продолжить?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
     def save_otrs_template(self):
         templates = ensure_templates_defaults(self.config)
         templates[OTRS_GRAPH_CHECK_TEMPLATE_KEY] = {
@@ -1130,6 +1282,8 @@ class TemplatesWidget(QWidget):
         QMessageBox.information(self, "Шаблоны", "Шаблон заметки ОТРС сохранён.")
 
     def reset_otrs_template(self):
+        if not self.confirm_template_reset():
+            return
         template = reset_otrs_graph_check_template(self.config)
         self.otrs_name_input.setText(template.get("name", ""))
         self.otrs_text_input.setPlainText(template.get("text", ""))
@@ -1152,6 +1306,8 @@ class TemplatesWidget(QWidget):
         QMessageBox.information(self, "Шаблоны", "Шаблон задачи Redmine сохранён.")
 
     def reset_redmine_template(self):
+        if not self.confirm_template_reset():
+            return
         template = reset_redmine_task_template(self.config)
         self.redmine_create_url_input.setText(template.get("create_url", ""))
         self.redmine_subject_input.setText(template.get("subject_template", ""))
@@ -1203,6 +1359,7 @@ class AppSettingsWidget(QWidget):
         self.add_section("Профиль", ProfileWidget(self.config))
         self.add_section("Продукты и страницы", ProductsWidget(self.config))
         self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config, show_title=False))
+        self.add_section("Перенос настроек", SettingsTransferWidget(self.config))
         self.add_section("Шаблоны", TemplatesWidget(self.config))
         self.add_section("Что нового", ChangelogWidget())
         self.add_section("Тема", ThemeWidget(self.config))
@@ -1238,6 +1395,7 @@ class HomePageWidget(QWidget):
         "Профиль",
         "Продукты и страницы",
         "Настройки дежурки",
+        "Перенос настроек",
         "Шаблоны",
         "Что нового",
         "Тема",
