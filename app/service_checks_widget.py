@@ -139,6 +139,32 @@ class ServiceChecksSettingsWidget(QWidget):
         visible_form.addRow("Задержка перед закрытием:", self.visible_close_delay_input)
         form_layout.addWidget(self.visible_window_group)
 
+        logout = QGroupBox("Выход после успешной проверки")
+        logout_form = QFormLayout(logout)
+        self.logout_menu_selector_input = QLineEdit()
+        self.logout_menu_selector_input.setPlaceholderText(".user-menu, button.profile")
+        self.logout_button_selector_input = QLineEdit()
+        self.logout_button_selector_input.setPlaceholderText("button.logout, a[href*=logout]")
+        self.logout_success_selectors_input = QTextEdit()
+        self.logout_success_selectors_input.setPlaceholderText("form.login\nbutton[type=submit]")
+        self.logout_success_selectors_input.setMaximumHeight(80)
+        self.logout_success_texts_input = QTextEdit()
+        self.logout_success_texts_input.setPlaceholderText("Войти; Авторизация; Login")
+        self.logout_success_texts_input.setMaximumHeight(80)
+        self.logout_menu_wait_input = QSpinBox()
+        self.logout_menu_wait_input.setRange(1, 60)
+        self.logout_menu_wait_input.setSuffix(" сек")
+        self.logout_wait_input = QSpinBox()
+        self.logout_wait_input.setRange(1, 120)
+        self.logout_wait_input.setSuffix(" сек")
+        logout_form.addRow("CSS selector кнопки раскрытия меню выхода:", self.logout_menu_selector_input)
+        logout_form.addRow("CSS selector кнопки “Выйти”:", self.logout_button_selector_input)
+        logout_form.addRow("CSS selectors признаков успешного выхода:", self.logout_success_selectors_input)
+        logout_form.addRow("Тексты признаков успешного выхода:", self.logout_success_texts_input)
+        logout_form.addRow("Ожидание появления меню выхода:", self.logout_menu_wait_input)
+        logout_form.addRow("Ожидание завершения выхода:", self.logout_wait_input)
+        form_layout.addWidget(logout)
+
         markers = QGroupBox("Признаки результата")
         markers_form = QFormLayout(markers)
         self.success_texts_input = QTextEdit()
@@ -185,6 +211,12 @@ class ServiceChecksSettingsWidget(QWidget):
         self.error_texts_input.textChanged.connect(self.update_current_from_form)
         self.success_selectors_input.textChanged.connect(self.update_current_from_form)
         self.error_selectors_input.textChanged.connect(self.update_current_from_form)
+        self.logout_menu_selector_input.textChanged.connect(self.update_current_from_form)
+        self.logout_button_selector_input.textChanged.connect(self.update_current_from_form)
+        self.logout_success_selectors_input.textChanged.connect(self.update_current_from_form)
+        self.logout_success_texts_input.textChanged.connect(self.update_current_from_form)
+        self.logout_menu_wait_input.valueChanged.connect(self.update_current_from_form)
+        self.logout_wait_input.valueChanged.connect(self.update_current_from_form)
         self.login_input.textChanged.connect(self.update_credentials)
         self.password_input.textChanged.connect(self.update_credentials)
 
@@ -213,7 +245,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item = self.current_item()
         self._loading = True
         enabled = item is not None
-        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input):
+        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
             widget.setEnabled(enabled)
         self.otrs_task_url_input.setText(self.settings.get("otrs_task_url", ""))
         if item:
@@ -238,6 +270,12 @@ class ServiceChecksSettingsWidget(QWidget):
             self.error_texts_input.setPlainText("; ".join(item.get("error_texts", [])))
             self.success_selectors_input.setPlainText("\n".join(item.get("success_selectors", [])))
             self.error_selectors_input.setPlainText("\n".join(item.get("error_selectors", [])))
+            self.logout_menu_selector_input.setText(item.get("logout_menu_selector", ""))
+            self.logout_button_selector_input.setText(item.get("logout_button_selector", ""))
+            self.logout_success_selectors_input.setPlainText("\n".join(item.get("logout_success_selectors", [])))
+            self.logout_success_texts_input.setPlainText("; ".join(item.get("logout_success_texts", [])))
+            self.logout_menu_wait_input.setValue(int(item.get("logout_menu_wait_seconds", 5)))
+            self.logout_wait_input.setValue(int(item.get("logout_wait_seconds", 10)))
         self._loading = False
         self.update_visible_window_visibility()
 
@@ -284,6 +322,12 @@ class ServiceChecksSettingsWidget(QWidget):
         item["error_texts"] = parse_text_markers(self.error_texts_input.toPlainText())
         item["success_selectors"] = parse_selector_markers(self.success_selectors_input.toPlainText())
         item["error_selectors"] = parse_selector_markers(self.error_selectors_input.toPlainText())
+        item["logout_menu_selector"] = self.logout_menu_selector_input.text().strip()
+        item["logout_button_selector"] = self.logout_button_selector_input.text().strip()
+        item["logout_success_selectors"] = parse_selector_markers(self.logout_success_selectors_input.toPlainText())
+        item["logout_success_texts"] = parse_text_markers(self.logout_success_texts_input.toPlainText())
+        item["logout_menu_wait_seconds"] = int(self.logout_menu_wait_input.value())
+        item["logout_wait_seconds"] = int(self.logout_wait_input.value())
         index = self.current_index
         self.refresh_list()
         self.current_index = index

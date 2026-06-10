@@ -6,8 +6,10 @@ from app.service_checks import (
     AUTH_VISIBLE_HTML_FORM,
     build_auth_form_js,
     build_auth_form_presence_js,
+    build_click_selector_js,
     build_autofill_error_message,
     build_result_selector_check_js,
+    build_wait_selector_js,
     build_service_check_note_text,
     can_open_next_visible_service_after_cleanup,
     default_service_item,
@@ -98,6 +100,41 @@ class ServiceChecksLogicTest(unittest.TestCase):
 
     def test_parse_selector_markers_by_semicolon_and_newline(self):
         self.assertEqual(parse_selector_markers(".ok; #logout\n[data-test=main]; .ok"), [".ok", "#logout", "[data-test=main]"])
+
+
+    def test_logout_js_helpers_are_safe_and_json_based(self):
+        click_js = build_click_selector_js(".user-menu")
+        wait_js = build_wait_selector_js(["form.login", "button.sign-in"])
+        for js in (click_js, wait_js):
+            self.assertIn("JSON.stringify", js)
+            self.assertIn("MouseEvent", click_js)
+            self.assertNotIn(".value", js.lower())
+            self.assertNotIn("cookie", js.lower())
+            self.assertNotIn("localStorage", js)
+
+    def test_logout_defaults_and_migration(self):
+        item = default_service_item("svc")
+        self.assertEqual(item["logout_menu_selector"], "")
+        self.assertEqual(item["logout_button_selector"], "")
+        self.assertEqual(item["logout_success_selectors"], [])
+        self.assertEqual(item["logout_success_texts"], [])
+        self.assertEqual(item["logout_wait_seconds"], 10)
+        self.assertEqual(item["logout_menu_wait_seconds"], 5)
+        config = {"service_checks": {"items": [{"id": "svc", "logout_success_selectors": "form.login; button.login", "logout_success_texts": "Войти; Login"}]}}
+        ensure_service_checks_defaults(config)
+        migrated = config["service_checks"]["items"][0]
+        self.assertEqual(migrated["logout_success_selectors"], ["form.login", "button.login"])
+        self.assertEqual(migrated["logout_success_texts"], ["Войти", "Login"])
+
+    def test_logout_note_details_for_success_and_failure(self):
+        ok_result = make_service_result({"id": "svc", "name": "Svc"}, status="ok", details="Вход выполнен, сервис работает, выход выполнен")
+        text = build_service_check_note_text({}, [ok_result], checked_at="2026-06-10 13:30")
+        self.assertIn("Svc — ОК", text)
+        self.assertIn("Вход выполнен, сервис работает, выход выполнен", text)
+        manual = make_service_result({"id": "svc", "name": "Svc"}, status="manual_required", error="Вход выполнен, но автоматический выход не подтверждён.")
+        text = build_service_check_note_text({}, [manual], checked_at="2026-06-10 13:30")
+        self.assertIn("Требуется ручная проверка", text)
+        self.assertIn("автоматический выход не подтверждён", text)
 
     def test_result_selector_check_js_returns_json_without_credentials(self):
         js = build_result_selector_check_js({
@@ -431,6 +468,12 @@ class ServiceChecksLogicTest(unittest.TestCase):
                     "error_texts": ["Access denied"],
                     "success_selectors": [".dashboard"],
                     "error_selectors": [".login-error"],
+                    "logout_menu_selector": ".user-menu",
+                    "logout_button_selector": "button.logout",
+                    "logout_success_selectors": ["form.login"],
+                    "logout_success_texts": ["Войти"],
+                    "logout_wait_seconds": 10,
+                    "logout_menu_wait_seconds": 5,
                     "login": "must-not-export",
                     "password": "must-not-export",
                 }],
@@ -444,6 +487,8 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertTrue(item["allow_insecure_ssl"])
         self.assertEqual(item["success_selectors"], [".dashboard"])
         self.assertEqual(item["error_selectors"], [".login-error"])
+        self.assertEqual(item["logout_button_selector"], "button.logout")
+        self.assertEqual(item["logout_success_selectors"], ["form.login"])
         self.assertEqual(item["visible_window_close_delay_seconds"], 3)
         serialized = json.dumps(exported, ensure_ascii=False).lower()
         self.assertNotIn("must-not-export", serialized)

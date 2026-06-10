@@ -54,6 +54,12 @@ DEFAULT_SERVICE_ITEM = {
     "visible_window_close_on_success": True,
     "visible_window_close_on_error": False,
     "visible_window_close_delay_seconds": 3,
+    "logout_menu_selector": "",
+    "logout_button_selector": "",
+    "logout_success_selectors": [],
+    "logout_success_texts": [],
+    "logout_wait_seconds": 10,
+    "logout_menu_wait_seconds": 5,
 }
 
 
@@ -177,6 +183,16 @@ def ensure_service_checks_defaults(config):
         merged["error_texts"] = parse_text_markers(merged.get("error_texts", []))
         merged["success_selectors"] = parse_selector_markers(merged.get("success_selectors", []))
         merged["error_selectors"] = parse_selector_markers(merged.get("error_selectors", []))
+        merged["logout_success_selectors"] = parse_selector_markers(merged.get("logout_success_selectors", []))
+        merged["logout_success_texts"] = parse_text_markers(merged.get("logout_success_texts", []))
+        try:
+            merged["logout_wait_seconds"] = max(1, int(merged.get("logout_wait_seconds", 10)))
+        except Exception:
+            merged["logout_wait_seconds"] = 10
+        try:
+            merged["logout_menu_wait_seconds"] = max(1, int(merged.get("logout_menu_wait_seconds", 5)))
+        except Exception:
+            merged["logout_menu_wait_seconds"] = 5
         try:
             merged["timeout_seconds"] = max(1, int(merged.get("timeout_seconds", 15)))
         except Exception:
@@ -423,6 +439,76 @@ def build_auth_form_presence_js(service):
 """.strip()
 
 
+
+
+def build_click_selector_js(selector):
+    selector_json = json.dumps(str(selector or ""))
+    return f"""
+(function () {{
+  function safeText(value) {{
+    return String(value || "").replace(/[\\r\\n\\t]+/g, " ").replace(/\\s+/g, " ").trim().slice(0, 120);
+  }}
+  function summary(element) {{
+    if (!element) return "";
+    const tag = String(element.tagName || "").toLowerCase();
+    const id = element.getAttribute && element.getAttribute("id");
+    const cls = element.getAttribute && element.getAttribute("class");
+    const text = tag === "input" || tag === "textarea" ? "" : safeText(element.innerText || element.textContent || "");
+    const parts = [tag];
+    if (id) parts.push("id=" + safeText(id));
+    if (cls) parts.push("class=" + safeText(cls));
+    if (text) parts.push("text=" + text);
+    return parts.join(" ");
+  }}
+  try {{
+    const selector = {selector_json};
+    const element = document.querySelector(selector);
+    if (!element) {{
+      return JSON.stringify({{ ok: false, found: false, clicked: false, selector: selector, error: "not_found", summary: "" }});
+    }}
+    element.dispatchEvent(new MouseEvent("mousedown", {{ bubbles: true, cancelable: true, view: window }}));
+    element.dispatchEvent(new MouseEvent("mouseup", {{ bubbles: true, cancelable: true, view: window }}));
+    element.dispatchEvent(new MouseEvent("click", {{ bubbles: true, cancelable: true, view: window }}));
+    return JSON.stringify({{ ok: true, found: true, clicked: true, selector: selector, error: "", summary: summary(element) }});
+  }} catch (error) {{
+    return JSON.stringify({{ ok: false, found: false, clicked: false, selector: {selector_json}, error: "invalid_selector", message: String(error && error.message ? error.message : error), summary: "" }});
+  }}
+}})()
+""".strip()
+
+
+def build_wait_selector_js(selectors):
+    selectors_json = json.dumps(parse_selector_markers(selectors), ensure_ascii=False)
+    return f"""
+(function () {{
+  function safeText(value) {{
+    return String(value || "").replace(/[\\r\\n\\t]+/g, " ").replace(/\\s+/g, " ").trim().slice(0, 120);
+  }}
+  function summary(element) {{
+    if (!element) return "";
+    const tag = String(element.tagName || "").toLowerCase();
+    const id = element.getAttribute && element.getAttribute("id");
+    const cls = element.getAttribute && element.getAttribute("class");
+    const text = tag === "input" || tag === "textarea" ? "" : safeText(element.innerText || element.textContent || "");
+    const parts = [tag];
+    if (id) parts.push("id=" + safeText(id));
+    if (cls) parts.push("class=" + safeText(cls));
+    if (text) parts.push("text=" + text);
+    return parts.join(" ");
+  }}
+  const selectors = {selectors_json};
+  const results = selectors.map(function(selector) {{
+    try {{
+      const element = document.querySelector(selector);
+      return {{ selector: selector, found: !!element, summary: summary(element), error: "" }};
+    }} catch (error) {{
+      return {{ selector: selector, found: false, summary: "", error: "invalid_selector", message: String(error && error.message ? error.message : error) }};
+    }}
+  }});
+  const match = results.find(function(item) {{ return item.found; }}) || null;
+  return JSON.stringify({{ ok: true, found: !!match, matched_selector: match ? match.selector : "", matched_summary: match ? match.summary : "", invalid_selectors: results.filter(function(item) {{ return !!item.error; }}), results: results }});
+}})()
+""".strip()
 
 def build_result_selector_check_js(service):
     """Build a script that checks success/error CSS selectors and returns JSON."""

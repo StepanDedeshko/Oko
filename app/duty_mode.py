@@ -51,7 +51,9 @@ from app.service_checks import (
     build_auth_form_js,
     build_auth_form_presence_js,
     build_autofill_error_message,
+    build_click_selector_js,
     build_result_selector_check_js,
+    build_wait_selector_js,
     make_service_result,
     parse_autofill_callback_result,
     safe_autofill_result_repr,
@@ -2519,6 +2521,9 @@ class ServiceCheckVisibleDialog(QDialog):
         selector_result = getattr(self, "result_selector_result", {})
         status, matched_success, matched_error, error = evaluate_service_check_page(self.service, text, loaded=True, selector_result=selector_result)
         details = error if status == "ok" and str(error).startswith("Успешный признак найден по CSS selector:") else ""
+        if status == "ok":
+            self.start_logout_flow(text, matched_success, matched_error, details)
+            return
         self.finish(
             status,
             error="" if details else error,
@@ -2527,6 +2532,106 @@ class ServiceCheckVisibleDialog(QDialog):
             matched_error=matched_error,
             details=details,
         )
+
+    def start_logout_flow(self, html_text, matched_success, matched_error, login_details):
+        service_id = self.service.get("id", "")
+        self._logout_html_text = html_text
+        self._logout_matched_success = matched_success
+        self._logout_matched_error = matched_error
+        self._logout_login_details = login_details
+        self.logger.info("Service check logout started: service_id=%s", service_id)
+        if not self.service.get("logout_button_selector"):
+            self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "missing_logout_button_selector")
+            self.finish("manual_required", error="Вход выполнен, но selector кнопки выхода не указан.", html_text=html_text, matched_success=matched_success, matched_error=matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+            return
+        menu_selector = self.service.get("logout_menu_selector", "")
+        if menu_selector:
+            self.logger.info("Service check logout menu click: service_id=%s selector=%s", service_id, menu_selector)
+            self.page.runJavaScript(build_click_selector_js(menu_selector), self.after_logout_menu_click)
+            return
+        self.click_logout_button()
+
+    def after_logout_menu_click(self, result):
+        if self.finished:
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None or not result.get("ok"):
+            self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "logout_menu_not_found")
+            self.finish("manual_required", error="Вход выполнен, но меню выхода не найдено.", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+            return
+        self.logger.info("Service check logout menu opened: service_id=%s", service_id)
+        self.logout_menu_deadline = datetime.now() + timedelta(seconds=max(1, int(self.service.get("logout_menu_wait_seconds", 5))))
+        self.wait_logout_button()
+
+    def wait_logout_button(self):
+        if self.finished:
+            return
+        self.page.runJavaScript(build_wait_selector_js([self.service.get("logout_button_selector", "")]), self.after_wait_logout_button)
+
+    def after_wait_logout_button(self, result):
+        if self.finished:
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is None and result.get("found"):
+            self.click_logout_button()
+            return
+        if datetime.now() >= getattr(self, "logout_menu_deadline", datetime.now()):
+            self.logger.warning("Service check logout timeout: service_id=%s", service_id)
+            self.finish("manual_required", error="Вход выполнен, но кнопка выхода не появилась после открытия меню.", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+            return
+        QTimer.singleShot(500, self.wait_logout_button)
+
+    def click_logout_button(self):
+        service_id = self.service.get("id", "")
+        selector = self.service.get("logout_button_selector", "")
+        self.logger.info("Service check logout button click: service_id=%s selector=%s", service_id, selector)
+        self.page.runJavaScript(build_click_selector_js(selector), self.after_logout_button_click)
+
+    def after_logout_button_click(self, result):
+        if self.finished:
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None or not result.get("ok"):
+            self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "logout_button_not_found")
+            self.finish("manual_required", error="Вход выполнен, но кнопка выхода не найдена.", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+            return
+        self.logout_deadline = datetime.now() + timedelta(seconds=max(1, int(self.service.get("logout_wait_seconds", 10))))
+        QTimer.singleShot(500, self.check_logout_success)
+
+    def check_logout_success(self):
+        if self.finished:
+            return
+        self.page.runJavaScript(build_wait_selector_js(self.service.get("logout_success_selectors", [])), self.after_logout_success_selectors)
+
+    def after_logout_success_selectors(self, result):
+        if self.finished:
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is None and result.get("found"):
+            self.logger.info("Service check logout success: service_id=%s", service_id)
+            self.finish("ok", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, сервис работает, выход выполнен")
+            return
+        self.page.runJavaScript("document.body ? document.body.innerText : ''", self.after_logout_success_text)
+
+    def after_logout_success_text(self, text):
+        if self.finished:
+            return
+        service_id = self.service.get("id", "")
+        lowered = str(text or "").casefold()
+        for marker in self.service.get("logout_success_texts", []):
+            if str(marker).casefold() in lowered:
+                self.logger.info("Service check logout success: service_id=%s", service_id)
+                self.finish("ok", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, сервис работает, выход выполнен")
+                return
+        if datetime.now() >= getattr(self, "logout_deadline", datetime.now()):
+            self.logger.warning("Service check logout timeout: service_id=%s", service_id)
+            self.finish("manual_required", error="Вход выполнен, но автоматический выход не подтверждён.", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+            return
+        QTimer.singleShot(500, self.check_logout_success)
 
     def finish(self, status, error="", html_text="", matched_success="", matched_error="", wait_for_manual=False, details=""):
 
@@ -2985,7 +3090,97 @@ class DutyModeWidget(QWidget):
             selector_result = context.get("result_selector_result") if isinstance(context.get("result_selector_result"), dict) else {}
             status, matched_success, matched_error, error = evaluate_service_check_page(service, text, loaded=True, selector_result=selector_result)
             details = error if status == "ok" and str(error).startswith("Успешный признак найден по CSS selector:") else ""
+            if status == "ok" and service.get("auth_type") == AUTH_HTML_FORM:
+                start_logout_flow(text, matched_success, matched_error, details)
+                return
             finish(status, error="" if details else error, html_text=text, matched_success=matched_success, matched_error=matched_error, details=details)
+
+        def start_logout_flow(html_text, matched_success, matched_error, login_details):
+            service_id = service.get("id", "")
+            context["logout_html_text"] = html_text
+            context["logout_matched_success"] = matched_success
+            context["logout_matched_error"] = matched_error
+            self.logger.info("Service check logout started: service_id=%s", service_id)
+            if not service.get("logout_button_selector"):
+                self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "missing_logout_button_selector")
+                finish("manual_required", error="Вход выполнен, но selector кнопки выхода не указан.", html_text=html_text, matched_success=matched_success, matched_error=matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+                return
+            if service.get("logout_menu_selector"):
+                self.logger.info("Service check logout menu click: service_id=%s selector=%s", service_id, service.get("logout_menu_selector"))
+                page.runJavaScript(build_click_selector_js(service.get("logout_menu_selector")), after_logout_menu_click)
+                return
+            click_logout_button()
+
+        def after_logout_menu_click(result):
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is not None or not result.get("ok"):
+                self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "logout_menu_not_found")
+                finish("manual_required", error="Вход выполнен, но меню выхода не найдено.", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, но автоматический выход не подтверждён.")
+                return
+            self.logger.info("Service check logout menu opened: service_id=%s", service_id)
+            context["logout_menu_deadline"] = datetime.now() + timedelta(seconds=max(1, int(service.get("logout_menu_wait_seconds", 5))))
+            wait_logout_button()
+
+        def wait_logout_button():
+            if context.get("finished"):
+                return
+            page.runJavaScript(build_wait_selector_js([service.get("logout_button_selector", "")]), after_wait_logout_button)
+
+        def after_wait_logout_button(result):
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is None and result.get("found"):
+                click_logout_button()
+                return
+            if datetime.now() >= context.get("logout_menu_deadline", datetime.now()):
+                self.logger.warning("Service check logout timeout: service_id=%s", service_id)
+                finish("manual_required", error="Вход выполнен, но кнопка выхода не появилась после открытия меню.", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, но автоматический выход не подтверждён.")
+                return
+            QTimer.singleShot(500, wait_logout_button)
+
+        def click_logout_button():
+            service_id = service.get("id", "")
+            self.logger.info("Service check logout button click: service_id=%s selector=%s", service_id, service.get("logout_button_selector", ""))
+            page.runJavaScript(build_click_selector_js(service.get("logout_button_selector", "")), after_logout_button_click)
+
+        def after_logout_button_click(result):
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is not None or not result.get("ok"):
+                self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "logout_button_not_found")
+                finish("manual_required", error="Вход выполнен, но кнопка выхода не найдена.", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, но автоматический выход не подтверждён.")
+                return
+            context["logout_deadline"] = datetime.now() + timedelta(seconds=max(1, int(service.get("logout_wait_seconds", 10))))
+            QTimer.singleShot(500, check_logout_success)
+
+        def check_logout_success():
+            if context.get("finished"):
+                return
+            page.runJavaScript(build_wait_selector_js(service.get("logout_success_selectors", [])), after_logout_success_selectors)
+
+        def after_logout_success_selectors(result):
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is None and result.get("found"):
+                self.logger.info("Service check logout success: service_id=%s", service_id)
+                finish("ok", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, сервис работает, выход выполнен")
+                return
+            page.runJavaScript("document.body ? document.body.innerText : ''", after_logout_success_text)
+
+        def after_logout_success_text(text):
+            service_id = service.get("id", "")
+            lowered = str(text or "").casefold()
+            for marker in service.get("logout_success_texts", []):
+                if str(marker).casefold() in lowered:
+                    self.logger.info("Service check logout success: service_id=%s", service_id)
+                    finish("ok", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, сервис работает, выход выполнен")
+                    return
+            if datetime.now() >= context.get("logout_deadline", datetime.now()):
+                self.logger.warning("Service check logout timeout: service_id=%s", service_id)
+                finish("manual_required", error="Вход выполнен, но автоматический выход не подтверждён.", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, но автоматический выход не подтверждён.")
+                return
+            QTimer.singleShot(500, check_logout_success)
 
         def after_result_selector_check(result):
             if context.get("finished"):
