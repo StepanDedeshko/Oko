@@ -348,7 +348,8 @@ class MainWindow(QMainWindow):
                         profile=profile,
                         time_range=self.current_time_range,
                         settings=self.settings,
-                        credentials=self.credentials.get(zabbix_id, {})
+                        credentials=self.credentials.get(zabbix_id, {}),
+                        product_name=product_name,
                     )
                     self.graph_dashboards.append(widget)
                     has_time = True

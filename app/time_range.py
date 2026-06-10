@@ -1,3 +1,4 @@
+from time import time
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 SECONDS_MAP = {
@@ -10,6 +11,30 @@ SECONDS_MAP = {
     "3d": 259200,
     "7d": 604800,
 }
+
+
+def add_graph_cache_buster(url: str, timestamp_ms=None, param_name: str = "_oko_graph_refresh_ts") -> str:
+    """Add a replaceable graph refresh cache-buster without accumulating query params."""
+    source_url = str(url or "").strip()
+    if not source_url:
+        return source_url
+
+    if timestamp_ms is None:
+        timestamp_ms = int(time() * 1000)
+
+    parsed = urlparse(source_url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query.pop(param_name, None)
+    query[param_name] = [str(timestamp_ms)]
+
+    return urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        parsed.path,
+        parsed.params,
+        urlencode(query, doseq=True),
+        parsed.fragment,
+    ))
 
 
 def apply_time_range_to_url(url: str, range_value: str) -> str:
