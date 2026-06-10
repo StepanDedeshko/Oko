@@ -4,6 +4,8 @@ import unittest
 from app.config import build_settings_export, collect_exportable_settings
 from app.service_checks import (
     AUTH_VISIBLE_HTML_FORM,
+    build_auth_form_js,
+    build_autofill_error_message,
     build_service_check_note_text,
     default_service_item,
     ensure_service_checks_defaults,
@@ -11,6 +13,7 @@ from app.service_checks import (
     make_service_result,
     normalize_service_id,
     parse_text_markers,
+    service_result_display_label,
     service_status_label,
     summarize_service_results,
 )
@@ -29,6 +32,45 @@ class ServiceChecksLogicTest(unittest.TestCase):
     def test_normalize_service_id(self):
         self.assertEqual(normalize_service_id("Face Pay 2"), "face_pay_2")
         self.assertEqual(normalize_service_id("Шар"), "shar")
+
+
+    def test_auth_form_js_is_self_contained_and_vue_friendly(self):
+        js = build_auth_form_js(
+            {
+                "login_selector": "input[type=text].el-input__inner",
+                "password_selector": "#passw",
+                "submit_selector": "button.login_btn",
+            },
+            {"login": "user", "password": "secret"},
+        )
+        self.assertIn("setNativeValue", js)
+        self.assertIn("Object.getOwnPropertyDescriptor", js)
+        self.assertIn("input", js)
+        self.assertIn("change", js)
+        self.assertIn("blur", js)
+        self.assertIn("MouseEvent", js)
+        self.assertIn("missing_form_elements", js)
+        self.assertIn("autofill_failed", js)
+        self.assertNotIn(".then", js)
+
+    def test_missing_selector_error_message_uses_selectors_only(self):
+        service = {
+            "login_selector": "input.login",
+            "password_selector": "input.pass",
+            "submit_selector": "button.submit",
+        }
+        message = build_autofill_error_message(
+            service,
+            {"ok": False, "error": "missing_form_elements", "missing": ["login", "submit"]},
+        )
+        self.assertIn("поле логина: input.login", message)
+        self.assertIn("кнопка входа: button.submit", message)
+        self.assertNotIn("input.pass", message)
+        self.assertNotIn("secret", message.lower())
+
+    def test_invalid_js_result_has_safe_autofill_error(self):
+        message = build_autofill_error_message({}, None)
+        self.assertIn("JS автозаполнения не вернул корректный результат", message)
 
     def test_evaluate_ok_auth_error_unknown(self):
         service = {"success_texts": ["Главная", "Dashboard"], "error_texts": ["Access denied"]}
@@ -117,6 +159,23 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Сервис — ОК", text)
         self.assertIn("Предупреждение: SSL-сертификат был принят как внутренний/самоподписанный.", text)
 
+
+
+    def test_manual_ok_error_and_skip_results_are_rendered_in_note(self):
+        results = [
+            make_service_result({"id": "a", "name": "FacePay"}, status="ok", manual=True, details="Результат подтверждён вручную дежурным."),
+            make_service_result({"id": "b", "name": "Биометрик"}, status="error", manual=True, details="Ошибка подтверждена вручную дежурным."),
+            make_service_result({"id": "c", "name": "Шар"}, status="unknown", manual=True, details="Проверка пропущена вручную."),
+        ]
+        text = build_service_check_note_text({}, results, checked_at="2026-06-10 13:30")
+        self.assertIn("FacePay — ОК — подтверждено вручную", text)
+        self.assertIn("Детали: Результат подтверждён вручную дежурным.", text)
+        self.assertIn("Биометрик — Ошибка — подтверждена вручную", text)
+        self.assertIn("Детали: Ошибка подтверждена вручную дежурным.", text)
+        self.assertIn("Шар — Пропущено вручную", text)
+        self.assertIn("Детали: Проверка пропущена вручную.", text)
+        self.assertTrue(all(item["manual"] for item in results))
+        self.assertEqual(service_result_display_label(results[0]), "ОК — подтверждено вручную")
 
     def test_visible_html_form_auth_type_is_preserved(self):
         config = {

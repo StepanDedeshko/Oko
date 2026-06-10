@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+import json
 import re
 
 from app.templates import get_otrs_service_check_template, render_template
@@ -26,6 +27,7 @@ SERVICE_CHECK_STATUSES = {
     "error": "Ошибка",
     "ssl_error": "Ошибка SSL-сертификата",
     "manual_required": "Требуется ручная проверка",
+    "autofill_error": "Ошибка автозаполнения формы",
 }
 
 DEFAULT_SERVICE_CHECKS = {
@@ -145,6 +147,99 @@ def ensure_service_checks_defaults(config):
     return settings
 
 
+
+def build_auth_form_js(service, credentials, blur_fields=True):
+    """Build a self-contained autofill script for hidden and visible WebEngine checks."""
+    login_selector = json.dumps(service.get("login_selector", ""))
+    password_selector = json.dumps(service.get("password_selector", ""))
+    submit_selector = json.dumps(service.get("submit_selector", ""))
+    login_value = json.dumps(credentials.get("login", ""))
+    password_value = json.dumps(credentials.get("password", ""))
+    blur_line = 'element.dispatchEvent(new Event("blur", { bubbles: true }));' if blur_fields else ""
+    return f"""
+(async function () {{
+  function setNativeValue(element, value) {{
+    const prototype = Object.getPrototypeOf(element);
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+    if (descriptor && descriptor.set) {{
+      descriptor.set.call(element, value);
+    }} else {{
+      element.value = value;
+    }}
+    element.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    element.dispatchEvent(new Event("change", {{ bubbles: true }}));
+    {blur_line}
+  }}
+  function clickElement(element) {{
+    element.dispatchEvent(new MouseEvent("mousedown", {{ bubbles: true, cancelable: true, view: window }}));
+    element.dispatchEvent(new MouseEvent("mouseup", {{ bubbles: true, cancelable: true, view: window }}));
+    element.dispatchEvent(new MouseEvent("click", {{ bubbles: true, cancelable: true, view: window }}));
+  }}
+  function sleep(ms) {{
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }}
+  try {{
+    const loginSelector = {login_selector};
+    const passwordSelector = {password_selector};
+    const submitSelector = {submit_selector};
+    const login = document.querySelector(loginSelector);
+    const password = document.querySelector(passwordSelector);
+    const submit = document.querySelector(submitSelector);
+    const missing = [];
+    if (!login) missing.push("login");
+    if (!password) missing.push("password");
+    if (!submit) missing.push("submit");
+    if (missing.length) {{
+      return {{ ok: false, error: "missing_form_elements", missing: missing }};
+    }}
+    login.focus();
+    setNativeValue(login, {login_value});
+    password.focus();
+    setNativeValue(password, {password_value});
+    await sleep(300);
+    clickElement(submit);
+    return {{ ok: true, clicked: true }};
+  }} catch (error) {{
+    return {{
+      ok: false,
+      error: "autofill_failed",
+      message: String(error && error.message ? error.message : error)
+    }};
+  }}
+}})()
+"""
+
+
+def build_autofill_error_message(service, result):
+    if not isinstance(result, dict):
+        return "Ошибка автозаполнения формы: JS автозаполнения не вернул корректный результат."
+    if result.get("error") == "missing_form_elements":
+        missing = set(result.get("missing") or [])
+        lines = ["Не найдены элементы формы авторизации:"]
+        if "login" in missing:
+            lines.append(f"- поле логина: {service.get('login_selector', '')}")
+        if "password" in missing:
+            lines.append(f"- поле пароля: {service.get('password_selector', '')}")
+        if "submit" in missing:
+            lines.append(f"- кнопка входа: {service.get('submit_selector', '')}")
+        return "\n".join(lines)
+    if result.get("error") == "autofill_failed":
+        return "Ошибка автозаполнения формы: " + str(result.get("message") or "неизвестная ошибка")
+    return "Ошибка автозаполнения формы: JS автозаполнения не вернул корректный результат."
+
+
+def service_result_display_label(result):
+    status = result.get("status") if isinstance(result, dict) else str(result or "")
+    if isinstance(result, dict) and result.get("manual"):
+        details = str(result.get("details") or "")
+        if status == "ok":
+            return "ОК — подтверждено вручную"
+        if status == "error":
+            return "Ошибка — подтверждена вручную"
+        if status == "unknown" and "пропущ" in details.casefold():
+            return "Пропущено вручную"
+    return service_status_label(status)
+
 def evaluate_service_check_page(service, page_text, loaded=True, timed_out=False, error=""):
     if timed_out:
         return "timeout", "", "", error or "Истёк таймаут проверки"
@@ -162,7 +257,7 @@ def evaluate_service_check_page(service, page_text, loaded=True, timed_out=False
     return "unknown", "", "", "Не найдены признаки успеха или ошибки"
 
 
-def make_service_result(service, status="not_checked", error="", matched_success_text="", matched_error_text="", page_excerpt="", duration_ms=0, checked_at=None, warning=""):
+def make_service_result(service, status="not_checked", error="", matched_success_text="", matched_error_text="", page_excerpt="", duration_ms=0, checked_at=None, warning="", manual=False, details=""):
     return {
         "service_id": service.get("id", ""),
         "name": service.get("name", ""),
@@ -175,6 +270,8 @@ def make_service_result(service, status="not_checked", error="", matched_success
         "page_excerpt": str(page_excerpt or "")[:500],
         "duration_ms": int(duration_ms or 0),
         "warning": warning or "",
+        "manual": bool(manual),
+        "details": details or "",
     }
 
 
@@ -204,17 +301,19 @@ def build_service_note_context(results, checked_at=None):
     lines = []
     error_lines = []
     for index, result in enumerate(results, start=1):
-        status_label = service_status_label(result.get("status"))
+        status_label = service_result_display_label(result)
         lines.append(f"{index}. {result.get('name') or result.get('service_id') or 'Сервис'} — {status_label}")
         details = []
         if result.get("error"):
             details.append(f"Ошибка: {result.get('error')}")
+        if result.get("details"):
+            details.append(f"Детали: {result.get('details')}")
         if result.get("warning"):
             details.append(f"Предупреждение: {result.get('warning')}")
         if result.get("url"):
             details.append(f"URL: {result.get('url')}")
         if details:
-            if result.get("status") != "ok" or result.get("warning"):
+            if result.get("status") != "ok" or result.get("warning") or result.get("details"):
                 lines.extend(f"   {detail}" for detail in details)
             if result.get("status") != "ok":
                 error_lines.append(f"{result.get('name') or result.get('service_id')}: {'; '.join(details)}")

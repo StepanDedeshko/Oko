@@ -48,7 +48,10 @@ from app.service_checks import (
     AUTH_VISIBLE_HTML_FORM,
     ensure_service_checks_defaults,
     evaluate_service_check_page,
+    build_auth_form_js,
+    build_autofill_error_message,
     make_service_result,
+    service_result_display_label,
     service_status_label,
     summarize_service_results,
     build_service_check_note_text,
@@ -2224,6 +2227,23 @@ class ServiceCheckVisibleDialog(QDialog):
         self.view.setPage(self.page)
         layout.addWidget(self.view, stretch=1)
 
+        manual_actions = QHBoxLayout()
+        self.confirm_ok_button = QPushButton("Подтвердить ОК")
+        self.confirm_ok_button.setObjectName("PrimaryAction")
+        self.confirm_error_button = QPushButton("Ошибка")
+        self.skip_button = QPushButton("Пропустить")
+        self.close_continue_button = QPushButton("Закрыть и продолжить")
+        self.confirm_ok_button.clicked.connect(self.confirm_ok)
+        self.confirm_error_button.clicked.connect(self.confirm_error)
+        self.skip_button.clicked.connect(self.skip_check)
+        self.close_continue_button.clicked.connect(self.close_and_continue)
+        manual_actions.addWidget(self.confirm_ok_button)
+        manual_actions.addWidget(self.confirm_error_button)
+        manual_actions.addWidget(self.skip_button)
+        manual_actions.addWidget(self.close_continue_button)
+        manual_actions.addStretch(1)
+        layout.addLayout(manual_actions)
+
         self.timeout_timer = QTimer(self)
         self.timeout_timer.setSingleShot(True)
         self.timeout_timer.timeout.connect(self.on_timeout)
@@ -2237,7 +2257,7 @@ class ServiceCheckVisibleDialog(QDialog):
     def start(self):
         self.started_at = datetime.now()
         service_id = self.service.get("id", "")
-        self.logger.info("Service check visible window opened: service_id=%s", service_id)
+        self.logger.info("Service check visible dialog opened: service_id=%s", service_id)
         self.timeout_timer.start(max(1, int(self.service.get("timeout_seconds", 15))) * 1000)
         self.view.load(QUrl(self.service.get("url", "")))
 
@@ -2294,71 +2314,33 @@ class ServiceCheckVisibleDialog(QDialog):
         self.page.runJavaScript(self.make_visible_login_js(creds), self.after_login_js)
 
     def make_visible_login_js(self, creds):
-        login_selector = json.dumps(self.service.get("login_selector", ""))
-        password_selector = json.dumps(self.service.get("password_selector", ""))
-        submit_selector = json.dumps(self.service.get("submit_selector", ""))
-        login_value = json.dumps(creds.get("login", ""))
-        password_value = json.dumps(creds.get("password", ""))
-        return f"""
-(() => {{
-  try {{
-    const loginSelector = {login_selector};
-    const passwordSelector = {password_selector};
-    const submitSelector = {submit_selector};
-    const login = document.querySelector(loginSelector);
-    const password = document.querySelector(passwordSelector);
-    const submit = document.querySelector(submitSelector);
-    const missing = [];
-    if (!login) missing.push("Не найдено поле логина: " + loginSelector);
-    if (!password) missing.push("Не найдено поле пароля: " + passwordSelector);
-    if (!submit) missing.push("Не найдена кнопка входа: " + submitSelector);
-    if (missing.length) {{
-      return {{ ok: false, login_found: !!login, password_found: !!password, submit_found: !!submit, error: missing.join("\\n") }};
-    }}
-    const setNativeValue = (element, value) => {{
-      const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
-      if (descriptor && descriptor.set) {{
-        descriptor.set.call(element, value);
-      }} else {{
-        element.value = value;
-      }}
-    }};
-    const fire = (element, type) => element.dispatchEvent(new Event(type, {{ bubbles: true, cancelable: true }}));
-    setNativeValue(login, {login_value});
-    fire(login, "input");
-    fire(login, "change");
-    fire(login, "blur");
-    setNativeValue(password, {password_value});
-    fire(password, "input");
-    fire(password, "change");
-    fire(password, "blur");
-    ["mousedown", "mouseup", "click"].forEach((type) => {{
-      submit.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true, view: window }}));
-    }});
-    return {{ ok: true, login_found: true, password_found: true, submit_found: true }};
-  }} catch (error) {{
-    return {{ ok: false, login_found: false, password_found: false, submit_found: false, error: "Ошибка selector/JS авторизации: " + String(error && error.message ? error.message : error) }};
-  }}
-}})();
-"""
+        return build_auth_form_js(self.service, creds, blur_fields=True)
 
     def after_login_js(self, result):
         if self.finished:
             return
-        result = result if isinstance(result, dict) else {}
         service_id = self.service.get("id", "")
+        if not isinstance(result, dict):
+            error_message = build_autofill_error_message(self.service, result)
+            self.logger.warning("Service check autofill failed: service_id=%s reason=invalid_result", service_id)
+            self.finish("autofill_error", error=error_message, wait_for_manual=True)
+            return
+        missing = set(result.get("missing") or [])
         self.logger.info(
             "Service check visible auth form found: service_id=%s login_found=%s password_found=%s submit_found=%s",
             service_id,
-            bool(result.get("login_found")),
-            bool(result.get("password_found")),
-            bool(result.get("submit_found")),
+            "login" not in missing,
+            "password" not in missing,
+            "submit" not in missing,
         )
         if not result.get("ok"):
-            self.finish("auth_error", error=result.get("error") or "Не найдены элементы формы авторизации")
+            reason = str(result.get("error") or "unknown")
+            self.logger.warning("Service check autofill failed: service_id=%s reason=%s", service_id, reason)
+            self.finish("autofill_error", error=build_autofill_error_message(self.service, result), wait_for_manual=True)
             return
-        self.logger.info("Service check visible auth submit clicked: service_id=%s", service_id)
+        self.logger.info("Service check visible auth values dispatched: service_id=%s", service_id)
+        if result.get("clicked"):
+            self.logger.info("Service check visible auth submit clicked: service_id=%s", service_id)
         self.status_label.setText("Форма отправлена. Ожидание результата проверки…")
         QTimer.singleShot(max(0, int(self.service.get("post_login_delay_ms", 1500))), self.read_page_text)
 
@@ -2377,8 +2359,43 @@ class ServiceCheckVisibleDialog(QDialog):
             matched_error=matched_error,
         )
 
-    def finish(self, status, error="", html_text="", matched_success="", matched_error=""):
+    def finish(self, status, error="", html_text="", matched_success="", matched_error="", wait_for_manual=False):
         if self.finished:
+            return
+        try:
+            self.timeout_timer.stop()
+        except Exception:
+            pass
+        service_id = self.service.get("id", "")
+        if wait_for_manual or status in {"unknown", "autofill_error"}:
+            self.status_label.setText(
+                f"Результат: {service_status_label(status)}\n{error or 'Требуется ручное подтверждение результата.'}"
+            )
+            self.logger.info("Service check visible waiting for manual confirmation: service_id=%s", service_id)
+            return
+
+        self.finished = True
+        should_close = self.service.get("visible_window_close_on_success", True) if status == "ok" else self.service.get("visible_window_close_on_error", False)
+        result = make_service_result(
+            self.service,
+            status=status,
+            error=error or "",
+            matched_success_text=matched_success,
+            matched_error_text=matched_error,
+            page_excerpt=html_text,
+            duration_ms=self.duration_ms(),
+            warning=self.ssl_warning,
+        )
+        self.status_label.setText(f"Результат: {service_status_label(status)}" + (f"\n{error}" if error else ""))
+        if should_close:
+            delay_seconds = max(0, int(self.service.get("visible_window_close_delay_seconds", 3)))
+            self.logger.info("Service check visible window close scheduled: service_id=%s delay=%s", service_id, delay_seconds)
+            QTimer.singleShot(delay_seconds * 1000, lambda: self.close_and_emit(result, True))
+            return
+        self.logger.info("Service check visible waiting for manual confirmation: service_id=%s", service_id)
+
+    def finish_manual(self, status, details):
+        if self.emitted:
             return
         self.finished = True
         try:
@@ -2386,35 +2403,29 @@ class ServiceCheckVisibleDialog(QDialog):
         except Exception:
             pass
         service_id = self.service.get("id", "")
-        should_close = self.service.get("visible_window_close_on_success", True) if status == "ok" else self.service.get("visible_window_close_on_error", False)
-        final_status = status
-        final_error = error or ""
-        continue_queue = True
-        if not should_close:
-            continue_queue = False
-            if status != "ok":
-                final_status = "manual_required"
-                final_error = (final_error + "\n" if final_error else "") + "Окно проверки оставлено открытым для диагностики."
-            else:
-                final_error = "Окно проверки оставлено открытым для диагностики."
+        self.logger.info("Service check visible manual result: service_id=%s status=%s", service_id, status)
         result = make_service_result(
             self.service,
-            status=final_status,
-            error=final_error,
-            matched_success_text=matched_success,
-            matched_error_text=matched_error,
-            page_excerpt=html_text,
+            status=status,
+            error="",
             duration_ms=self.duration_ms(),
             warning=self.ssl_warning,
+            manual=True,
+            details=details,
         )
-        self.status_label.setText(f"Результат: {service_status_label(final_status)}" + (f"\n{final_error}" if final_error else ""))
-        if should_close:
-            delay_seconds = max(0, int(self.service.get("visible_window_close_delay_seconds", 3)))
-            self.logger.info("Service check visible window close scheduled: service_id=%s delay=%s", service_id, delay_seconds)
-            QTimer.singleShot(delay_seconds * 1000, lambda: self.close_and_emit(result, continue_queue))
-            return
-        self.logger.info("Service check visible window left open for diagnostics: service_id=%s", service_id)
-        self.emit_completed(result, continue_queue)
+        self.close_and_emit(result, True)
+
+    def confirm_ok(self):
+        self.finish_manual("ok", "Результат подтверждён вручную дежурным.")
+
+    def confirm_error(self):
+        self.finish_manual("error", "Ошибка подтверждена вручную дежурным.")
+
+    def skip_check(self):
+        self.finish_manual("unknown", "Проверка пропущена вручную.")
+
+    def close_and_continue(self):
+        self.finish_manual("manual_required", "Окно проверки закрыто вручную без подтверждения результата.")
 
     def close_and_emit(self, result, continue_queue):
         self.emit_completed(result, continue_queue)
@@ -2424,6 +2435,8 @@ class ServiceCheckVisibleDialog(QDialog):
         if self.emitted:
             return
         self.emitted = True
+        if result.get("manual") and continue_queue:
+            self.logger.info("Service check queue continue after manual result: service_id=%s", result.get("service_id", ""))
         self.completed.emit(result, continue_queue)
 
     def cleanup(self):
@@ -2436,6 +2449,22 @@ class ServiceCheckVisibleDialog(QDialog):
         safe_delete_web_view(view, logger=self.logger, context="ServiceCheckVisibleDialog", load_handler=self.on_loaded)
 
     def closeEvent(self, event):
+        if not self.emitted:
+            try:
+                self.timeout_timer.stop()
+            except Exception:
+                pass
+            service_id = self.service.get("id", "")
+            self.logger.info("Service check visible manual result: service_id=%s status=manual_required", service_id)
+            result = make_service_result(
+                self.service,
+                status="manual_required",
+                duration_ms=self.duration_ms(),
+                warning=self.ssl_warning,
+                manual=True,
+                details="Окно проверки закрыто вручную без подтверждения результата.",
+            )
+            self.emit_completed(result, True)
         self.cleanup()
         super().closeEvent(event)
 
@@ -2626,18 +2655,20 @@ class DutyModeWidget(QWidget):
         result_by_id = {item.get("service_id"): item for item in self.service_check_results}
         for service in self.service_settings().get("items", []):
             result = result_by_id.get(service.get("id")) or make_service_result(service, status="not_checked")
-            label = f"{service.get('name') or service.get('id')} — {service_status_label(result.get('status'))}"
+            label = f"{service.get('name') or service.get('id')} — {service_result_display_label(result)}"
             if result.get("warning"):
                 label += " (SSL-сертификат принят)"
             if not service.get("enabled", True):
                 label += " (выключен)"
             list_item = QListWidgetItem(label)
-            if result.get("status") in {"auth_error", "load_error", "timeout", "error", "ssl_error", "manual_required"}:
+            if result.get("status") in {"auth_error", "load_error", "timeout", "error", "ssl_error", "autofill_error"}:
                 list_item.setForeground(QColor("#ff5c5c"))
             elif result.get("status") == "ok":
                 list_item.setForeground(QColor("#7CFC98"))
-            if result.get("error") or result.get("warning"):
-                list_item.setToolTip("\n".join(part for part in [result.get("error", ""), result.get("warning", "")] if part))
+            elif result.get("status") == "manual_required" or (result.get("manual") and result.get("status") == "unknown"):
+                list_item.setForeground(QColor("#f6d365"))
+            if result.get("error") or result.get("warning") or result.get("details"):
+                list_item.setToolTip("\n".join(part for part in [result.get("details", ""), result.get("error", ""), result.get("warning", "")] if part))
             self.service_results_list.addItem(list_item)
         stats = summarize_service_results(self.service_check_results)
         if self.service_check_results:
@@ -2767,7 +2798,7 @@ class DutyModeWidget(QWidget):
 
         def after_login_js(result):
             if not isinstance(result, dict) or not result.get("ok"):
-                finish("auth_error", error=(result or {}).get("error", "Не найдены элементы формы авторизации"))
+                finish("autofill_error", error=build_autofill_error_message(service, result))
                 return
             QTimer.singleShot(max(0, int(service.get("post_login_delay_ms", 1500))), read_text_after_login)
 
@@ -2836,52 +2867,7 @@ class DutyModeWidget(QWidget):
         view.load(QUrl(service.get("url", "")))
 
     def _make_service_login_js(self, service, creds):
-        login_selector = json.dumps(service.get("login_selector", ""))
-        password_selector = json.dumps(service.get("password_selector", ""))
-        submit_selector = json.dumps(service.get("submit_selector", ""))
-        login_value = json.dumps(creds.get("login", ""))
-        password_value = json.dumps(creds.get("password", ""))
-        return f"""
-(() => {{
-  try {{
-    const loginSelector = {login_selector};
-    const passwordSelector = {password_selector};
-    const submitSelector = {submit_selector};
-    const login = document.querySelector(loginSelector);
-    const password = document.querySelector(passwordSelector);
-    const submit = document.querySelector(submitSelector);
-    const missing = [];
-    if (!login) missing.push("Не найдено поле логина: " + loginSelector);
-    if (!password) missing.push("Не найдено поле пароля: " + passwordSelector);
-    if (!submit) missing.push("Не найдена кнопка входа: " + submitSelector);
-    if (missing.length) {{
-      return {{ ok: false, error: missing.join("\\n") }};
-    }}
-    const setNativeValue = (element, value) => {{
-      const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
-      if (descriptor && descriptor.set) {{
-        descriptor.set.call(element, value);
-      }} else {{
-        element.value = value;
-      }}
-    }};
-    const fire = (element, type) => element.dispatchEvent(new Event(type, {{ bubbles: true, cancelable: true }}));
-    setNativeValue(login, {login_value});
-    fire(login, "input");
-    fire(login, "change");
-    setNativeValue(password, {password_value});
-    fire(password, "input");
-    fire(password, "change");
-    ["mousedown", "mouseup", "click"].forEach((type) => {{
-      submit.dispatchEvent(new MouseEvent(type, {{ bubbles: true, cancelable: true, view: window }}));
-    }});
-    return {{ ok: true }};
-  }} catch (error) {{
-    return {{ ok: false, error: "Ошибка selector/JS авторизации: " + String(error && error.message ? error.message : error) }};
-  }}
-}})();
-"""
+        return build_auth_form_js(service, creds, blur_fields=True)
 
     def _finish_single_service_check(self, service, result):
         self.service_check_results = [item for item in self.service_check_results if item.get("service_id") != service.get("id")]
