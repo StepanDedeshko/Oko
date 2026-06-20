@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import unittest
 
-from app.config import build_settings_export, collect_exportable_settings
+from app.config import build_settings_export, collect_exportable_settings, ensure_duty_mode_defaults
 from app.service_checks import (
     AUTH_VISIBLE_HTML_FORM,
     build_auth_form_js,
@@ -640,6 +640,29 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertNotIn("must-not-export", serialized)
         self.assertNotIn('"login"', serialized)
         self.assertNotIn('"password"', serialized)
+
+
+    def test_duty_service_checks_defaults_and_task_migration(self):
+        config = {"duty_mode": {"current_ticket_number": "123456"}}
+        settings = ensure_duty_mode_defaults(config)
+        self.assertFalse(settings["duty_service_checks_enabled"])
+        self.assertEqual(settings["duty_zabbix_task_number"], "123456")
+        self.assertEqual(settings["duty_service_checks_task_number"], "")
+
+    def test_duty_mode_source_separates_zabbix_and_service_tasks(self):
+        duty_source = (Path(__file__).resolve().parents[1] / "app" / "duty_mode.py").read_text(encoding="utf-8")
+        settings_source = (Path(__file__).resolve().parents[1] / "app" / "duty_settings.py").read_text(encoding="utf-8")
+        self.assertIn("duty_service_checks_enabled", duty_source)
+        self.assertIn("duty_zabbix_task_number", duty_source)
+        self.assertIn("duty_service_checks_task_number", duty_source)
+        self.assertIn("Duty service checks skipped: reason=disabled", duty_source)
+        self.assertIn("Duty service checks started", duty_source)
+        self.assertIn("Duty Zabbix check started", duty_source)
+        self.assertIn("Duty check finished", duty_source)
+        self.assertIn("Проверять сервисы в режиме дежурства", settings_source)
+        self.assertIn("№ задачи для Zabbix / графиков", settings_source)
+        self.assertIn("№ задачи для проверки сервисов", settings_source)
+        self.assertIn("Задача для проверки Zabbix / графиков", settings_source)
 
     def test_service_checks_settings_widget_uses_scroll_area_for_large_form(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

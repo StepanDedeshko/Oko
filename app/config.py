@@ -88,6 +88,38 @@ def ensure_duty_triggers_defaults(config):
 
     return settings
 
+def ensure_duty_mode_defaults(config):
+    settings = config.setdefault("duty_mode", {})
+    legacy_task_number = (
+        settings.get("duty_zabbix_task_number")
+        or settings.get("current_ticket_number")
+        or settings.get("duty_task_number")
+        or settings.get("task_number")
+        or ""
+    )
+    settings.setdefault("enabled", False)
+    settings.setdefault("hourly_notification", True)
+    settings.setdefault("skip_minutes", 5)
+    settings.setdefault("sound_path", "")
+    settings.setdefault("current_ticket_number", str(legacy_task_number or ""))
+    settings.setdefault("current_ticket_id", "")
+    settings.setdefault("current_ticket_url", "")
+    settings.setdefault("duty_zabbix_task_number", str(legacy_task_number or ""))
+    settings.setdefault("duty_service_checks_task_number", "")
+    settings.setdefault("duty_service_checks_enabled", False)
+    settings.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
+    settings.setdefault("otrs_login_enabled", False)
+    settings.setdefault("otrs_login", "")
+    settings.setdefault("otrs_password", "")
+    settings.setdefault("otrs_auto_submit_login", False)
+    settings.setdefault("graph_ids", [])
+    settings.setdefault("otrs", {})
+    settings["otrs"].setdefault("create_url", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentNewTicketForm;NewTicketFormID=6")
+    settings["otrs"].setdefault("note_url_base", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=")
+    settings["otrs"].setdefault("note_url_template", "")
+    return settings
+
+
 
 def _default_config():
     return {
@@ -116,6 +148,9 @@ def _default_config():
             "otrs_password": "",
             "otrs_auto_submit_login": False,
             "expected_ticket_subject": "Проверка Zabbix (Важных IT-сервисов)",
+            "duty_service_checks_enabled": False,
+            "duty_zabbix_task_number": "",
+            "duty_service_checks_task_number": "",
         },
         "duty_triggers": default_duty_triggers_config(),
         "service_checks": default_service_checks_config(),

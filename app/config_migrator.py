@@ -2,7 +2,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from app.config import CONFIG_EXAMPLE_PATH, _default_config, ensure_duty_triggers_defaults
+from app.config import CONFIG_EXAMPLE_PATH, _default_config, ensure_duty_mode_defaults, ensure_duty_triggers_defaults
 from app.service_checks import ensure_service_checks_defaults
 
 
@@ -56,6 +56,7 @@ def ensure_runtime_defaults(config):
     config["loading_screen"]["show_until_problem_counter_ready"] = False
     config["loading_screen"]["show_on_problems_open"] = False
 
+    ensure_duty_mode_defaults(config)
     ensure_duty_triggers_defaults(config)
     ensure_service_checks_defaults(config)
 

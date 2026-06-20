@@ -36,7 +36,7 @@ except Exception:
     QMediaPlayer = None
 
 from app.autologin import make_zabbix_login_js
-from app.config import ensure_duty_triggers_defaults, save_config
+from app.config import ensure_duty_mode_defaults, ensure_duty_triggers_defaults, save_config
 from app.credentials import load_otrs_credentials, load_service_credentials
 from app.duty_settings import DutyModeSettingsWidget
 from app.duty_triggers import evaluate_stagnation_trigger
@@ -1032,6 +1032,7 @@ class AttachExistingTaskDialog(QDialog):
 
         settings = self.get_settings()
         settings["current_ticket_number"] = number
+        settings["duty_zabbix_task_number"] = number
         settings["current_ticket_id"] = ticket_id
         settings["current_ticket_url"] = ticket_url
         save_config(self.config)
@@ -1270,6 +1271,7 @@ class OtrsCreateTaskDialog(QDialog):
 
         if ticket_number:
             settings["current_ticket_number"] = ticket_number
+            settings["duty_zabbix_task_number"] = ticket_number
 
         save_config(self.config)
 
@@ -1705,6 +1707,7 @@ class OtrsNoteDialog(QDialog):
 
         if number:
             settings["current_ticket_number"] = number
+            settings["duty_zabbix_task_number"] = number
             changed = True
 
         if changed:
@@ -1954,7 +1957,8 @@ class ProblemTemplateDialog(QDialog):
             QMessageBox.warning(self, "Есть проблема", "Выбери хотя бы один график.")
             return
 
-        task_number = self.config.get("duty_mode", {}).get("current_ticket_number", "").strip()
+        duty_settings = self.config.get("duty_mode", {})
+        task_number = (duty_settings.get("duty_zabbix_task_number") or duty_settings.get("current_ticket_number", "")).strip()
 
         if len(titles) == 1:
             text = (
@@ -3240,6 +3244,9 @@ class DutyModeWidget(QWidget):
         self.service_result_labels = {}
         self.hidden_service_views = []
         self.visible_service_dialog = None
+        self.service_checks_launched_from_duty = False
+        self.duty_zabbix_status = "ещё не выполнялась"
+        self.duty_service_checks_status = "отключено"
 
         self.audio_player = None
         self.audio_output = None
@@ -3290,13 +3297,19 @@ class DutyModeWidget(QWidget):
 
         self.duty_state_value = QLabel("")
         self.last_check_value = QLabel("ещё не выполнялась")
-        self.task_state_value = QLabel("")
+        self.zabbix_task_state_value = QLabel("")
+        self.service_task_state_value = QLabel("")
+        self.zabbix_status_value = QLabel(self.duty_zabbix_status)
+        self.service_duty_status_value = QLabel(self.duty_service_checks_status)
         self.graphs_state_value = QLabel("")
 
         state_labels = [
             QLabel("Дежурство:"),
-            QLabel("Задача ОТРС:"),
             QLabel("Последняя проверка:"),
+            QLabel("Задача для проверки Zabbix / графиков:"),
+            QLabel("Задача для проверки сервисов:"),
+            QLabel("Статус Zabbix / графики:"),
+            QLabel("Статус сервисы:"),
             QLabel("Графики:"),
         ]
         for label in state_labels:
@@ -3305,11 +3318,17 @@ class DutyModeWidget(QWidget):
         state_layout.addWidget(state_labels[0], 0, 0)
         state_layout.addWidget(self.duty_state_value, 0, 1)
         state_layout.addWidget(state_labels[1], 0, 2)
-        state_layout.addWidget(self.task_state_value, 0, 3)
+        state_layout.addWidget(self.last_check_value, 0, 3)
         state_layout.addWidget(state_labels[2], 1, 0)
-        state_layout.addWidget(self.last_check_value, 1, 1)
+        state_layout.addWidget(self.zabbix_task_state_value, 1, 1)
         state_layout.addWidget(state_labels[3], 1, 2)
-        state_layout.addWidget(self.graphs_state_value, 1, 3)
+        state_layout.addWidget(self.service_task_state_value, 1, 3)
+        state_layout.addWidget(state_labels[4], 2, 0)
+        state_layout.addWidget(self.zabbix_status_value, 2, 1)
+        state_layout.addWidget(state_labels[5], 2, 2)
+        state_layout.addWidget(self.service_duty_status_value, 2, 3)
+        state_layout.addWidget(state_labels[6], 3, 0)
+        state_layout.addWidget(self.graphs_state_value, 3, 1)
         root.addWidget(state_group)
 
         actions_layout = QHBoxLayout()
@@ -3347,6 +3366,9 @@ class DutyModeWidget(QWidget):
         services_actions.addWidget(self.service_note_button)
         services_actions.addStretch(1)
         services_layout.addLayout(services_actions)
+        self.service_task_hint_label = QLabel("")
+        self.service_task_hint_label.setWordWrap(True)
+        services_layout.addWidget(self.service_task_hint_label)
         self.service_summary_label = QLabel("Проверка сервисов ещё не выполнялась.")
         self.service_summary_label.setWordWrap(True)
         services_layout.addWidget(self.service_summary_label)
@@ -3427,7 +3449,9 @@ class DutyModeWidget(QWidget):
         if hasattr(self, "check_services_button"):
             self.check_services_button.setEnabled(not running)
 
-    def run_service_checks(self):
+    def run_service_checks(self, from_duty=False):
+        if from_duty:
+            self.service_checks_launched_from_duty = True
         if self.service_check_running:
             self.service_summary_label.setText("Проверка сервисов уже выполняется.")
             return
@@ -3436,6 +3460,9 @@ class DutyModeWidget(QWidget):
         self.service_check_results = []
         self.render_service_results()
         self.service_summary_label.setText(f"Запущена проверка сервисов: {len(services)} шт.")
+        if from_duty:
+            self.duty_service_checks_status = "выполняется"
+            self.update_dashboard_summary()
         self._set_service_check_running(True)
         if not services:
             self._finish_service_checks()
@@ -3881,11 +3908,24 @@ class DutyModeWidget(QWidget):
     def _finish_service_checks(self):
         self._set_service_check_running(False)
         stats = summarize_service_results(self.service_check_results)
+        service_status = "выполнено" if stats.get("errors", 0) == 0 and stats.get("timeouts", 0) == 0 else "требуется внимание"
         self.service_summary_label.setText(
             "Проверка сервисов завершена: "
             f"OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}"
         )
         self.logger.info("Service checks finished: total=%s ok=%s errors=%s timeouts=%s", stats["total"], stats["ok"], stats["errors"], stats["timeouts"])
+        if self.service_checks_launched_from_duty:
+            self.duty_service_checks_status = service_status
+            self.logger.info(
+                "Duty service checks finished: status=%s ok=%s errors=%s timeouts=%s",
+                service_status,
+                stats["ok"],
+                stats["errors"],
+                stats["timeouts"],
+            )
+            self.logger.info("Duty check finished: zabbix_status=%s service_checks_status=%s", self.duty_zabbix_status, service_status)
+            self.service_checks_launched_from_duty = False
+            self.update_dashboard_summary()
 
     def open_service_check_note(self):
         task_url = self.service_settings().get("otrs_task_url", "").strip()
@@ -3907,23 +3947,7 @@ class DutyModeWidget(QWidget):
         dialog.exec()
 
     def get_settings(self):
-        settings = self.config.setdefault("duty_mode", {})
-        settings.setdefault("enabled", False)
-        settings.setdefault("hourly_notification", True)
-        settings.setdefault("skip_minutes", 5)
-        settings.setdefault("sound_path", "")
-        settings.setdefault("current_ticket_number", "")
-        settings.setdefault("current_ticket_id", "")
-        settings.setdefault("current_ticket_url", "")
-        settings.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
-        settings.setdefault("otrs_login_enabled", False)
-        settings.setdefault("otrs_auto_submit_login", False)
-        settings.setdefault("graph_ids", [])
-        settings.setdefault("otrs", {})
-        settings["otrs"].setdefault("create_url", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentNewTicketForm;NewTicketFormID=6")
-        settings["otrs"].setdefault("note_url_base", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=")
-        settings["otrs"].setdefault("note_url_template", "")
-        return settings
+        return ensure_duty_mode_defaults(self.config)
 
     def update_enable_button(self):
         enabled = self.get_settings().get("enabled", False)
@@ -3932,23 +3956,15 @@ class DutyModeWidget(QWidget):
         self.notify_now_button.setVisible(not enabled)
         self.update_dashboard_summary()
 
-    def _task_parts(self):
+    def _zabbix_task_number(self):
         settings = self.get_settings()
-        number = settings.get("current_ticket_number", "").strip()
-        ticket_id = settings.get("current_ticket_id", "").strip()
+        return (settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number") or "").strip()
 
-        parts = []
-        if number:
-            parts.append(f"№{number}")
-        if ticket_id:
-            parts.append(f"TicketID={ticket_id}")
-        return parts
+    def _service_checks_task_number(self):
+        return self.get_settings().get("duty_service_checks_task_number", "").strip()
 
-    def _task_summary(self):
-        parts = self._task_parts()
-        if not parts:
-            return "не привязана"
-        return "привязана, " + " / ".join(parts)
+    def _task_summary(self, number):
+        return f"№{number}" if number else "не указана"
 
     def _graphs_count(self):
         self.load_check_graphs()
@@ -3958,8 +3974,20 @@ class DutyModeWidget(QWidget):
         settings = self.get_settings()
         enabled = settings.get("enabled", False)
 
+        service_enabled = bool(settings.get("duty_service_checks_enabled", False))
+        if not service_enabled and self.duty_service_checks_status not in {"выполняется", "выполнено", "ошибка", "требуется внимание"}:
+            self.duty_service_checks_status = "отключено"
+
         self.duty_state_value.setText("включено" if enabled else "выключено")
-        self.task_state_value.setText(self._task_summary())
+        self.zabbix_task_state_value.setText(self._task_summary(self._zabbix_task_number()))
+        self.service_task_state_value.setText(self._task_summary(self._service_checks_task_number()))
+        self.zabbix_status_value.setText(self.duty_zabbix_status)
+        self.service_duty_status_value.setText(self.duty_service_checks_status if service_enabled else "отключено")
+        if hasattr(self, "service_task_hint_label"):
+            self.service_task_hint_label.setText(
+                f"Задача для проверки сервисов: {self._task_summary(self._service_checks_task_number())}. "
+                f"Автозапуск в дежурстве: {'включён' if service_enabled else 'отключён'}."
+            )
         self.last_check_value.setText(
             self.last_check_at.strftime("%H:%M:%S")
             if self.last_check_at
@@ -4387,11 +4415,38 @@ class DutyModeWidget(QWidget):
         stats = self.duty_trigger_stats
         self._set_duty_trigger_check_running(False)
         self._last_duty_trigger_check_finished_at = datetime.now(MSK)
+        zabbix_status = "ошибка" if stats.get("errors", 0) else ("требуется внимание" if stats.get("alert", 0) else "выполнено")
+        self.duty_zabbix_status = zabbix_status
         self.status_label.setText(
             "Проверка триггеров завершена: "
             f"OK={stats['ok']}, ALERT={stats['alert']}, ошибки={stats['errors']}."
         )
+        self.logger.info("Duty Zabbix check finished: status=%s", zabbix_status)
         self.logger.info("Duty triggers check finished: stats=%s", stats)
+        self.update_dashboard_summary()
+        self._maybe_run_duty_service_checks_after_zabbix(zabbix_status)
+
+    def _maybe_run_duty_service_checks_after_zabbix(self, zabbix_status):
+        settings = self.get_settings()
+        enabled = bool(settings.get("duty_service_checks_enabled", False))
+        self.logger.info("Duty service checks enabled: value=%s", str(enabled).lower())
+        if not enabled:
+            self.duty_service_checks_status = "отключено"
+            self.logger.info("Duty service checks skipped: reason=disabled")
+            self.logger.info("Duty check finished: zabbix_status=%s service_checks_status=disabled", zabbix_status)
+            self.update_dashboard_summary()
+            return
+        if self.service_check_running:
+            self.logger.info("Duty service checks skipped: reason=already_running")
+            return
+        self.service_checks_launched_from_duty = True
+        self.duty_service_checks_status = "выполняется"
+        self.update_dashboard_summary()
+        self.logger.info(
+            "Duty service checks started: task_number=%s",
+            self._service_checks_task_number() or "not_set",
+        )
+        self.run_service_checks(from_duty=True)
 
     def run_duty_triggers_check(self):
         if self.duty_trigger_running or self._hidden_trigger_contexts or self.hidden_trigger_views:
@@ -4421,7 +4476,11 @@ class DutyModeWidget(QWidget):
             trigger for trigger in trigger_settings.get("items", [])
             if trigger.get("enabled", True)
         ]
+        self.logger.info("Duty check started: mode=manual")
+        self.logger.info("Duty Zabbix check started: task_number=%s", self._zabbix_task_number() or "not_set")
         self.logger.info("Duty trigger manual check started: enabled_count=%s", len(enabled_triggers))
+        self.duty_zabbix_status = "выполняется"
+        self.duty_service_checks_status = "отключено" if not self.get_settings().get("duty_service_checks_enabled", False) else "ожидает Zabbix"
         self.mark_check_started()
         self.status_label.setText(f"Запущена проверка триггеров: {len(enabled_triggers)} шт.")
 
@@ -4805,7 +4864,7 @@ class DutyModeWidget(QWidget):
 
     def _bound_task_details(self):
         settings = self.get_settings()
-        ticket_number = settings.get("current_ticket_number", "").strip()
+        ticket_number = (settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number", "")).strip()
         ticket_id = settings.get("current_ticket_id", "").strip()
         ticket_url = settings.get("current_ticket_url", "").strip()
 

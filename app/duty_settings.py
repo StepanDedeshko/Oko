@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config import default_trigger_item, ensure_duty_triggers_defaults, save_config
+from app.config import default_trigger_item, ensure_duty_mode_defaults, ensure_duty_triggers_defaults, save_config
 from app.logger import get_logger
 from app.safe_widgets import NoWheelComboBox, NoWheelSpinBox
 
@@ -296,6 +296,19 @@ class DutyModeSettingsWidget(QWidget):
         sound_row.addWidget(clear_sound)
         root.addLayout(sound_row)
 
+        self.duty_service_checks_enabled_checkbox = QCheckBox("Проверять сервисы в режиме дежурства")
+        self.duty_service_checks_enabled_checkbox.setChecked(bool(self.settings().get("duty_service_checks_enabled", False)))
+        self.duty_service_checks_enabled_checkbox.setToolTip(
+            "Если выключено, при дежурной проверке графиков/Zabbix проверка сервисов запускаться не будет."
+        )
+        root.addWidget(self.duty_service_checks_enabled_checkbox)
+
+        service_checks_hint = QLabel(
+            "Если выключено, при дежурной проверке графиков/Zabbix проверка сервисов запускаться не будет."
+        )
+        service_checks_hint.setWordWrap(True)
+        root.addWidget(service_checks_hint)
+
     def build_otrs_section(self, root):
         access_hint = QLabel("Логин и пароль ОТРС настраиваются в разделе «Профиль».")
         access_hint.setWordWrap(True)
@@ -321,6 +334,24 @@ class DutyModeSettingsWidget(QWidget):
         subject_row.addWidget(self.expected_subject_input, stretch=1)
         root.addLayout(subject_row)
 
+        task_box = QGroupBox("Задачи дежурства")
+        task_form = QFormLayout(task_box)
+
+        self.duty_zabbix_task_number_input = QLineEdit()
+        self.duty_zabbix_task_number_input.setText(self.settings().get("duty_zabbix_task_number", ""))
+        self.duty_zabbix_task_number_input.setPlaceholderText("Например: 123456")
+        task_form.addRow("№ задачи для Zabbix / графиков:", self.duty_zabbix_task_number_input)
+
+        self.duty_service_checks_task_number_input = QLineEdit()
+        self.duty_service_checks_task_number_input.setText(self.settings().get("duty_service_checks_task_number", ""))
+        self.duty_service_checks_task_number_input.setPlaceholderText("Например: 654321")
+        task_form.addRow("№ задачи для проверки сервисов:", self.duty_service_checks_task_number_input)
+
+        task_hint = QLabel("Задача для проверки Zabbix / графиков и задача для проверки сервисов хранятся отдельно.")
+        task_hint.setWordWrap(True)
+        task_form.addRow(task_hint)
+        root.addWidget(task_box)
+
         self.otrs_auto_submit_checkbox = QCheckBox("Автоматически нажимать кнопку «Вход»")
         self.otrs_auto_submit_checkbox.setChecked(self.settings().get("otrs_auto_submit_login", False))
         root.addWidget(self.otrs_auto_submit_checkbox)
@@ -334,15 +365,8 @@ class DutyModeSettingsWidget(QWidget):
         root.addWidget(self.graph_list, stretch=1)
 
     def settings(self):
-        settings = self.config.setdefault("duty_mode", {})
-        settings.setdefault("enabled", False)
-        settings.setdefault("hourly_notification", True)
-        settings.setdefault("skip_minutes", 5)
-        settings.setdefault("sound_path", "")
-        settings.setdefault("otrs_create_url", "")
-        settings.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
-        settings.setdefault("otrs_auto_submit_login", False)
-        settings.setdefault("graph_ids", [])
+        settings = ensure_duty_mode_defaults(self.config)
+        settings.setdefault("otrs_create_url", settings.get("otrs", {}).get("create_url", ""))
         return settings
 
     def duty_triggers_settings(self):
@@ -568,6 +592,10 @@ class DutyModeSettingsWidget(QWidget):
             settings["sound_path"] = ""
         settings["otrs_create_url"] = self.otrs_create_url.text().strip()
         settings["expected_ticket_subject"] = self.expected_subject_input.text().strip() or "Проверка Zabbix (Важных IT-сервисов)"
+        settings["duty_service_checks_enabled"] = self.duty_service_checks_enabled_checkbox.isChecked()
+        settings["duty_zabbix_task_number"] = self.duty_zabbix_task_number_input.text().strip()
+        settings["duty_service_checks_task_number"] = self.duty_service_checks_task_number_input.text().strip()
+        settings["current_ticket_number"] = settings["duty_zabbix_task_number"]
         settings["otrs_auto_submit_login"] = self.otrs_auto_submit_checkbox.isChecked()
         settings["graph_ids"] = self.selected_graph_ids()
 
