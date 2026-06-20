@@ -8,10 +8,13 @@ from app.service_checks import (
     build_auth_form_js,
     build_auth_form_presence_js,
     build_click_selector_js,
+    build_click_action_js,
     build_load_false_diagnostics_js,
     build_autofill_error_message,
     build_result_selector_check_js,
     build_wait_selector_js,
+    build_wait_selector_action_js,
+    build_wait_text_action_js,
     build_service_check_note_text,
     can_open_next_visible_service_after_cleanup,
     default_service_item,
@@ -20,9 +23,11 @@ from app.service_checks import (
     make_service_result,
     normalize_service_id,
     parse_autofill_callback_result,
+    normalize_service_actions,
     parse_selector_markers,
     parse_text_markers,
     safe_autofill_script_preview,
+    service_action_failure_message,
     service_result_display_label,
     service_status_label,
     load_false_continuation_action,
@@ -172,11 +177,46 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(item["logout_success_texts"], [])
         self.assertEqual(item["logout_wait_seconds"], 10)
         self.assertEqual(item["logout_menu_wait_seconds"], 5)
-        config = {"service_checks": {"items": [{"id": "svc", "logout_success_selectors": "form.login; button.login", "logout_success_texts": "Войти; Login"}]}}
+        self.assertEqual(item["post_login_actions"], [])
+        self.assertEqual(item["logout_actions"], [])
+        config = {"service_checks": {"items": [{"id": "svc", "logout_success_selectors": "form.login; button.login", "logout_success_texts": "Войти; Login", "logout_actions": "click | .profile | 5 | 500 | Открыть профиль"}]}}
         ensure_service_checks_defaults(config)
         migrated = config["service_checks"]["items"][0]
         self.assertEqual(migrated["logout_success_selectors"], ["form.login", "button.login"])
         self.assertEqual(migrated["logout_success_texts"], ["Войти", "Login"])
+        self.assertEqual(migrated["logout_actions"][0]["type"], "click")
+        self.assertEqual(migrated["logout_actions"][0]["selector"], ".profile")
+
+    def test_normalize_service_actions_from_text_and_list(self):
+        actions = normalize_service_actions(
+            "click | .menu | 5 | 500 | Открыть меню\n"
+            "wait_selector | .ready | 10 | 0 | Раздел открыт\n"
+            "wait_text | Готово | 7 | 0 | Текст найден\n"
+            "delay |  | 0 | 250 | Пауза"
+        )
+        self.assertEqual([item["type"] for item in actions], ["click", "wait_selector", "wait_text", "delay"])
+        self.assertEqual(actions[0]["selector"], ".menu")
+        self.assertEqual(actions[2]["text"], "Готово")
+        self.assertEqual(actions[3]["delay_ms"], 250)
+        normalized = normalize_service_actions([{"type": "click", "selector": ".x", "timeout_seconds": "3", "delay_ms": "10"}])
+        self.assertEqual(normalized[0]["timeout_seconds"], 3)
+
+    def test_action_js_helpers_are_safe_and_json_based(self):
+        for js in (build_click_action_js(".profile"), build_wait_selector_action_js(".ready"), build_wait_text_action_js("Готово")):
+            self.assertIn("JSON.stringify", js)
+            self.assertTrue(js.strip().endswith(")()") or js.strip().endswith(")();"))
+            self.assertNotIn(".value", js.lower())
+            self.assertNotIn("cookie", js.lower())
+            self.assertNotIn("localStorage", js)
+            self.assertNotIn("sessionStorage", js)
+        self.assertIn("MouseEvent", build_click_action_js(".profile"))
+        self.assertIn("innerText", build_wait_text_action_js("Готово"))
+
+    def test_action_failure_message_and_logout_priority(self):
+        action = {"type": "wait_selector", "selector": ".ready", "description": "Проверить раздел"}
+        self.assertIn("мини-тест", service_action_failure_message("post_login", action, "selector_not_found"))
+        service = {"logout_actions": [{"type": "click", "selector": ".profile"}], "logout_menu_selector": ".legacy", "logout_button_selector": ".legacy-logout"}
+        self.assertTrue(service["logout_actions"])
 
     def test_logout_note_details_for_success_and_failure(self):
         ok_result = make_service_result({"id": "svc", "name": "Svc"}, status="ok", details="Вход выполнен, сервис работает, выход выполнен")
@@ -529,6 +569,8 @@ class ServiceChecksLogicTest(unittest.TestCase):
                     "logout_success_texts": ["Войти"],
                     "logout_wait_seconds": 10,
                     "logout_menu_wait_seconds": 5,
+                    "post_login_actions": [{"type": "wait_selector", "selector": ".ready", "timeout_seconds": 5, "delay_ms": 0, "description": "Проверить раздел"}],
+                    "logout_actions": [{"type": "click", "selector": ".profile", "timeout_seconds": 5, "delay_ms": 500, "description": "Открыть профиль"}],
                     "login": "must-not-export",
                     "password": "must-not-export",
                 }],
@@ -545,6 +587,8 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(item["error_selectors"], [".login-error"])
         self.assertEqual(item["logout_button_selector"], "button.logout")
         self.assertEqual(item["logout_success_selectors"], ["form.login"])
+        self.assertEqual(item["post_login_actions"][0]["type"], "wait_selector")
+        self.assertEqual(item["logout_actions"][0]["selector"], ".profile")
         self.assertEqual(item["visible_window_close_delay_seconds"], 3)
         serialized = json.dumps(exported, ensure_ascii=False).lower()
         self.assertNotIn("must-not-export", serialized)

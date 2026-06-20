@@ -52,15 +52,19 @@ from app.service_checks import (
     build_auth_form_presence_js,
     build_autofill_error_message,
     build_click_selector_js,
+    build_click_action_js,
     build_load_false_diagnostics_js,
     build_result_selector_check_js,
+    build_wait_selector_action_js,
     build_wait_selector_js,
+    build_wait_text_action_js,
     load_false_continuation_action,
     load_false_diagnostics_log_parts,
     make_service_result,
     parse_autofill_callback_result,
     safe_autofill_result_repr,
     safe_autofill_script_preview,
+    service_action_failure_message,
     service_result_display_label,
     service_status_label,
     summarize_service_results,
@@ -2603,7 +2607,7 @@ class ServiceCheckVisibleDialog(QDialog):
         status, matched_success, matched_error, error = evaluate_service_check_page(self.service, text, loaded=True, selector_result=selector_result)
         details = error if status == "ok" and str(error).startswith("Успешный признак найден по CSS selector:") else ""
         if status == "ok":
-            self.start_logout_flow(text, matched_success, matched_error, details)
+            self.start_post_login_actions(text, matched_success, matched_error, details)
             return
         self.finish(
             status,
@@ -2614,6 +2618,123 @@ class ServiceCheckVisibleDialog(QDialog):
             details=details,
         )
 
+    def start_post_login_actions(self, html_text, matched_success, matched_error, login_details):
+        actions = self.service.get("post_login_actions") or []
+        if not actions:
+            self._post_login_actions_completed = False
+            self.start_logout_flow(html_text, matched_success, matched_error, login_details)
+            return
+        self.run_action_sequence(
+            "post_login",
+            actions,
+            on_success=lambda: self.after_post_login_actions_success(html_text, matched_success, matched_error, login_details),
+            on_failure=lambda action, reason: self.finish(
+                "manual_required",
+                error="Вход выполнен, но мини-тест не пройден.",
+                html_text=html_text,
+                matched_success=matched_success,
+                matched_error=matched_error,
+                details=service_action_failure_message("post_login", action, reason),
+            ),
+        )
+
+    def after_post_login_actions_success(self, html_text, matched_success, matched_error, login_details):
+        self._post_login_actions_completed = True
+        self.start_logout_flow(html_text, matched_success, matched_error, login_details)
+
+    def run_action_sequence(self, sequence_name, actions, on_success, on_failure):
+        self._action_sequence = {
+            "name": sequence_name,
+            "actions": list(actions or []),
+            "index": 0,
+            "on_success": on_success,
+            "on_failure": on_failure,
+            "deadline": None,
+        }
+        service_id = self.service.get("id", "")
+        self.logger.info("Service check action sequence started: service_id=%s sequence=%s steps_count=%s", service_id, sequence_name, len(actions or []))
+        self.run_current_action_step()
+
+    def run_current_action_step(self):
+        if self.finished:
+            return
+        sequence = getattr(self, "_action_sequence", {})
+        actions = sequence.get("actions") or []
+        index = int(sequence.get("index", 0))
+        service_id = self.service.get("id", "")
+        sequence_name = sequence.get("name", "")
+        if index >= len(actions):
+            self.logger.info("Service check action sequence success: service_id=%s sequence=%s", service_id, sequence_name)
+            sequence.get("on_success", lambda: None)()
+            return
+        action = actions[index]
+        action_type = action.get("type")
+        self.logger.info("Service check action step wait: service_id=%s sequence=%s step=%s/%s type=%s", service_id, sequence_name, index + 1, len(actions), action_type)
+        sequence["deadline"] = datetime.now() + timedelta(seconds=max(1, int(action.get("timeout_seconds", 5))))
+        self.execute_action_step(action)
+
+    def execute_action_step(self, action):
+        if self.finished:
+            return
+        action_type = action.get("type")
+        if action_type == "delay":
+            QTimer.singleShot(max(0, int(action.get("delay_ms", 0))), self.finish_action_step_success)
+            return
+        if action_type == "click":
+            self.page.runJavaScript(build_click_action_js(action.get("selector", "")), lambda result: self.after_action_step_js(action, result))
+            return
+        if action_type == "wait_selector":
+            self.page.runJavaScript(build_wait_selector_action_js(action.get("selector", "")), lambda result: self.after_action_step_js(action, result))
+            return
+        if action_type == "wait_text":
+            self.page.runJavaScript(build_wait_text_action_js(action.get("text", "")), lambda result: self.after_action_step_js(action, result))
+            return
+        self.finish_action_step_failed(action, "unsupported_action_type")
+
+    def after_action_step_js(self, action, result):
+        if self.finished:
+            return
+        service_id = self.service.get("id", "")
+        sequence = getattr(self, "_action_sequence", {})
+        sequence_name = sequence.get("name", "")
+        index = int(sequence.get("index", 0))
+        total = len(sequence.get("actions") or [])
+        parsed, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        action_type = action.get("type")
+        if parse_error is None and parsed.get("ok") and (parsed.get("found", True) or parsed.get("clicked", False)):
+            if action_type == "click":
+                self.logger.info("Service check action step click: service_id=%s sequence=%s step=%s/%s selector=%s", service_id, sequence_name, index + 1, total, action.get("selector", ""))
+            self.finish_action_step_success()
+            return
+        reason = parse_error.get("error") if parse_error else (parsed.get("reason") or parsed.get("error") or "selector_not_found")
+        if datetime.now() < sequence.get("deadline", datetime.now()):
+            QTimer.singleShot(500, lambda: self.execute_action_step(action))
+            return
+        self.finish_action_step_failed(action, reason)
+
+    def finish_action_step_success(self):
+        if self.finished:
+            return
+        sequence = getattr(self, "_action_sequence", {})
+        service_id = self.service.get("id", "")
+        sequence_name = sequence.get("name", "")
+        index = int(sequence.get("index", 0))
+        actions = sequence.get("actions") or []
+        action = actions[index] if index < len(actions) else {}
+        self.logger.info("Service check action step success: service_id=%s sequence=%s step=%s/%s", service_id, sequence_name, index + 1, len(actions))
+        sequence["index"] = index + 1
+        QTimer.singleShot(max(0, int(action.get("delay_ms", 0))), self.run_current_action_step)
+
+    def finish_action_step_failed(self, action, reason):
+        sequence = getattr(self, "_action_sequence", {})
+        service_id = self.service.get("id", "")
+        sequence_name = sequence.get("name", "")
+        index = int(sequence.get("index", 0))
+        total = len(sequence.get("actions") or [])
+        self.logger.warning("Service check action step failed: service_id=%s sequence=%s step=%s/%s reason=%s", service_id, sequence_name, index + 1, total, reason)
+        self.logger.warning("Service check action sequence failed: service_id=%s sequence=%s reason=%s", service_id, sequence_name, reason)
+        sequence.get("on_failure", lambda _action, _reason: None)(action, reason)
+
     def start_logout_flow(self, html_text, matched_success, matched_error, login_details):
         service_id = self.service.get("id", "")
         self._logout_html_text = html_text
@@ -2621,6 +2742,22 @@ class ServiceCheckVisibleDialog(QDialog):
         self._logout_matched_error = matched_error
         self._logout_login_details = login_details
         self.logger.info("Service check logout started: service_id=%s", service_id)
+        logout_actions = self.service.get("logout_actions") or []
+        if logout_actions:
+            self.run_action_sequence(
+                "logout",
+                logout_actions,
+                on_success=self.after_logout_actions_success,
+                on_failure=lambda action, reason: self.finish(
+                    "manual_required",
+                    error="Вход выполнен, но сценарий выхода не завершён.",
+                    html_text=self._logout_html_text,
+                    matched_success=self._logout_matched_success,
+                    matched_error=self._logout_matched_error,
+                    details="Вход выполнен, мини-тест пройден, но автоматический выход не подтверждён. " + service_action_failure_message("logout", action, reason),
+                ),
+            )
+            return
         if not self.service.get("logout_button_selector"):
             self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "missing_logout_button_selector")
             self.finish("manual_required", error="Вход выполнен, но selector кнопки выхода не указан.", html_text=html_text, matched_success=matched_success, matched_error=matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
@@ -2631,6 +2768,10 @@ class ServiceCheckVisibleDialog(QDialog):
             self.page.runJavaScript(build_click_selector_js(menu_selector), self.after_logout_menu_click)
             return
         self.click_logout_button()
+
+    def after_logout_actions_success(self):
+        self.logout_deadline = datetime.now() + timedelta(seconds=max(1, int(self.service.get("logout_wait_seconds", 10))))
+        QTimer.singleShot(500, self.check_logout_success)
 
     def after_logout_menu_click(self, result):
         if self.finished:
@@ -2694,7 +2835,7 @@ class ServiceCheckVisibleDialog(QDialog):
         result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
         if parse_error is None and result.get("found"):
             self.logger.info("Service check logout success: service_id=%s", service_id)
-            self.finish("ok", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, сервис работает, выход выполнен")
+            self.finish("ok", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details=self.logout_success_details())
             return
         self.page.runJavaScript("document.body ? document.body.innerText : ''", self.after_logout_success_text)
 
@@ -2706,13 +2847,18 @@ class ServiceCheckVisibleDialog(QDialog):
         for marker in self.service.get("logout_success_texts", []):
             if str(marker).casefold() in lowered:
                 self.logger.info("Service check logout success: service_id=%s", service_id)
-                self.finish("ok", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, сервис работает, выход выполнен")
+                self.finish("ok", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details=self.logout_success_details())
                 return
         if datetime.now() >= getattr(self, "logout_deadline", datetime.now()):
             self.logger.warning("Service check logout timeout: service_id=%s", service_id)
             self.finish("manual_required", error="Вход выполнен, но автоматический выход не подтверждён.", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
             return
         QTimer.singleShot(500, self.check_logout_success)
+
+    def logout_success_details(self):
+        if getattr(self, "_post_login_actions_completed", False):
+            return "Вход выполнен, мини-тест пройден, выход выполнен"
+        return "Вход выполнен, сервис работает, выход выполнен"
 
     def finish(self, status, error="", html_text="", matched_success="", matched_error="", wait_for_manual=False, details=""):
 

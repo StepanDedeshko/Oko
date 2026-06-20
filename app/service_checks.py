@@ -61,6 +61,8 @@ DEFAULT_SERVICE_ITEM = {
     "logout_success_texts": [],
     "logout_wait_seconds": 10,
     "logout_menu_wait_seconds": 5,
+    "post_login_actions": [],
+    "logout_actions": [],
 }
 
 
@@ -130,6 +132,92 @@ def parse_selector_markers(value):
     return _dedupe_markers(raw_items)
 
 
+SERVICE_ACTION_TYPES = {"click", "wait_selector", "wait_text", "delay"}
+
+
+def normalize_service_actions(value):
+    """Normalize action sequence from list[dict] or multiline text."""
+    if value is None:
+        return []
+    raw_actions = []
+    if isinstance(value, str):
+        for line in value.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = [part.strip() for part in line.split("|")]
+            action_type = parts[0] if parts else ""
+            action = {"type": action_type}
+            if action_type in {"click", "wait_selector"}:
+                action["selector"] = parts[1] if len(parts) > 1 else ""
+                action["timeout_seconds"] = parts[2] if len(parts) > 2 else 5
+                action["delay_ms"] = parts[3] if len(parts) > 3 else 0
+                action["description"] = parts[4] if len(parts) > 4 else ""
+            elif action_type == "wait_text":
+                action["text"] = parts[1] if len(parts) > 1 else ""
+                action["timeout_seconds"] = parts[2] if len(parts) > 2 else 5
+                action["delay_ms"] = parts[3] if len(parts) > 3 else 0
+                action["description"] = parts[4] if len(parts) > 4 else ""
+            elif action_type == "delay":
+                action["delay_ms"] = parts[3] if len(parts) > 3 else (parts[1] if len(parts) > 1 else 500)
+                action["description"] = parts[4] if len(parts) > 4 else (parts[2] if len(parts) > 2 else "")
+            raw_actions.append(action)
+    elif isinstance(value, list):
+        raw_actions = [item for item in value if isinstance(item, dict)]
+    else:
+        return []
+
+    normalized = []
+    for item in raw_actions:
+        action_type = str(item.get("type", "")).strip()
+        if action_type not in SERVICE_ACTION_TYPES:
+            continue
+        try:
+            timeout_seconds = max(1, int(item.get("timeout_seconds", 5) or 5))
+        except Exception:
+            timeout_seconds = 5
+        try:
+            delay_ms = max(0, int(item.get("delay_ms", 0) or 0))
+        except Exception:
+            delay_ms = 0
+        action = {
+            "type": action_type,
+            "selector": str(item.get("selector", "") or "").strip(),
+            "text": str(item.get("text", "") or "").strip(),
+            "timeout_seconds": timeout_seconds,
+            "delay_ms": delay_ms,
+            "description": str(item.get("description", "") or "").strip(),
+        }
+        if action_type in {"click", "wait_selector"} and not action["selector"]:
+            continue
+        if action_type == "wait_text" and not action["text"]:
+            continue
+        normalized.append(action)
+    return normalized
+
+
+def format_service_actions(actions):
+    lines = []
+    for action in normalize_service_actions(actions):
+        action_type = action.get("type", "")
+        if action_type in {"click", "wait_selector"}:
+            target = action.get("selector", "")
+        elif action_type == "wait_text":
+            target = action.get("text", "")
+        else:
+            target = ""
+        lines.append(
+            " | ".join([
+                action_type,
+                target,
+                str(action.get("timeout_seconds", 5)),
+                str(action.get("delay_ms", 0)),
+                action.get("description", ""),
+            ])
+        )
+    return "\n".join(lines)
+
+
 def normalize_service_id(value):
     text = str(value or "").strip().casefold()
     translit = {
@@ -187,6 +275,8 @@ def ensure_service_checks_defaults(config):
         merged["error_selectors"] = parse_selector_markers(merged.get("error_selectors", []))
         merged["logout_success_selectors"] = parse_selector_markers(merged.get("logout_success_selectors", []))
         merged["logout_success_texts"] = parse_text_markers(merged.get("logout_success_texts", []))
+        merged["post_login_actions"] = normalize_service_actions(merged.get("post_login_actions", []))
+        merged["logout_actions"] = normalize_service_actions(merged.get("logout_actions", []))
         try:
             merged["logout_wait_seconds"] = max(1, int(merged.get("logout_wait_seconds", 10)))
         except Exception:
@@ -668,6 +758,45 @@ def build_wait_selector_js(selectors):
   return JSON.stringify({{ ok: true, found: !!match, matched_selector: match ? match.selector : "", matched_summary: match ? match.summary : "", invalid_selectors: results.filter(function(item) {{ return !!item.error; }}), results: results }});
 }})()
 """.strip()
+
+
+def build_click_action_js(selector):
+    return build_click_selector_js(selector)
+
+
+def build_wait_selector_action_js(selector):
+    return build_wait_selector_js([selector])
+
+
+def build_wait_text_action_js(text):
+    text_json = json.dumps(str(text or ""), ensure_ascii=False)
+    return f"""
+(function () {{
+  try {{
+    const expected = {text_json};
+    const bodyText = document.body ? String(document.body.innerText || "") : "";
+    return JSON.stringify({{
+      ok: true,
+      found: expected ? bodyText.indexOf(expected) !== -1 : false,
+      reason: "",
+      text_length: expected.length
+    }});
+  }} catch (error) {{
+    return JSON.stringify({{
+      ok: false,
+      found: false,
+      reason: "wait_text_failed",
+      message: String(error && error.message ? error.message : error)
+    }});
+  }}
+}})()
+""".strip()
+
+
+def service_action_failure_message(sequence_name, action, reason):
+    sequence_label = "мини-тест" if sequence_name == "post_login" else "сценарий выхода"
+    description = action.get("description") or action.get("selector") or action.get("text") or action.get("type")
+    return f"Не выполнен {sequence_label}: {description}. Причина: {reason}."
 
 def build_result_selector_check_js(service):
     """Build a script that checks success/error CSS selectors and returns JSON."""

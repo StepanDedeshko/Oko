@@ -170,6 +170,7 @@ SERVICE_CHECK_EXPORT_SAFE_SECRET_KEYS = {
     "login_selector",
     "password_selector",
     "submit_selector",
+    "post_login_actions",
 }
 
 

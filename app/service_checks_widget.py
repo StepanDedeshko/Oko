@@ -30,6 +30,8 @@ from app.service_checks import (
     AUTH_VISIBLE_HTML_FORM,
     default_service_item,
     ensure_service_checks_defaults,
+    format_service_actions,
+    normalize_service_actions,
     parse_selector_markers,
     parse_text_markers,
     unique_service_id,
@@ -192,6 +194,35 @@ class ServiceChecksSettingsWidget(QWidget):
         markers_form.addRow("CSS selectors признаков успеха:", self.success_selectors_input)
         markers_form.addRow("CSS selectors признаков ошибки:", self.error_selectors_input)
         form_layout.addWidget(markers)
+
+        actions_group = QGroupBox("Мини-тест после входа")
+        actions_form = QFormLayout(actions_group)
+        self.post_login_actions_input = _make_limited_text_edit(
+            "click | .menu | 5 | 500 | Открыть меню\n"
+            "wait_selector | .section-ready | 10 | 0 | Проверить раздел",
+            minimum_height=80,
+            maximum_height=120,
+        )
+        actions_hint = QLabel("Формат: type | selector/text | timeout_seconds | delay_ms | description. Типы: click, wait_selector, wait_text, delay.")
+        actions_hint.setWordWrap(True)
+        actions_form.addRow("Шаги мини-теста:", self.post_login_actions_input)
+        actions_form.addRow("Подсказка:", actions_hint)
+        form_layout.addWidget(actions_group)
+
+        logout_actions_group = QGroupBox("Сценарий выхода")
+        logout_actions_form = QFormLayout(logout_actions_group)
+        self.logout_actions_input = _make_limited_text_edit(
+            "click | .profile | 5 | 500 | Открыть профиль\n"
+            "click | .logout | 5 | 500 | Нажать Выйти\n"
+            "click | .confirm-yes | 5 | 500 | Подтвердить выход",
+            minimum_height=80,
+            maximum_height=120,
+        )
+        logout_actions_hint = QLabel("Если сценарий выхода заполнен, он используется вместо старых полей меню/кнопки выхода.")
+        logout_actions_hint.setWordWrap(True)
+        logout_actions_form.addRow("Шаги выхода:", self.logout_actions_input)
+        logout_actions_form.addRow("Подсказка:", logout_actions_hint)
+        form_layout.addWidget(logout_actions_group)
         form_layout.addWidget(logout)
         form_layout.addStretch(1)
         self.form_scroll.setWidget(form_container)
@@ -222,6 +253,8 @@ class ServiceChecksSettingsWidget(QWidget):
         self.error_texts_input.textChanged.connect(self.update_current_from_form)
         self.success_selectors_input.textChanged.connect(self.update_current_from_form)
         self.error_selectors_input.textChanged.connect(self.update_current_from_form)
+        self.post_login_actions_input.textChanged.connect(self.update_current_from_form)
+        self.logout_actions_input.textChanged.connect(self.update_current_from_form)
         self.logout_menu_selector_input.textChanged.connect(self.update_current_from_form)
         self.logout_button_selector_input.textChanged.connect(self.update_current_from_form)
         self.logout_success_selectors_input.textChanged.connect(self.update_current_from_form)
@@ -256,7 +289,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item = self.current_item()
         self._loading = True
         enabled = item is not None
-        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.allow_http_error_load_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
+        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.allow_http_error_load_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.post_login_actions_input, self.logout_actions_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
             widget.setEnabled(enabled)
         self.otrs_task_url_input.setText(self.settings.get("otrs_task_url", ""))
         if item:
@@ -282,6 +315,8 @@ class ServiceChecksSettingsWidget(QWidget):
             self.error_texts_input.setPlainText("; ".join(item.get("error_texts", [])))
             self.success_selectors_input.setPlainText("\n".join(item.get("success_selectors", [])))
             self.error_selectors_input.setPlainText("\n".join(item.get("error_selectors", [])))
+            self.post_login_actions_input.setPlainText(format_service_actions(item.get("post_login_actions", [])))
+            self.logout_actions_input.setPlainText(format_service_actions(item.get("logout_actions", [])))
             self.logout_menu_selector_input.setText(item.get("logout_menu_selector", ""))
             self.logout_button_selector_input.setText(item.get("logout_button_selector", ""))
             self.logout_success_selectors_input.setPlainText("\n".join(item.get("logout_success_selectors", [])))
@@ -335,6 +370,8 @@ class ServiceChecksSettingsWidget(QWidget):
         item["error_texts"] = parse_text_markers(self.error_texts_input.toPlainText())
         item["success_selectors"] = parse_selector_markers(self.success_selectors_input.toPlainText())
         item["error_selectors"] = parse_selector_markers(self.error_selectors_input.toPlainText())
+        item["post_login_actions"] = normalize_service_actions(self.post_login_actions_input.toPlainText())
+        item["logout_actions"] = normalize_service_actions(self.logout_actions_input.toPlainText())
         item["logout_menu_selector"] = self.logout_menu_selector_input.text().strip()
         item["logout_button_selector"] = self.logout_button_selector_input.text().strip()
         item["logout_success_selectors"] = parse_selector_markers(self.logout_success_selectors_input.toPlainText())
