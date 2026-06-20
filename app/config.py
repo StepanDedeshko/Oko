@@ -105,9 +105,14 @@ def ensure_duty_mode_defaults(config):
     settings.setdefault("current_ticket_id", "")
     settings.setdefault("current_ticket_url", "")
     settings.setdefault("duty_zabbix_task_number", str(legacy_task_number or ""))
+    settings.setdefault("duty_zabbix_task_id", str(settings.get("current_ticket_id") or ""))
+    settings.setdefault("duty_zabbix_task_url", str(settings.get("current_ticket_url") or ""))
     settings.setdefault("duty_service_checks_task_number", "")
+    settings.setdefault("duty_service_checks_task_id", "")
+    settings.setdefault("duty_service_checks_task_url", "")
     settings.setdefault("duty_service_checks_enabled", False)
     settings.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
+    settings.setdefault("expected_service_checks_ticket_subject", "Дежурная проверка сервисов")
     settings.setdefault("otrs_login_enabled", False)
     settings.setdefault("otrs_login", "")
     settings.setdefault("otrs_password", "")
@@ -150,7 +155,12 @@ def _default_config():
             "expected_ticket_subject": "Проверка Zabbix (Важных IT-сервисов)",
             "duty_service_checks_enabled": False,
             "duty_zabbix_task_number": "",
+            "duty_zabbix_task_id": "",
+            "duty_zabbix_task_url": "",
             "duty_service_checks_task_number": "",
+            "duty_service_checks_task_id": "",
+            "duty_service_checks_task_url": "",
+            "expected_service_checks_ticket_subject": "Дежурная проверка сервисов",
         },
         "duty_triggers": default_duty_triggers_config(),
         "service_checks": default_service_checks_config(),

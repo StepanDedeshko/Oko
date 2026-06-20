@@ -648,6 +648,9 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertFalse(settings["duty_service_checks_enabled"])
         self.assertEqual(settings["duty_zabbix_task_number"], "123456")
         self.assertEqual(settings["duty_service_checks_task_number"], "")
+        self.assertEqual(settings["duty_zabbix_task_id"], "")
+        self.assertEqual(settings["duty_service_checks_task_id"], "")
+        self.assertEqual(settings["duty_service_checks_task_url"], "")
 
     def test_duty_mode_source_separates_zabbix_and_service_tasks(self):
         duty_source = (Path(__file__).resolve().parents[1] / "app" / "duty_mode.py").read_text(encoding="utf-8")
@@ -662,7 +665,16 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Проверять сервисы в режиме дежурства", settings_source)
         self.assertIn("№ задачи для Zabbix / графиков", settings_source)
         self.assertIn("№ задачи для проверки сервисов", settings_source)
-        self.assertIn("Задача для проверки Zabbix / графиков", settings_source)
+        self.assertIn("Задача для проверки Zabbix / графиков", duty_source + settings_source)
+        self.assertIn("Задача для проверки сервисов", duty_source + settings_source)
+        self.assertIn("Ссылка на задачу Zabbix / графиков", duty_source)
+        self.assertIn("Ссылка на задачу проверки сервисов", duty_source)
+        self.assertIn("Создать задачу Zabbix / графиков", duty_source)
+        self.assertIn("Создать задачу проверки сервисов", duty_source)
+        self.assertIn("Duty Zabbix task attached", duty_source)
+        self.assertIn("Duty service checks task attached", duty_source)
+        self.assertIn("Duty Zabbix task create requested", duty_source)
+        self.assertIn("Duty service checks task create requested", duty_source)
 
     def test_service_checks_settings_widget_uses_scroll_area_for_large_form(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
