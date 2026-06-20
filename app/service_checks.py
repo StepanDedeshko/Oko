@@ -15,6 +15,7 @@ AUTH_HTML_FORM = "html_form"
 AUTH_WEBENGINE_SESSION = "webengine_session"
 AUTH_EXISTING_SESSION = "existing_session"
 AUTH_VISIBLE_HTML_FORM = "visible_html_form"
+AUTH_EXTERNAL_BROWSER_GROUP = "external_browser_group"
 
 SERVICE_CHECK_STATUSES = {
     "not_checked": "Не проверено",
@@ -68,6 +69,9 @@ DEFAULT_SERVICE_ITEM = {
     "session_group_login_owner": False,
     "session_group_logout_owner": False,
     "session_group_reuse_webview": False,
+    "external_browser_open_delay_seconds": 1,
+    "external_browser_manual_confirm": True,
+    "external_browser_open_mode": "tabs",
 }
 
 
@@ -266,7 +270,7 @@ def ensure_service_checks_defaults(config):
         merged["enabled"] = bool(merged.get("enabled", True))
         merged["allow_insecure_ssl"] = bool(merged.get("allow_insecure_ssl", False))
         merged["allow_http_error_load"] = bool(merged.get("allow_http_error_load", False))
-        valid_auth_types = {AUTH_NONE, AUTH_HTML_FORM, AUTH_WEBENGINE_SESSION, AUTH_EXISTING_SESSION, AUTH_VISIBLE_HTML_FORM}
+        valid_auth_types = {AUTH_NONE, AUTH_HTML_FORM, AUTH_WEBENGINE_SESSION, AUTH_EXISTING_SESSION, AUTH_VISIBLE_HTML_FORM, AUTH_EXTERNAL_BROWSER_GROUP}
         merged["auth_type"] = merged.get("auth_type") if merged.get("auth_type") in valid_auth_types else AUTH_NONE
         merged["visible_window_close_on_success"] = bool(merged.get("visible_window_close_on_success", True))
         merged["visible_window_close_on_error"] = bool(merged.get("visible_window_close_on_error", False))
@@ -290,6 +294,12 @@ def ensure_service_checks_defaults(config):
         merged["session_group_login_owner"] = bool(merged.get("session_group_login_owner", False))
         merged["session_group_logout_owner"] = bool(merged.get("session_group_logout_owner", False))
         merged["session_group_reuse_webview"] = bool(merged.get("session_group_reuse_webview", False))
+        try:
+            merged["external_browser_open_delay_seconds"] = max(0, float(merged.get("external_browser_open_delay_seconds", 1) or 1))
+        except Exception:
+            merged["external_browser_open_delay_seconds"] = 1
+        merged["external_browser_manual_confirm"] = bool(merged.get("external_browser_manual_confirm", True))
+        merged["external_browser_open_mode"] = str(merged.get("external_browser_open_mode", "tabs") or "tabs").strip() or "tabs"
         try:
             merged["logout_wait_seconds"] = max(1, int(merged.get("logout_wait_seconds", 10)))
         except Exception:

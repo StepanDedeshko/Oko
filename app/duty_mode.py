@@ -45,6 +45,7 @@ from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 from app.service_checks import (
     AUTH_HTML_FORM,
+    AUTH_EXTERNAL_BROWSER_GROUP,
     AUTH_VISIBLE_HTML_FORM,
     ensure_service_checks_defaults,
     evaluate_service_check_page,
@@ -3108,6 +3109,68 @@ class ServiceCheckVisibleDialog(QDialog):
         super().closeEvent(event)
 
 
+class ExternalBrowserServiceCheckDialog(QDialog):
+    completed = Signal(object, bool)
+
+    def __init__(self, services, parent=None):
+        super().__init__(parent)
+        self.services = list(services or [])
+        self.logger = get_logger()
+        self.group = (self.services[0].get("session_group", "") if self.services else "") or "external_browser_group"
+        self.setWindowTitle("Проверка во внешнем браузере")
+        self.resize(620, 260)
+        layout = QVBoxLayout(self)
+        text = QLabel(
+            f"Око открыло страницы группы {self.group} во внешнем браузере.\n"
+            "Проверьте их вручную и подтвердите результат.\n\n"
+            "Автоматическое управление внешним браузером недоступно."
+        )
+        text.setWordWrap(True)
+        layout.addWidget(text)
+        row = QHBoxLayout()
+        ok_button = QPushButton("Проверено успешно")
+        error_button = QPushButton("Ошибка")
+        skip_button = QPushButton("Пропустить")
+        reopen_button = QPushButton("Открыть ещё раз")
+        ok_button.setObjectName("PrimaryAction")
+        ok_button.clicked.connect(lambda: self.finish_group("ok"))
+        error_button.clicked.connect(lambda: self.finish_group("error"))
+        skip_button.clicked.connect(lambda: self.finish_group("skipped"))
+        reopen_button.clicked.connect(self.open_all_urls)
+        row.addWidget(ok_button)
+        row.addWidget(error_button)
+        row.addWidget(skip_button)
+        row.addWidget(reopen_button)
+        layout.addLayout(row)
+
+    def open_all_urls(self):
+        total = len(self.services)
+        for index, service in enumerate(self.services, start=1):
+            service_id = service.get("id", "")
+            self.logger.info("Service check external browser open requested: group=%s service_id=%s index=%s/%s", self.group, service_id, index, total)
+            ok = QDesktopServices.openUrl(QUrl(service.get("url", "")))
+            if ok:
+                self.logger.info("Service check external browser URL opened: group=%s service_id=%s", self.group, service_id)
+            else:
+                self.logger.warning("Service check external browser open failed: group=%s service_id=%s reason=%s", self.group, service_id, "openUrl returned false")
+
+    def finish_group(self, status):
+        self.logger.info("Service check external browser group manual result: group=%s status=%s", self.group, status)
+        result_status = "ok" if status == "ok" else ("unknown" if status == "skipped" else "manual_required")
+        details = {
+            "ok": "Проверено вручную во внешнем браузере.",
+            "error": "Ошибка подтверждена вручную во внешнем браузере.",
+            "skipped": "Проверка во внешнем браузере пропущена вручную.",
+        }.get(status, "")
+        results = [
+            make_service_result(service, status=result_status, manual=True, details=details)
+            for service in self.services
+        ]
+        self.logger.info("Service check external browser group finished: group=%s status=%s", self.group, status)
+        self.completed.emit(results, True)
+        self.accept()
+
+
 class DutyModeWidget(QWidget):
     def __init__(self, config, profiles, credentials=None, graph_card_finder=None, source_view_finder=None, parent=None):
         super().__init__(parent)
@@ -3341,6 +3404,13 @@ class DutyModeWidget(QWidget):
             self._finish_service_checks()
             return
         service = self.service_check_queue.pop(0)
+        if service.get("auth_type") == AUTH_EXTERNAL_BROWSER_GROUP:
+            group_services = self._collect_external_browser_group(service)
+            for grouped_service in group_services:
+                self.service_check_results.append(make_service_result(grouped_service, status="checking"))
+            self.render_service_results()
+            self._run_external_browser_group(group_services)
+            return
         group_services = [service]
         if service.get("session_group") and service.get("session_group_reuse_webview", False):
             group_name = service.get("session_group", "")
@@ -3364,6 +3434,41 @@ class DutyModeWidget(QWidget):
         except Exception as exc:
             self.logger.exception("Service check failed: service_id=%s", service.get("id", ""))
             self._finish_single_service_check(service, make_service_result(service, status="error", error=str(exc)))
+
+    def _collect_external_browser_group(self, service):
+        group_name = service.get("session_group", "") or service.get("id", "")
+        services = [service]
+        services.extend([item for item in self.service_check_queue if item.get("auth_type") == AUTH_EXTERNAL_BROWSER_GROUP and (item.get("session_group", "") or item.get("id", "")) == group_name])
+        group_ids = {id(item) for item in services[1:]}
+        self.service_check_queue = [item for item in self.service_check_queue if id(item) not in group_ids]
+        return sorted(services, key=lambda item: int(item.get("session_group_order", 0) or 0))
+
+    def _run_external_browser_group(self, services):
+        group = (services[0].get("session_group", "") if services else "") or "external_browser_group"
+        self.logger.info("Service check external browser group started: group=%s services_count=%s", group, len(services))
+        dialog = ExternalBrowserServiceCheckDialog(services, parent=self)
+        self.external_browser_dialog = dialog
+        dialog.completed.connect(self._finish_visible_service_check)
+        delay_ms = int(float(services[0].get("external_browser_open_delay_seconds", 1) or 1) * 1000) if services else 0
+        for index, service in enumerate(services):
+            QTimer.singleShot(index * delay_ms, lambda svc=service, idx=index + 1, total=len(services), dlg=dialog: self._open_external_browser_service(dlg, svc, idx, total))
+        QTimer.singleShot(max(0, len(services) * delay_ms), lambda: self._show_external_browser_dialog(dialog, group))
+
+    def _open_external_browser_service(self, dialog, service, index, total):
+        group = dialog.group
+        service_id = service.get("id", "")
+        self.logger.info("Service check external browser open requested: group=%s service_id=%s index=%s/%s", group, service_id, index, total)
+        ok = QDesktopServices.openUrl(QUrl(service.get("url", "")))
+        if ok:
+            self.logger.info("Service check external browser URL opened: group=%s service_id=%s", group, service_id)
+        else:
+            self.logger.warning("Service check external browser open failed: group=%s service_id=%s reason=%s", group, service_id, "openUrl returned false")
+
+    def _show_external_browser_dialog(self, dialog, group):
+        self.logger.info("Service check external browser manual confirmation required: group=%s", group)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _run_visible_service_check(self, service, group_services=None):
         if not service.get("url"):

@@ -185,6 +185,9 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertFalse(item["session_group_login_owner"])
         self.assertFalse(item["session_group_logout_owner"])
         self.assertFalse(item["session_group_reuse_webview"])
+        self.assertEqual(item["external_browser_open_delay_seconds"], 1)
+        self.assertTrue(item["external_browser_manual_confirm"])
+        self.assertEqual(item["external_browser_open_mode"], "tabs")
         config = {"service_checks": {"items": [{"id": "svc", "logout_success_selectors": "form.login; button.login", "logout_success_texts": "Войти; Login", "logout_actions": "click | .profile | 5 | 500 | Открыть профиль"}]}}
         ensure_service_checks_defaults(config)
         migrated = config["service_checks"]["items"][0]
@@ -237,6 +240,11 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Service check group skip auth", source)
         self.assertIn("Service check group navigate next", source)
         self.assertIn("Service check group finished", source)
+        self.assertIn("ExternalBrowserServiceCheckDialog", source)
+        self.assertIn("Service check external browser group started", source)
+        self.assertIn("Service check external browser open requested", source)
+        self.assertIn("QDesktopServices.openUrl", source)
+        self.assertIn("Открыть ещё раз", source)
 
     def test_logout_note_details_for_success_and_failure(self):
         ok_result = make_service_result({"id": "svc", "name": "Svc"}, status="ok", details="Вход выполнен, сервис работает, выход выполнен")
@@ -596,6 +604,9 @@ class ServiceChecksLogicTest(unittest.TestCase):
                     "session_group_login_owner": False,
                     "session_group_logout_owner": True,
                     "session_group_reuse_webview": True,
+                    "external_browser_open_delay_seconds": 1,
+                    "external_browser_manual_confirm": True,
+                    "external_browser_open_mode": "tabs",
                     "login": "must-not-export",
                     "password": "must-not-export",
                 }],

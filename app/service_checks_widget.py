@@ -27,6 +27,7 @@ from app.service_checks import (
     AUTH_HTML_FORM,
     AUTH_NONE,
     AUTH_EXISTING_SESSION,
+    AUTH_EXTERNAL_BROWSER_GROUP,
     AUTH_VISIBLE_HTML_FORM,
     default_service_item,
     ensure_service_checks_defaults,
@@ -42,6 +43,7 @@ AUTH_LABELS = [
     ("Без авторизации", AUTH_NONE),
     ("HTML-форма", AUTH_HTML_FORM),
     ("HTML-форма в видимом окне", AUTH_VISIBLE_HTML_FORM),
+    ("Внешний браузер / общая сессия / ручная проверка", AUTH_EXTERNAL_BROWSER_GROUP),
     ("Использовать существующую сессию WebEngine", AUTH_EXISTING_SESSION),
 ]
 
@@ -117,6 +119,10 @@ class ServiceChecksSettingsWidget(QWidget):
         self.session_group_order_input.setRange(0, 999)
         self.session_group_login_owner_input = QCheckBox("Первый сервис группы: выполнять вход")
         self.session_group_logout_owner_input = QCheckBox("Последний сервис группы: выполнять выход")
+        self.external_browser_open_delay_input = QSpinBox()
+        self.external_browser_open_delay_input.setRange(0, 60)
+        self.external_browser_open_delay_input.setSuffix(" сек")
+        self.external_browser_manual_confirm_input = QCheckBox("Показывать ручное подтверждение")
         self.otrs_task_url_input = QLineEdit()
         self.otrs_task_url_input.setPlaceholderText("https://itsm...Action=AgentTicketNote;TicketID=...")
         general_form.addRow("Задача ОТРС для проверки сервисов:", self.otrs_task_url_input)
@@ -130,6 +136,8 @@ class ServiceChecksSettingsWidget(QWidget):
         general_form.addRow("Порядок в группе:", self.session_group_order_input)
         general_form.addRow("Вход группы:", self.session_group_login_owner_input)
         general_form.addRow("Выход группы:", self.session_group_logout_owner_input)
+        general_form.addRow("Пауза открытия во внешнем браузере:", self.external_browser_open_delay_input)
+        general_form.addRow("Ручное подтверждение:", self.external_browser_manual_confirm_input)
         form_layout.addWidget(general)
 
         auth = QGroupBox("Авторизация")
@@ -257,6 +265,8 @@ class ServiceChecksSettingsWidget(QWidget):
         self.session_group_order_input.valueChanged.connect(self.update_current_from_form)
         self.session_group_login_owner_input.toggled.connect(self.update_current_from_form)
         self.session_group_logout_owner_input.toggled.connect(self.update_current_from_form)
+        self.external_browser_open_delay_input.valueChanged.connect(self.update_current_from_form)
+        self.external_browser_manual_confirm_input.toggled.connect(self.update_current_from_form)
         self.timeout_input.valueChanged.connect(self.update_current_from_form)
         self.auth_type_input.currentIndexChanged.connect(self.on_auth_type_changed)
         self.post_login_delay_input.valueChanged.connect(self.update_current_from_form)
@@ -285,6 +295,9 @@ class ServiceChecksSettingsWidget(QWidget):
     def update_visible_window_visibility(self):
         is_visible = self.auth_type_input.currentData() == AUTH_VISIBLE_HTML_FORM
         self.visible_window_group.setVisible(is_visible)
+        is_external = self.auth_type_input.currentData() == AUTH_EXTERNAL_BROWSER_GROUP
+        for widget in (self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_actions_input, self.logout_actions_input):
+            widget.setEnabled(not is_external and self.current_item() is not None)
 
     def refresh_list(self):
         self.list_widget.clear()
@@ -303,7 +316,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item = self.current_item()
         self._loading = True
         enabled = item is not None
-        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.allow_http_error_load_input, self.session_group_input, self.session_group_order_input, self.session_group_login_owner_input, self.session_group_logout_owner_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.post_login_actions_input, self.logout_actions_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
+        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.allow_http_error_load_input, self.session_group_input, self.session_group_order_input, self.session_group_login_owner_input, self.session_group_logout_owner_input, self.external_browser_open_delay_input, self.external_browser_manual_confirm_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.post_login_actions_input, self.logout_actions_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
             widget.setEnabled(enabled)
         self.otrs_task_url_input.setText(self.settings.get("otrs_task_url", ""))
         if item:
@@ -317,6 +330,8 @@ class ServiceChecksSettingsWidget(QWidget):
             self.session_group_order_input.setValue(int(item.get("session_group_order", 0)))
             self.session_group_login_owner_input.setChecked(bool(item.get("session_group_login_owner", False)))
             self.session_group_logout_owner_input.setChecked(bool(item.get("session_group_logout_owner", False)))
+            self.external_browser_open_delay_input.setValue(int(float(item.get("external_browser_open_delay_seconds", 1))))
+            self.external_browser_manual_confirm_input.setChecked(bool(item.get("external_browser_manual_confirm", True)))
             idx = self.auth_type_input.findData(item.get("auth_type", AUTH_NONE))
             self.auth_type_input.setCurrentIndex(max(0, idx))
             self.visible_close_success_input.setChecked(bool(item.get("visible_window_close_on_success", True)))
@@ -381,6 +396,9 @@ class ServiceChecksSettingsWidget(QWidget):
         item["session_group_login_owner"] = self.session_group_login_owner_input.isChecked()
         item["session_group_logout_owner"] = self.session_group_logout_owner_input.isChecked()
         item["session_group_reuse_webview"] = bool(item["session_group"])
+        item["external_browser_open_delay_seconds"] = int(self.external_browser_open_delay_input.value())
+        item["external_browser_manual_confirm"] = self.external_browser_manual_confirm_input.isChecked()
+        item["external_browser_open_mode"] = "tabs"
         item["auth_type"] = self.auth_type_input.currentData() or AUTH_NONE
         item["visible_window_close_on_success"] = self.visible_close_success_input.isChecked()
         item["visible_window_close_on_error"] = self.visible_close_error_input.isChecked()
