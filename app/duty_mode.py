@@ -52,8 +52,11 @@ from app.service_checks import (
     build_auth_form_presence_js,
     build_autofill_error_message,
     build_click_selector_js,
+    build_load_false_diagnostics_js,
     build_result_selector_check_js,
     build_wait_selector_js,
+    load_false_auth_form_available,
+    load_false_diagnostics_log_parts,
     make_service_result,
     parse_autofill_callback_result,
     safe_autofill_result_repr,
@@ -64,6 +67,7 @@ from app.service_checks import (
     build_service_check_note_text,
     visible_service_start_diagnostics,
     visible_html_form_should_start_autofill_wait,
+    should_continue_after_http_error_load,
 )
 from app.templates import (
     format_dt,
@@ -2373,9 +2377,12 @@ class ServiceCheckVisibleDialog(QDialog):
         if self.finished:
             return
         if not ok:
-            self.logger.warning("Service check visible load failed: service_id=%s error=%s", service_id, "Страница не загрузилась")
-            self.finish("load_error", error="Страница не загрузилась")
+            self.page.runJavaScript(build_load_false_diagnostics_js(self.service), self.after_load_false_diagnostics)
             return
+        self.start_visible_auth_flow()
+
+    def start_visible_auth_flow(self):
+        service_id = self.service.get("id", "")
         missing_reasons = []
         if not self.service.get("login_selector"):
             missing_reasons.append("login_selector")
@@ -2389,6 +2396,38 @@ class ServiceCheckVisibleDialog(QDialog):
             self.finish("autofill_error", error=f"Не заполнены обязательные selector поля: {reason}", wait_for_manual=True)
             return
         self.start_autofill_wait()
+
+    def after_load_false_diagnostics(self, result):
+        if self.finished:
+            return
+        service_id = self.service.get("id", "")
+        diagnostics, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None:
+            diagnostics = {}
+        parts = load_false_diagnostics_log_parts(diagnostics)
+        self.logger.warning(
+            "Service check visible load false diagnostics: service_id=%s body_found=%s readyState=%s title=%s location=%s login_found=%s password_found=%s submit_found=%s success_found=%s error_found=%s",
+            service_id,
+            parts["body_found"],
+            parts["ready_state"],
+            parts["title"],
+            parts["location"],
+            parts["login_found"],
+            parts["password_found"],
+            parts["submit_found"],
+            parts["success_found"],
+            parts["error_found"],
+        )
+        if should_continue_after_http_error_load(self.service, diagnostics):
+            if load_false_auth_form_available(diagnostics):
+                self.logger.warning("Service check visible load finished false but auth form is available, continuing")
+                self.start_visible_auth_flow()
+                return
+            self.logger.warning("Service check visible load finished false but result selector is available, continuing")
+            self.read_page_text()
+            return
+        self.logger.warning("Service check visible load failed: service_id=%s error=%s", service_id, "Страница не загрузилась")
+        self.finish("load_error", error="Страница не загрузилась")
 
     def autofill_wait_seconds(self):
         try:

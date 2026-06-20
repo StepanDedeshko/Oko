@@ -108,6 +108,7 @@ class ServiceChecksSettingsWidget(QWidget):
         self.timeout_input.setRange(1, 300)
         self.timeout_input.setSuffix(" сек")
         self.allow_insecure_ssl_input = QCheckBox("Разрешить внутренний/самоподписанный SSL-сертификат")
+        self.allow_http_error_load_input = QCheckBox("Разрешить продолжать проверку при HTTP-ошибке загрузки, если форма найдена")
         self.otrs_task_url_input = QLineEdit()
         self.otrs_task_url_input.setPlaceholderText("https://itsm...Action=AgentTicketNote;TicketID=...")
         general_form.addRow("Задача ОТРС для проверки сервисов:", self.otrs_task_url_input)
@@ -116,6 +117,7 @@ class ServiceChecksSettingsWidget(QWidget):
         general_form.addRow("URL проверки:", self.url_input)
         general_form.addRow("Таймаут:", self.timeout_input)
         general_form.addRow("SSL:", self.allow_insecure_ssl_input)
+        general_form.addRow("HTTP-ошибка загрузки:", self.allow_http_error_load_input)
         form_layout.addWidget(general)
 
         auth = QGroupBox("Авторизация")
@@ -209,6 +211,7 @@ class ServiceChecksSettingsWidget(QWidget):
         self.otrs_task_url_input.textChanged.connect(lambda text: self.settings.__setitem__("otrs_task_url", text.strip()))
         self.enabled_input.toggled.connect(self.update_current_from_form)
         self.allow_insecure_ssl_input.toggled.connect(self.update_current_from_form)
+        self.allow_http_error_load_input.toggled.connect(self.update_current_from_form)
         self.timeout_input.valueChanged.connect(self.update_current_from_form)
         self.auth_type_input.currentIndexChanged.connect(self.on_auth_type_changed)
         self.post_login_delay_input.valueChanged.connect(self.update_current_from_form)
@@ -253,7 +256,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item = self.current_item()
         self._loading = True
         enabled = item is not None
-        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
+        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.allow_http_error_load_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
             widget.setEnabled(enabled)
         self.otrs_task_url_input.setText(self.settings.get("otrs_task_url", ""))
         if item:
@@ -262,6 +265,7 @@ class ServiceChecksSettingsWidget(QWidget):
             self.url_input.setText(item.get("url", ""))
             self.timeout_input.setValue(int(item.get("timeout_seconds", 15)))
             self.allow_insecure_ssl_input.setChecked(bool(item.get("allow_insecure_ssl", False)))
+            self.allow_http_error_load_input.setChecked(bool(item.get("allow_http_error_load", False)))
             idx = self.auth_type_input.findData(item.get("auth_type", AUTH_NONE))
             self.auth_type_input.setCurrentIndex(max(0, idx))
             self.visible_close_success_input.setChecked(bool(item.get("visible_window_close_on_success", True)))
@@ -318,6 +322,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item["url"] = self.url_input.text().strip()
         item["timeout_seconds"] = int(self.timeout_input.value())
         item["allow_insecure_ssl"] = self.allow_insecure_ssl_input.isChecked()
+        item["allow_http_error_load"] = self.allow_http_error_load_input.isChecked()
         item["auth_type"] = self.auth_type_input.currentData() or AUTH_NONE
         item["visible_window_close_on_success"] = self.visible_close_success_input.isChecked()
         item["visible_window_close_on_error"] = self.visible_close_error_input.isChecked()

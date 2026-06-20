@@ -51,6 +51,7 @@ DEFAULT_SERVICE_ITEM = {
     "timeout_seconds": 15,
     "post_login_delay_ms": 1500,
     "allow_insecure_ssl": False,
+    "allow_http_error_load": False,
     "visible_window_close_on_success": True,
     "visible_window_close_on_error": False,
     "visible_window_close_delay_seconds": 3,
@@ -171,6 +172,7 @@ def ensure_service_checks_defaults(config):
         merged["name"] = str(merged.get("name") or merged["id"]).strip() or "Новый продукт"
         merged["enabled"] = bool(merged.get("enabled", True))
         merged["allow_insecure_ssl"] = bool(merged.get("allow_insecure_ssl", False))
+        merged["allow_http_error_load"] = bool(merged.get("allow_http_error_load", False))
         valid_auth_types = {AUTH_NONE, AUTH_HTML_FORM, AUTH_WEBENGINE_SESSION, AUTH_EXISTING_SESSION, AUTH_VISIBLE_HTML_FORM}
         merged["auth_type"] = merged.get("auth_type") if merged.get("auth_type") in valid_auth_types else AUTH_NONE
         merged["visible_window_close_on_success"] = bool(merged.get("visible_window_close_on_success", True))
@@ -437,6 +439,122 @@ def build_auth_form_presence_js(service):
   }}
 }})()
 """.strip()
+
+
+def build_load_false_diagnostics_js(service):
+    """Build safe diagnostics for pages where QtWebEngine reports loadFinished(False)."""
+    login_selector = json.dumps(service.get("login_selector", ""))
+    password_selector = json.dumps(service.get("password_selector", ""))
+    submit_selector = json.dumps(service.get("submit_selector", ""))
+    success_selectors = json.dumps(parse_selector_markers(service.get("success_selectors", [])), ensure_ascii=False)
+    error_selectors = json.dumps(parse_selector_markers(service.get("error_selectors", [])), ensure_ascii=False)
+    return f"""
+(function () {{
+  function safeText(value) {{
+    return String(value || "").replace(/[\\r\\n\\t]+/g, " ").replace(/\\s+/g, " ").trim().slice(0, 120);
+  }}
+  function summary(element) {{
+    if (!element) return "";
+    const tag = String(element.tagName || "").toLowerCase();
+    const id = element.getAttribute && element.getAttribute("id");
+    const className = element.getAttribute && element.getAttribute("class");
+    const ariaLabel = element.getAttribute && element.getAttribute("aria-label");
+    const name = element.getAttribute && element.getAttribute("name");
+    const text = tag === "input" || tag === "textarea" ? "" : safeText(element.innerText || element.textContent || "");
+    const parts = [tag];
+    if (id) parts.push("id=" + safeText(id));
+    if (className) parts.push("class=" + safeText(className));
+    if (ariaLabel) parts.push("aria-label=" + safeText(ariaLabel));
+    if (name) parts.push("name=" + safeText(name));
+    if (text) parts.push("text=" + text);
+    return parts.join(" ");
+  }}
+  function check(selector) {{
+    if (!selector) return {{ found: false, summary: "", error: "" }};
+    try {{
+      const element = document.querySelector(selector);
+      return {{ found: !!element, summary: summary(element), error: "" }};
+    }} catch (error) {{
+      return {{ found: false, summary: "", error: String(error && error.message ? error.message : error) }};
+    }}
+  }}
+  function firstMatch(selectors) {{
+    const results = selectors.map(function(selector) {{
+      const item = check(selector);
+      item.selector = selector;
+      return item;
+    }});
+    return results.find(function(item) {{ return item.found; }}) || null;
+  }}
+  try {{
+    const login = check({login_selector});
+    const password = check({password_selector});
+    const submit = check({submit_selector});
+    const successMatch = firstMatch({success_selectors});
+    const errorMatch = firstMatch({error_selectors});
+    return JSON.stringify({{
+      ok: true,
+      body_found: !!document.body,
+      ready_state: document.readyState || "",
+      title: safeText(document.title || ""),
+      location_protocol: String(window.location.protocol || ""),
+      location_host: String(window.location.host || ""),
+      location_pathname: String(window.location.pathname || ""),
+      login_found: !!login.found,
+      password_found: !!password.found,
+      submit_found: !!submit.found,
+      success_found: !!successMatch,
+      error_found: !!errorMatch,
+      matched_success_selector: successMatch ? successMatch.selector : "",
+      matched_error_selector: errorMatch ? errorMatch.selector : "",
+      login_summary: login.summary,
+      password_summary: password.summary,
+      submit_summary: submit.summary,
+      success_summary: successMatch ? successMatch.summary : "",
+      error_summary: errorMatch ? errorMatch.summary : ""
+    }});
+  }} catch (error) {{
+    return JSON.stringify({{
+      ok: false,
+      error: "load_false_diagnostics_failed",
+      message: String(error && error.message ? error.message : error),
+      body_found: !!document.body,
+      ready_state: document.readyState || "",
+      title: safeText(document.title || ""),
+      location_protocol: String(window.location.protocol || ""),
+      location_host: String(window.location.host || ""),
+      location_pathname: String(window.location.pathname || "")
+    }});
+  }}
+}})()
+""".strip()
+
+
+def load_false_diagnostics_log_parts(diagnostics):
+    diagnostics = diagnostics or {}
+    return {
+        "body_found": bool(diagnostics.get("body_found")),
+        "ready_state": str(diagnostics.get("ready_state", "")),
+        "title": str(diagnostics.get("title", ""))[:120],
+        "location": f"{diagnostics.get('location_protocol', '')}//{diagnostics.get('location_host', '')}{diagnostics.get('location_pathname', '')}",
+        "login_found": bool(diagnostics.get("login_found")),
+        "password_found": bool(diagnostics.get("password_found")),
+        "submit_found": bool(diagnostics.get("submit_found")),
+        "success_found": bool(diagnostics.get("success_found")),
+        "error_found": bool(diagnostics.get("error_found")),
+    }
+
+
+def load_false_auth_form_available(diagnostics):
+    diagnostics = diagnostics or {}
+    return bool(diagnostics.get("login_found")) and bool(diagnostics.get("password_found")) and bool(diagnostics.get("submit_found"))
+
+
+def should_continue_after_http_error_load(service, diagnostics):
+    if not bool((service or {}).get("allow_http_error_load", False)):
+        return False
+    diagnostics = diagnostics or {}
+    return load_false_auth_form_available(diagnostics) or bool(diagnostics.get("success_found")) or bool(diagnostics.get("error_found"))
 
 
 

@@ -8,6 +8,7 @@ from app.service_checks import (
     build_auth_form_js,
     build_auth_form_presence_js,
     build_click_selector_js,
+    build_load_false_diagnostics_js,
     build_autofill_error_message,
     build_result_selector_check_js,
     build_wait_selector_js,
@@ -24,7 +25,9 @@ from app.service_checks import (
     safe_autofill_script_preview,
     service_result_display_label,
     service_status_label,
+    should_continue_after_http_error_load,
     summarize_service_results,
+    load_false_auth_form_available,
     visible_html_form_should_start_autofill_wait,
     visible_service_start_diagnostics,
 )
@@ -97,6 +100,45 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertNotIn("new Promise", js)
         self.assertNotIn("async", js)
         self.assertNotIn("await", js)
+
+    def test_load_false_diagnostics_js_is_safe_and_json_based(self):
+        js = build_load_false_diagnostics_js({
+            "login_selector": "#login",
+            "password_selector": "#password",
+            "submit_selector": "button[type=submit]",
+            "success_selectors": [".dashboard"],
+            "error_selectors": [".error"],
+        })
+        self.assertIn("JSON.stringify", js)
+        self.assertIn("body_found", js)
+        self.assertIn("ready_state", js)
+        self.assertIn("location_protocol", js)
+        self.assertIn("location_host", js)
+        self.assertIn("location_pathname", js)
+        self.assertIn("login_found", js)
+        self.assertIn("success_found", js)
+        self.assertNotIn(".value", js.lower())
+        self.assertNotIn("cookie", js.lower())
+        self.assertNotIn("localStorage", js)
+        self.assertNotIn("sessionStorage", js)
+        self.assertTrue(js.strip().endswith(")()") or js.strip().endswith(")();"))
+
+    def test_http_error_load_continues_only_when_allowed_and_dom_matches(self):
+        service = {"allow_http_error_load": True}
+        diagnostics = {"body_found": True, "login_found": True, "password_found": True, "submit_found": True}
+        self.assertTrue(load_false_auth_form_available(diagnostics))
+        self.assertTrue(should_continue_after_http_error_load(service, diagnostics))
+        self.assertTrue(should_continue_after_http_error_load(service, {"success_found": True}))
+        self.assertTrue(should_continue_after_http_error_load(service, {"error_found": True}))
+        self.assertFalse(should_continue_after_http_error_load(service, {"body_found": True}))
+        self.assertFalse(should_continue_after_http_error_load({"allow_http_error_load": False}, diagnostics))
+
+    def test_allow_http_error_load_default_false_and_migration(self):
+        item = default_service_item("svc")
+        self.assertFalse(item["allow_http_error_load"])
+        config = {"service_checks": {"items": [{"id": "svc"}]}}
+        ensure_service_checks_defaults(config)
+        self.assertFalse(config["service_checks"]["items"][0]["allow_http_error_load"])
 
 
     def test_parse_selector_markers_by_semicolon_and_newline(self):
@@ -329,6 +371,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(settings["otrs_task_url"], "")
         default_item = default_service_item("FacePay")
         self.assertFalse(default_item["allow_insecure_ssl"])
+        self.assertFalse(default_item["allow_http_error_load"])
         self.assertTrue(default_item["visible_window_close_on_success"])
         self.assertFalse(default_item["visible_window_close_on_error"])
         self.assertEqual(default_item["visible_window_close_delay_seconds"], 3)
@@ -337,6 +380,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
         ensure_service_checks_defaults(config)
         self.assertEqual(config["service_checks"]["items"][0]["id"], "facepay")
         self.assertFalse(config["service_checks"]["items"][0]["allow_insecure_ssl"])
+        self.assertFalse(config["service_checks"]["items"][0]["allow_http_error_load"])
         self.assertTrue(config["service_checks"]["items"][0]["visible_window_close_on_success"])
         self.assertFalse(config["service_checks"]["items"][0]["visible_window_close_on_error"])
         self.assertEqual(config["service_checks"]["items"][0]["visible_window_close_delay_seconds"], 3)
@@ -461,6 +505,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
                     "password_selector": "input[type=password]",
                     "submit_selector": "button[type=submit]",
                     "allow_insecure_ssl": True,
+                    "allow_http_error_load": True,
                     "auth_type": "visible_html_form",
                     "visible_window_close_on_success": True,
                     "visible_window_close_on_error": False,
@@ -486,6 +531,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(item["auth_type"], "visible_html_form")
         self.assertIn("login_selector", item)
         self.assertTrue(item["allow_insecure_ssl"])
+        self.assertTrue(item["allow_http_error_load"])
         self.assertEqual(item["success_selectors"], [".dashboard"])
         self.assertEqual(item["error_selectors"], [".login-error"])
         self.assertEqual(item["logout_button_selector"], "button.logout")
