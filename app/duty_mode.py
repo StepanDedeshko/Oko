@@ -2258,12 +2258,15 @@ class DutyGraphCard(QFrame):
 
 
 class ServiceCheckVisibleDialog(QDialog):
-    completed = Signal(dict, bool)
+    completed = Signal(object, bool)
     cleanup_completed = Signal(str)
 
-    def __init__(self, service, parent=None):
+    def __init__(self, service, parent=None, group_services=None):
         super().__init__(parent)
-        self.service = service
+        self.group_services = list(group_services or [service])
+        self.group_index = 0
+        self.group_results = []
+        self.service = self.group_services[self.group_index]
         self.logger = get_logger()
         self.started_at = None
         self.finished = False
@@ -2341,6 +2344,18 @@ class ServiceCheckVisibleDialog(QDialog):
         self.load_false_deadline = datetime.now()
         self.logger.info("Service check timers cancelled: service_id=%s reason=%s", service_id, reason)
 
+    def is_shared_group(self):
+        return len(getattr(self, "group_services", []) or []) > 1
+
+    def group_name(self):
+        return self.service.get("session_group", "")
+
+    def is_group_login_owner(self):
+        return (not self.is_shared_group()) or self.group_index == 0 or bool(self.service.get("session_group_login_owner", False))
+
+    def is_group_logout_owner(self):
+        return (not self.is_shared_group()) or self.group_index == len(self.group_services) - 1 or bool(self.service.get("session_group_logout_owner", False))
+
     def start(self):
         self.started_at = datetime.now()
         service_id = self.service.get("id", "")
@@ -2355,6 +2370,10 @@ class ServiceCheckVisibleDialog(QDialog):
             diagnostics["has_submit_selector"],
         )
         self.logger.info("Service check visible dialog opened: service_id=%s", service_id)
+        if self.is_shared_group():
+            self.logger.info("Service check group started: group=%s services_count=%s", self.group_name(), len(self.group_services))
+            self.logger.info("Service check group webview created: group=%s", self.group_name())
+            self.logger.info("Service check group service started: group=%s service_id=%s index=%s/%s", self.group_name(), service_id, self.group_index + 1, len(self.group_services))
         self.timeout_timer.start(max(1, int(self.service.get("timeout_seconds", 15))) * 1000)
         self.logger.info("Service check visible load started: service_id=%s", service_id)
         self.view.load(QUrl(self.service.get("url", "")))
@@ -2420,6 +2439,13 @@ class ServiceCheckVisibleDialog(QDialog):
 
     def start_visible_auth_flow(self):
         service_id = self.service.get("id", "")
+        if self.is_shared_group() and not self.is_group_login_owner():
+            self.logger.info("Service check group skip auth: group=%s service_id=%s reason=shared_session", self.group_name(), service_id)
+            self.set_state("result_check")
+            QTimer.singleShot(max(0, int(self.service.get("post_login_delay_ms", 1500))), self.read_page_text)
+            return
+        if self.is_shared_group():
+            self.logger.info("Service check group login owner: group=%s service_id=%s", self.group_name(), service_id)
         missing_reasons = []
         if not self.service.get("login_selector"):
             missing_reasons.append("login_selector")
@@ -2782,8 +2808,39 @@ class ServiceCheckVisibleDialog(QDialog):
         self.logger.warning("Service check action sequence failed: service_id=%s sequence=%s reason=%s", service_id, sequence_name, reason)
         sequence.get("on_failure", lambda _action, _reason: None)(action, reason)
 
+    def navigate_next_group_service(self):
+        if self.group_index + 1 >= len(self.group_services):
+            return
+        previous_id = self.service.get("id", "")
+        self.group_index += 1
+        self.service = self.group_services[self.group_index]
+        self.state = "loading"
+        self.logout_started = False
+        self.auth_submitted = True
+        self.cancel_pending_timers("group_navigation_next")
+        next_id = self.service.get("id", "")
+        self.logger.info("Service check group navigate next: group=%s from_service_id=%s to_service_id=%s", self.group_name(), previous_id, next_id)
+        self.logger.info("Service check group service started: group=%s service_id=%s index=%s/%s", self.group_name(), next_id, self.group_index + 1, len(self.group_services))
+        self.setWindowTitle(f"Проверка сервиса: {self.service.get('name') or next_id or 'Сервис'}")
+        self.timeout_timer.start(max(1, int(self.service.get("timeout_seconds", 15))) * 1000)
+        self.logger.info("Service check visible load started: service_id=%s", next_id)
+        self.view.load(QUrl(self.service.get("url", "")))
+
     def start_logout_flow(self, html_text, matched_success, matched_error, login_details):
         service_id = self.service.get("id", "")
+        if self.is_shared_group() and not self.is_group_logout_owner():
+            self.group_results.append(make_service_result(
+                self.service,
+                status="ok",
+                matched_success_text=matched_success,
+                matched_error_text=matched_error,
+                page_excerpt=html_text,
+                duration_ms=self.duration_ms(),
+                warning=self.ssl_warning,
+                details="Вход выполнен, мини-тест пройден, общая сессия продолжается.",
+            ))
+            self.navigate_next_group_service()
+            return
         if self.logout_started:
             self.logger.warning("Service check logout ignored: service_id=%s reason=already_started state=%s", service_id, self.state)
             self.finish("manual_required", error="Повторный запуск выхода предотвращён.", html_text=html_text, matched_success=matched_success, matched_error=matched_error, details="Повторный запуск выхода предотвращён.")
@@ -2796,6 +2853,8 @@ class ServiceCheckVisibleDialog(QDialog):
         self._logout_matched_error = matched_error
         self._logout_login_details = login_details
         self.logger.info("Service check logout started: service_id=%s", service_id)
+        if self.is_shared_group():
+            self.logger.info("Service check group logout owner: group=%s service_id=%s", self.group_name(), service_id)
         logout_actions = self.service.get("logout_actions") or []
         if logout_actions:
             self.run_action_sequence(
@@ -2948,6 +3007,10 @@ class ServiceCheckVisibleDialog(QDialog):
             warning=self.ssl_warning,
             details=details,
         )
+        if self.is_shared_group():
+            self.group_results.append(result)
+            result = list(self.group_results)
+            self.logger.info("Service check group finished: group=%s status=%s", self.group_name(), status)
         self.status_label.setText(f"Результат: {service_status_label(status)}" + (f"\n{error}" if error else ""))
         if should_close:
             delay_seconds = max(0, int(self.service.get("visible_window_close_delay_seconds", 3)))
@@ -2994,14 +3057,15 @@ class ServiceCheckVisibleDialog(QDialog):
         self._pending_result = result
         self._pending_continue_queue = continue_queue
         if continue_queue:
-            self.logger.info("Service check queue waiting for visible cleanup: previous_service_id=%s", result.get("service_id", ""))
+            previous_service_id = result[-1].get("service_id", "") if isinstance(result, list) and result else result.get("service_id", "")
+            self.logger.info("Service check queue waiting for visible cleanup: previous_service_id=%s", previous_service_id)
         self.close()
 
     def emit_completed(self, result, continue_queue):
         if self.emitted:
             return
         self.emitted = True
-        if result.get("manual") and continue_queue:
+        if isinstance(result, dict) and result.get("manual") and continue_queue:
             self.logger.info("Service check queue continue after manual result: service_id=%s", result.get("service_id", ""))
         self.completed.emit(result, continue_queue)
 
@@ -3277,22 +3341,35 @@ class DutyModeWidget(QWidget):
             self._finish_service_checks()
             return
         service = self.service_check_queue.pop(0)
+        group_services = [service]
+        if service.get("session_group") and service.get("session_group_reuse_webview", False):
+            group_name = service.get("session_group", "")
+            group_services.extend(
+                sorted(
+                    [item for item in self.service_check_queue if item.get("session_group") == group_name and item.get("session_group_reuse_webview", False)],
+                    key=lambda item: int(item.get("session_group_order", 0) or 0),
+                )
+            )
+            group_ids = {id(item) for item in group_services[1:]}
+            self.service_check_queue = [item for item in self.service_check_queue if id(item) not in group_ids]
         self.service_check_results.append(make_service_result(service, status="checking"))
+        for grouped_service in group_services[1:]:
+            self.service_check_results.append(make_service_result(grouped_service, status="checking"))
         self.render_service_results()
         try:
             if service.get("auth_type") == AUTH_VISIBLE_HTML_FORM:
-                self._run_visible_service_check(service)
+                self._run_visible_service_check(service, group_services=group_services)
             else:
                 self._run_single_service_check(service)
         except Exception as exc:
             self.logger.exception("Service check failed: service_id=%s", service.get("id", ""))
             self._finish_single_service_check(service, make_service_result(service, status="error", error=str(exc)))
 
-    def _run_visible_service_check(self, service):
+    def _run_visible_service_check(self, service, group_services=None):
         if not service.get("url"):
             self._finish_single_service_check(service, make_service_result(service, status="load_error", error="URL проверки не указан"))
             return
-        dialog = ServiceCheckVisibleDialog(service, parent=self)
+        dialog = ServiceCheckVisibleDialog(service, parent=self, group_services=group_services)
         self.visible_service_dialog = dialog
         dialog.completed.connect(self._finish_visible_service_check)
         dialog.destroyed.connect(lambda _obj=None, d=dialog: self._clear_visible_dialog_if_current(d))
@@ -3302,14 +3379,17 @@ class DutyModeWidget(QWidget):
         dialog.start()
 
     def _finish_visible_service_check(self, result, continue_queue):
+        results = result if isinstance(result, list) else [result]
+        result_ids = {item.get("service_id") for item in results}
         self.service_check_results = [
             item for item in self.service_check_results
-            if item.get("service_id") != result.get("service_id")
+            if item.get("service_id") not in result_ids
         ]
-        self.service_check_results.append(result)
+        self.service_check_results.extend(results)
         self.render_service_results()
         if continue_queue:
-            if self.visible_service_dialog is not None and self.visible_service_dialog.service.get("id") == result.get("service_id"):
+            last_result = results[-1]
+            if self.visible_service_dialog is not None and self.visible_service_dialog.service.get("id") == last_result.get("service_id"):
                 self.visible_service_dialog = None
             next_service_id = self.service_check_queue[0].get("id", "") if self.service_check_queue else ""
             if next_service_id:

@@ -180,6 +180,11 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(item["logout_menu_wait_seconds"], 5)
         self.assertEqual(item["post_login_actions"], [])
         self.assertEqual(item["logout_actions"], [])
+        self.assertEqual(item["session_group"], "")
+        self.assertEqual(item["session_group_order"], 0)
+        self.assertFalse(item["session_group_login_owner"])
+        self.assertFalse(item["session_group_logout_owner"])
+        self.assertFalse(item["session_group_reuse_webview"])
         config = {"service_checks": {"items": [{"id": "svc", "logout_success_selectors": "form.login; button.login", "logout_success_texts": "Войти; Login", "logout_actions": "click | .profile | 5 | 500 | Открыть профиль"}]}}
         ensure_service_checks_defaults(config)
         migrated = config["service_checks"]["items"][0]
@@ -228,6 +233,10 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Service check callback ignored", source)
         self.assertIn("Service check timers cancelled", source)
         self.assertIn("logout_success_wait", source)
+        self.assertIn("Service check group started", source)
+        self.assertIn("Service check group skip auth", source)
+        self.assertIn("Service check group navigate next", source)
+        self.assertIn("Service check group finished", source)
 
     def test_logout_note_details_for_success_and_failure(self):
         ok_result = make_service_result({"id": "svc", "name": "Svc"}, status="ok", details="Вход выполнен, сервис работает, выход выполнен")
@@ -582,6 +591,11 @@ class ServiceChecksLogicTest(unittest.TestCase):
                     "logout_menu_wait_seconds": 5,
                     "post_login_actions": [{"type": "wait_selector", "selector": ".ready", "timeout_seconds": 5, "delay_ms": 0, "description": "Проверить раздел"}],
                     "logout_actions": [{"type": "click", "selector": ".profile", "timeout_seconds": 5, "delay_ms": 500, "description": "Открыть профиль"}],
+                    "session_group": "sensitive_group_1",
+                    "session_group_order": 2,
+                    "session_group_login_owner": False,
+                    "session_group_logout_owner": True,
+                    "session_group_reuse_webview": True,
                     "login": "must-not-export",
                     "password": "must-not-export",
                 }],
@@ -600,6 +614,10 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(item["logout_success_selectors"], ["form.login"])
         self.assertEqual(item["post_login_actions"][0]["type"], "wait_selector")
         self.assertEqual(item["logout_actions"][0]["selector"], ".profile")
+        self.assertEqual(item["session_group"], "sensitive_group_1")
+        self.assertEqual(item["session_group_order"], 2)
+        self.assertTrue(item["session_group_logout_owner"])
+        self.assertTrue(item["session_group_reuse_webview"])
         self.assertEqual(item["visible_window_close_delay_seconds"], 3)
         serialized = json.dumps(exported, ensure_ascii=False).lower()
         self.assertNotIn("must-not-export", serialized)

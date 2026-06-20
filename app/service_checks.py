@@ -63,6 +63,11 @@ DEFAULT_SERVICE_ITEM = {
     "logout_menu_wait_seconds": 5,
     "post_login_actions": [],
     "logout_actions": [],
+    "session_group": "",
+    "session_group_order": 0,
+    "session_group_login_owner": False,
+    "session_group_logout_owner": False,
+    "session_group_reuse_webview": False,
 }
 
 
@@ -277,6 +282,14 @@ def ensure_service_checks_defaults(config):
         merged["logout_success_texts"] = parse_text_markers(merged.get("logout_success_texts", []))
         merged["post_login_actions"] = normalize_service_actions(merged.get("post_login_actions", []))
         merged["logout_actions"] = normalize_service_actions(merged.get("logout_actions", []))
+        merged["session_group"] = str(merged.get("session_group", "") or "").strip()
+        try:
+            merged["session_group_order"] = int(merged.get("session_group_order", 0) or 0)
+        except Exception:
+            merged["session_group_order"] = 0
+        merged["session_group_login_owner"] = bool(merged.get("session_group_login_owner", False))
+        merged["session_group_logout_owner"] = bool(merged.get("session_group_logout_owner", False))
+        merged["session_group_reuse_webview"] = bool(merged.get("session_group_reuse_webview", False))
         try:
             merged["logout_wait_seconds"] = max(1, int(merged.get("logout_wait_seconds", 10)))
         except Exception:

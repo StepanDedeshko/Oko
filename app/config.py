@@ -171,6 +171,11 @@ SERVICE_CHECK_EXPORT_SAFE_SECRET_KEYS = {
     "password_selector",
     "submit_selector",
     "post_login_actions",
+    "session_group",
+    "session_group_order",
+    "session_group_login_owner",
+    "session_group_logout_owner",
+    "session_group_reuse_webview",
 }
 
 
