@@ -2443,7 +2443,7 @@ class ServiceCheckVisibleDialog(QDialog):
         if self.is_shared_group() and not self.is_group_login_owner():
             self.logger.info("Service check group skip auth: group=%s service_id=%s reason=shared_session", self.group_name(), service_id)
             self.set_state("result_check")
-            QTimer.singleShot(max(0, int(self.service.get("post_login_delay_ms", 1500))), self.read_page_text)
+            self.start_result_check_after_delay()
             return
         if self.is_shared_group():
             self.logger.info("Service check group login owner: group=%s service_id=%s", self.group_name(), service_id)
@@ -2644,6 +2644,22 @@ class ServiceCheckVisibleDialog(QDialog):
             self.logger.info("Service check visible auth submit clicked: service_id=%s", service_id)
         self.status_label.setText("Форма отправлена. Ожидание результата проверки…")
         self.set_state("result_check")
+        self.start_result_check_after_delay()
+
+    def result_wait_seconds(self):
+        try:
+            return max(30 if self.is_shared_group() else 1, int(self.service.get("result_wait_seconds") or self.service.get("timeout_seconds", 15)))
+        except Exception:
+            return 30 if self.is_shared_group() else 15
+
+    def start_result_check_after_delay(self):
+        if self.is_shared_group():
+            try:
+                self.timeout_timer.stop()
+            except Exception:
+                pass
+            self.result_check_deadline = datetime.now() + timedelta(seconds=self.result_wait_seconds())
+            self.logger.info("Service check group result check started: group=%s service_id=%s", self.group_name(), self.service.get("id", ""))
         QTimer.singleShot(max(0, int(self.service.get("post_login_delay_ms", 1500))), self.read_page_text)
 
     def read_page_text(self):
@@ -2667,6 +2683,29 @@ class ServiceCheckVisibleDialog(QDialog):
             self.logger.info("Service check result success selector matched: service_id=%s selector=%s", service_id, result.get("matched_success_selector", ""))
         if error_found:
             self.logger.info("Service check result error selector matched: service_id=%s selector=%s", service_id, result.get("matched_error_selector", ""))
+        if self.is_shared_group():
+            if success_found:
+                self.logger.info("Service check group result success: group=%s service_id=%s", self.group_name(), service_id)
+            if not success_found and not error_found:
+                if not self.service.get("success_selectors") and self.service.get("post_login_actions"):
+                    self.logger.info("Service check group post_login started without result selector: group=%s service_id=%s reason=no_success_selectors", self.group_name(), service_id)
+                    QTimer.singleShot(2000, lambda: self.start_post_login_actions("", "", "", ""))
+                    return
+                if datetime.now() < getattr(self, "result_check_deadline", datetime.now()):
+                    QTimer.singleShot(500, self.read_page_text)
+                    return
+                self.logger.warning("Service check group result timeout: group=%s service_id=%s", self.group_name(), service_id)
+                self.logger.warning(
+                    "Service check group result timeout diagnostics: service_id=%s success_selectors_count=%s error_selectors_count=%s post_login_actions_count=%s current_title=%s sanitized_location=%s",
+                    service_id,
+                    len(self.service.get("success_selectors") or []),
+                    len(self.service.get("error_selectors") or []),
+                    len(self.service.get("post_login_actions") or []),
+                    "",
+                    "",
+                )
+                self.finish("timeout", error="Не найдены признаки результата в общей сессии.")
+                return
         self.page.runJavaScript("document.body ? document.body.innerText : ''", self.analyze_text)
 
     def analyze_text(self, text):
@@ -2693,6 +2732,8 @@ class ServiceCheckVisibleDialog(QDialog):
             self._post_login_actions_completed = False
             self.start_logout_flow(html_text, matched_success, matched_error, login_details)
             return
+        if self.is_shared_group():
+            self.logger.info("Service check group post_login started: group=%s service_id=%s", self.group_name(), self.service.get("id", ""))
         self.set_state("post_login_actions")
         self.run_action_sequence(
             "post_login",
@@ -2710,6 +2751,8 @@ class ServiceCheckVisibleDialog(QDialog):
 
     def after_post_login_actions_success(self, html_text, matched_success, matched_error, login_details):
         self._post_login_actions_completed = True
+        if self.is_shared_group():
+            self.logger.info("Service check group post_login success: group=%s service_id=%s", self.group_name(), self.service.get("id", ""))
         self.start_logout_flow(html_text, matched_success, matched_error, login_details)
 
     def run_action_sequence(self, sequence_name, actions, on_success, on_failure):
