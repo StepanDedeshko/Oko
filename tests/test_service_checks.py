@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 
 from app.config import build_settings_export, collect_exportable_settings
@@ -494,6 +495,33 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertNotIn("must-not-export", serialized)
         self.assertNotIn('"login"', serialized)
         self.assertNotIn('"password"', serialized)
+
+    def test_service_checks_settings_widget_uses_scroll_area_for_large_form(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        try:
+            from PySide6.QtCore import Qt
+            from PySide6.QtWidgets import QApplication, QScrollArea, QTextEdit
+        except ImportError as exc:
+            self.skipTest(f"PySide6 GUI dependencies unavailable: {exc}")
+
+        from app.service_checks_widget import ServiceChecksSettingsWidget
+
+        app = QApplication.instance() or QApplication([])
+        widget = ServiceChecksSettingsWidget({"service_checks": {"items": [default_service_item("svc")]}})
+        try:
+            scroll = widget.findChild(QScrollArea, "ServiceCheckFormScrollArea")
+            self.assertIsNotNone(scroll)
+            self.assertTrue(scroll.widgetResizable())
+            self.assertEqual(scroll.verticalScrollBarPolicy(), Qt.ScrollBarAsNeeded)
+            self.assertEqual(scroll.horizontalScrollBarPolicy(), Qt.ScrollBarAlwaysOff)
+            self.assertIsNotNone(widget.logout_menu_selector_input)
+            self.assertIsNotNone(widget.logout_button_selector_input)
+            for editor in widget.findChildren(QTextEdit):
+                self.assertLessEqual(editor.maximumHeight(), 120)
+                self.assertGreaterEqual(editor.minimumHeight(), 50)
+        finally:
+            widget.deleteLater()
+            app.processEvents()
 
 
 if __name__ == "__main__":

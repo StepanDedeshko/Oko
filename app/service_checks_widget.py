@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTextEdit,
@@ -40,6 +42,15 @@ AUTH_LABELS = [
     ("HTML-форма в видимом окне", AUTH_VISIBLE_HTML_FORM),
     ("Использовать существующую сессию WebEngine", AUTH_EXISTING_SESSION),
 ]
+
+
+def _make_limited_text_edit(placeholder, minimum_height=60, maximum_height=100):
+    editor = QTextEdit()
+    editor.setPlaceholderText(placeholder)
+    editor.setMinimumHeight(minimum_height)
+    editor.setMaximumHeight(maximum_height)
+    editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    return editor
 
 
 class ServiceChecksSettingsWidget(QWidget):
@@ -74,8 +85,17 @@ class ServiceChecksSettingsWidget(QWidget):
         self.list_widget.currentRowChanged.connect(self.select_service)
         splitter.addWidget(self.list_widget)
 
+        self.form_scroll = QScrollArea()
+        self.form_scroll.setObjectName("ServiceCheckFormScrollArea")
+        self.form_scroll.setWidgetResizable(True)
+        self.form_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.form_scroll.setFrameShape(QScrollArea.NoFrame)
+
         form_container = QWidget()
+        form_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         form_layout = QVBoxLayout(form_container)
+        form_layout.setContentsMargins(0, 0, 8, 0)
 
         general = QGroupBox("Карточка выбранного продукта")
         general_form = QFormLayout(general)
@@ -145,12 +165,8 @@ class ServiceChecksSettingsWidget(QWidget):
         self.logout_menu_selector_input.setPlaceholderText(".user-menu, button.profile")
         self.logout_button_selector_input = QLineEdit()
         self.logout_button_selector_input.setPlaceholderText("button.logout, a[href*=logout]")
-        self.logout_success_selectors_input = QTextEdit()
-        self.logout_success_selectors_input.setPlaceholderText("form.login\nbutton[type=submit]")
-        self.logout_success_selectors_input.setMaximumHeight(80)
-        self.logout_success_texts_input = QTextEdit()
-        self.logout_success_texts_input.setPlaceholderText("Войти; Авторизация; Login")
-        self.logout_success_texts_input.setMaximumHeight(80)
+        self.logout_success_selectors_input = _make_limited_text_edit("form.login\nbutton[type=submit]")
+        self.logout_success_texts_input = _make_limited_text_edit("Войти; Авторизация; Login")
         self.logout_menu_wait_input = QSpinBox()
         self.logout_menu_wait_input.setRange(1, 60)
         self.logout_menu_wait_input.setSuffix(" сек")
@@ -163,29 +179,21 @@ class ServiceChecksSettingsWidget(QWidget):
         logout_form.addRow("Тексты признаков успешного выхода:", self.logout_success_texts_input)
         logout_form.addRow("Ожидание появления меню выхода:", self.logout_menu_wait_input)
         logout_form.addRow("Ожидание завершения выхода:", self.logout_wait_input)
-        form_layout.addWidget(logout)
-
         markers = QGroupBox("Признаки результата")
         markers_form = QFormLayout(markers)
-        self.success_texts_input = QTextEdit()
-        self.success_texts_input.setPlaceholderText("Главная; Выход; Профиль; Dashboard")
-        self.success_texts_input.setMaximumHeight(80)
-        self.error_texts_input = QTextEdit()
-        self.error_texts_input.setPlaceholderText("Ошибка авторизации; Неверный пароль; Access denied; Login failed")
-        self.error_texts_input.setMaximumHeight(80)
-        self.success_selectors_input = QTextEdit()
-        self.success_selectors_input.setPlaceholderText(".account-menu\nbutton.logout\n[data-test=dashboard]")
-        self.success_selectors_input.setMaximumHeight(80)
-        self.error_selectors_input = QTextEdit()
-        self.error_selectors_input.setPlaceholderText(".login-error\n.el-message--error\n.alert-danger")
-        self.error_selectors_input.setMaximumHeight(80)
+        self.success_texts_input = _make_limited_text_edit("Главная; Выход; Профиль; Dashboard")
+        self.error_texts_input = _make_limited_text_edit("Ошибка авторизации; Неверный пароль; Access denied; Login failed")
+        self.success_selectors_input = _make_limited_text_edit(".account-menu\nbutton.logout\n[data-test=dashboard]")
+        self.error_selectors_input = _make_limited_text_edit(".login-error\n.el-message--error\n.alert-danger")
         markers_form.addRow("Текст успеха:", self.success_texts_input)
         markers_form.addRow("Текст ошибки:", self.error_texts_input)
         markers_form.addRow("CSS selectors признаков успеха:", self.success_selectors_input)
         markers_form.addRow("CSS selectors признаков ошибки:", self.error_selectors_input)
         form_layout.addWidget(markers)
+        form_layout.addWidget(logout)
         form_layout.addStretch(1)
-        splitter.addWidget(form_container)
+        self.form_scroll.setWidget(form_container)
+        splitter.addWidget(self.form_scroll)
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, stretch=1)
 
