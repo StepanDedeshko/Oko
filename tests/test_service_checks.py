@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import unittest
 
 from app.config import build_settings_export, collect_exportable_settings
@@ -217,6 +218,16 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("мини-тест", service_action_failure_message("post_login", action, "selector_not_found"))
         service = {"logout_actions": [{"type": "click", "selector": ".profile"}], "logout_menu_selector": ".legacy", "logout_button_selector": ".legacy-logout"}
         self.assertTrue(service["logout_actions"])
+
+    def test_visible_dialog_state_guards_are_present(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "duty_mode.py").read_text(encoding="utf-8")
+        self.assertIn("self.auth_submitted = False", source)
+        self.assertIn("self.logout_started = False", source)
+        self.assertIn("Service check auth submit ignored", source)
+        self.assertIn("Service check logout ignored", source)
+        self.assertIn("Service check callback ignored", source)
+        self.assertIn("Service check timers cancelled", source)
+        self.assertIn("logout_success_wait", source)
 
     def test_logout_note_details_for_success_and_failure(self):
         ok_result = make_service_result({"id": "svc", "name": "Svc"}, status="ok", details="Вход выполнен, сервис работает, выход выполнен")

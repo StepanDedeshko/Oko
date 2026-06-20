@@ -2272,6 +2272,9 @@ class ServiceCheckVisibleDialog(QDialog):
         self._cleaned_up = False
         self._pending_result = None
         self._pending_continue_queue = True
+        self.state = "loading"
+        self.auth_submitted = False
+        self.logout_started = False
 
         self.setWindowTitle(f"Проверка сервиса: {service.get('name') or service.get('id') or 'Сервис'}")
         self.resize(1100, 760)
@@ -2312,6 +2315,31 @@ class ServiceCheckVisibleDialog(QDialog):
             self.page.certificateError.connect(self.on_certificate_error)
         except Exception:
             self.logger.warning("Service check certificateError signal is not available")
+
+    def set_state(self, new_state):
+        old_state = getattr(self, "state", "")
+        if old_state == new_state:
+            return
+        self.state = new_state
+        self.logger.info("Service check state changed: service_id=%s from=%s to=%s", self.service.get("id", ""), old_state, new_state)
+
+    def callback_allowed(self, callback_name, expected_states):
+        if self.finished or self.state in {"finished", "manual_required"} or self.state not in set(expected_states):
+            self.logger.warning(
+                "Service check callback ignored: service_id=%s callback=%s state=%s expected=%s",
+                self.service.get("id", ""),
+                callback_name,
+                self.state,
+                ",".join(expected_states),
+            )
+            return False
+        return True
+
+    def cancel_pending_timers(self, reason):
+        service_id = self.service.get("id", "")
+        self.autofill_wait_deadline = datetime.now()
+        self.load_false_deadline = datetime.now()
+        self.logger.info("Service check timers cancelled: service_id=%s reason=%s", service_id, reason)
 
     def start(self):
         self.started_at = datetime.now()
@@ -2377,6 +2405,8 @@ class ServiceCheckVisibleDialog(QDialog):
     def on_loaded(self, ok):
         service_id = self.service.get("id", "")
         self.logger.info("Service check visible load finished: service_id=%s ok=%s", service_id, ok)
+        if not self.callback_allowed("load_finished", {"loading"}):
+            return
         if self.finished:
             return
         if not ok:
@@ -2405,19 +2435,20 @@ class ServiceCheckVisibleDialog(QDialog):
         self.start_autofill_wait()
 
     def start_load_false_retry_wait(self):
+        self.set_state("auth_wait")
         self.load_false_attempt = 0
         self.load_false_deadline = datetime.now() + timedelta(seconds=self.autofill_wait_seconds())
         self.load_false_last_diagnostics = {}
         self.check_load_false_diagnostics()
 
     def check_load_false_diagnostics(self):
-        if self.finished:
+        if not self.callback_allowed("load_false_retry", {"auth_wait"}):
             return
         self.load_false_attempt += 1
         self.page.runJavaScript(build_load_false_diagnostics_js(self.service), self.after_load_false_diagnostics)
 
     def after_load_false_diagnostics(self, result):
-        if self.finished:
+        if not self.callback_allowed("load_false_diagnostics", {"auth_wait"}):
             return
         service_id = self.service.get("id", "")
         diagnostics, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
@@ -2447,10 +2478,12 @@ class ServiceCheckVisibleDialog(QDialog):
             return
         if action == "result_selector":
             self.logger.warning("Service check visible load false result selector became available, continuing")
+            self.set_state("result_check")
             self.read_page_text()
             return
         if action == "error_selector":
             self.logger.warning("Service check visible load false error selector matched")
+            self.set_state("result_check")
             self.read_page_text()
             return
         if datetime.now() < self.load_false_deadline:
@@ -2482,6 +2515,7 @@ class ServiceCheckVisibleDialog(QDialog):
             return 15
 
     def start_autofill_wait(self):
+        self.set_state("auth_wait")
         self.autofill_wait_attempt = 0
         self.autofill_wait_deadline = datetime.now() + timedelta(seconds=self.autofill_wait_seconds())
         service_id = self.service.get("id", "")
@@ -2490,13 +2524,13 @@ class ServiceCheckVisibleDialog(QDialog):
         self.check_autofill_form_presence()
 
     def check_autofill_form_presence(self):
-        if self.finished:
+        if not self.callback_allowed("autofill_wait", {"auth_wait"}):
             return
         self.autofill_wait_attempt += 1
         self.page.runJavaScript(build_auth_form_presence_js(self.service), self.after_autofill_wait_js)
 
     def after_autofill_wait_js(self, result):
-        if self.finished:
+        if not self.callback_allowed("autofill_wait_callback", {"auth_wait"}):
             return
         service_id = self.service.get("id", "")
         result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
@@ -2530,6 +2564,10 @@ class ServiceCheckVisibleDialog(QDialog):
         QTimer.singleShot(500, self.check_autofill_form_presence)
 
     def run_visible_autofill(self):
+        if self.auth_submitted:
+            self.logger.warning("Service check auth submit ignored: service_id=%s reason=already_submitted state=%s", self.service.get("id", ""), self.state)
+            return
+        self.set_state("authenticating")
         creds = load_service_credentials(self.service.get("id", ""))
         js = self.make_visible_login_js(creds)
         service_id = self.service.get("id", "")
@@ -2542,7 +2580,7 @@ class ServiceCheckVisibleDialog(QDialog):
         return build_auth_form_js(self.service, creds, blur_fields=True)
 
     def after_login_js(self, result):
-        if self.finished:
+        if not self.callback_allowed("auth_submit_callback", {"authenticating"}):
             return
         service_id = self.service.get("id", "")
         self.logger.info("Service check autofill callback received: service_id=%s result_type=%s", service_id, type(result).__name__)
@@ -2575,17 +2613,19 @@ class ServiceCheckVisibleDialog(QDialog):
             return
         self.logger.info("Service check visible auth values dispatched: service_id=%s", service_id)
         if result.get("clicked"):
+            self.auth_submitted = True
             self.logger.info("Service check visible auth submit clicked: service_id=%s", service_id)
         self.status_label.setText("Форма отправлена. Ожидание результата проверки…")
+        self.set_state("result_check")
         QTimer.singleShot(max(0, int(self.service.get("post_login_delay_ms", 1500))), self.read_page_text)
 
     def read_page_text(self):
-        if self.finished:
+        if not self.callback_allowed("result_check", {"result_check"}):
             return
         self.page.runJavaScript(build_result_selector_check_js(self.service), self.after_result_selector_check)
 
     def after_result_selector_check(self, result):
-        if self.finished:
+        if not self.callback_allowed("result_selector_check", {"result_check"}):
             return
         service_id = self.service.get("id", "")
         result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
@@ -2603,6 +2643,8 @@ class ServiceCheckVisibleDialog(QDialog):
         self.page.runJavaScript("document.body ? document.body.innerText : ''", self.analyze_text)
 
     def analyze_text(self, text):
+        if not self.callback_allowed("analyze_text", {"result_check"}):
+            return
         selector_result = getattr(self, "result_selector_result", {})
         status, matched_success, matched_error, error = evaluate_service_check_page(self.service, text, loaded=True, selector_result=selector_result)
         details = error if status == "ok" and str(error).startswith("Успешный признак найден по CSS selector:") else ""
@@ -2624,6 +2666,7 @@ class ServiceCheckVisibleDialog(QDialog):
             self._post_login_actions_completed = False
             self.start_logout_flow(html_text, matched_success, matched_error, login_details)
             return
+        self.set_state("post_login_actions")
         self.run_action_sequence(
             "post_login",
             actions,
@@ -2656,7 +2699,8 @@ class ServiceCheckVisibleDialog(QDialog):
         self.run_current_action_step()
 
     def run_current_action_step(self):
-        if self.finished:
+        expected_state = "post_login_actions" if getattr(self, "_action_sequence", {}).get("name") == "post_login" else "logout_actions"
+        if not self.callback_allowed("action_step", {expected_state}):
             return
         sequence = getattr(self, "_action_sequence", {})
         actions = sequence.get("actions") or []
@@ -2674,7 +2718,8 @@ class ServiceCheckVisibleDialog(QDialog):
         self.execute_action_step(action)
 
     def execute_action_step(self, action):
-        if self.finished:
+        expected_state = "post_login_actions" if getattr(self, "_action_sequence", {}).get("name") == "post_login" else "logout_actions"
+        if not self.callback_allowed("execute_action_step", {expected_state}):
             return
         action_type = action.get("type")
         if action_type == "delay":
@@ -2692,7 +2737,8 @@ class ServiceCheckVisibleDialog(QDialog):
         self.finish_action_step_failed(action, "unsupported_action_type")
 
     def after_action_step_js(self, action, result):
-        if self.finished:
+        expected_state = "post_login_actions" if getattr(self, "_action_sequence", {}).get("name") == "post_login" else "logout_actions"
+        if not self.callback_allowed("action_step_callback", {expected_state}):
             return
         service_id = self.service.get("id", "")
         sequence = getattr(self, "_action_sequence", {})
@@ -2713,7 +2759,8 @@ class ServiceCheckVisibleDialog(QDialog):
         self.finish_action_step_failed(action, reason)
 
     def finish_action_step_success(self):
-        if self.finished:
+        expected_state = "post_login_actions" if getattr(self, "_action_sequence", {}).get("name") == "post_login" else "logout_actions"
+        if not self.callback_allowed("action_step_success", {expected_state}):
             return
         sequence = getattr(self, "_action_sequence", {})
         service_id = self.service.get("id", "")
@@ -2737,6 +2784,13 @@ class ServiceCheckVisibleDialog(QDialog):
 
     def start_logout_flow(self, html_text, matched_success, matched_error, login_details):
         service_id = self.service.get("id", "")
+        if self.logout_started:
+            self.logger.warning("Service check logout ignored: service_id=%s reason=already_started state=%s", service_id, self.state)
+            self.finish("manual_required", error="Повторный запуск выхода предотвращён.", html_text=html_text, matched_success=matched_success, matched_error=matched_error, details="Повторный запуск выхода предотвращён.")
+            return
+        self.logout_started = True
+        self.cancel_pending_timers("entering_logout")
+        self.set_state("logout_actions")
         self._logout_html_text = html_text
         self._logout_matched_success = matched_success
         self._logout_matched_error = matched_error
@@ -2770,11 +2824,12 @@ class ServiceCheckVisibleDialog(QDialog):
         self.click_logout_button()
 
     def after_logout_actions_success(self):
+        self.set_state("logout_success_wait")
         self.logout_deadline = datetime.now() + timedelta(seconds=max(1, int(self.service.get("logout_wait_seconds", 10))))
         QTimer.singleShot(500, self.check_logout_success)
 
     def after_logout_menu_click(self, result):
-        if self.finished:
+        if not self.callback_allowed("logout_menu_click", {"logout_actions"}):
             return
         service_id = self.service.get("id", "")
         result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
@@ -2787,12 +2842,12 @@ class ServiceCheckVisibleDialog(QDialog):
         self.wait_logout_button()
 
     def wait_logout_button(self):
-        if self.finished:
+        if not self.callback_allowed("wait_logout_button", {"logout_actions"}):
             return
         self.page.runJavaScript(build_wait_selector_js([self.service.get("logout_button_selector", "")]), self.after_wait_logout_button)
 
     def after_wait_logout_button(self, result):
-        if self.finished:
+        if not self.callback_allowed("wait_logout_button_callback", {"logout_actions"}):
             return
         service_id = self.service.get("id", "")
         result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
@@ -2812,7 +2867,7 @@ class ServiceCheckVisibleDialog(QDialog):
         self.page.runJavaScript(build_click_selector_js(selector), self.after_logout_button_click)
 
     def after_logout_button_click(self, result):
-        if self.finished:
+        if not self.callback_allowed("logout_button_click", {"logout_actions"}):
             return
         service_id = self.service.get("id", "")
         result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
@@ -2820,16 +2875,17 @@ class ServiceCheckVisibleDialog(QDialog):
             self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "logout_button_not_found")
             self.finish("manual_required", error="Вход выполнен, но кнопка выхода не найдена.", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
             return
+        self.set_state("logout_success_wait")
         self.logout_deadline = datetime.now() + timedelta(seconds=max(1, int(self.service.get("logout_wait_seconds", 10))))
         QTimer.singleShot(500, self.check_logout_success)
 
     def check_logout_success(self):
-        if self.finished:
+        if not self.callback_allowed("logout_success_wait", {"logout_success_wait"}):
             return
         self.page.runJavaScript(build_wait_selector_js(self.service.get("logout_success_selectors", [])), self.after_logout_success_selectors)
 
     def after_logout_success_selectors(self, result):
-        if self.finished:
+        if not self.callback_allowed("logout_success_selector", {"logout_success_wait"}):
             return
         service_id = self.service.get("id", "")
         result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
@@ -2840,7 +2896,7 @@ class ServiceCheckVisibleDialog(QDialog):
         self.page.runJavaScript("document.body ? document.body.innerText : ''", self.after_logout_success_text)
 
     def after_logout_success_text(self, text):
-        if self.finished:
+        if not self.callback_allowed("logout_success_text", {"logout_success_wait"}):
             return
         service_id = self.service.get("id", "")
         lowered = str(text or "").casefold()
@@ -2870,6 +2926,7 @@ class ServiceCheckVisibleDialog(QDialog):
             pass
         service_id = self.service.get("id", "")
         if wait_for_manual or status in {"unknown", "autofill_error"}:
+            self.set_state("manual_required")
             self.status_label.setText(
                 f"Результат: {service_status_label(status)}\n{error or 'Требуется ручное подтверждение результата.'}"
             )
@@ -2877,6 +2934,8 @@ class ServiceCheckVisibleDialog(QDialog):
             return
 
         self.finished = True
+        self.set_state("finished")
+        self.logger.info("Service check finished: service_id=%s status=%s", service_id, status)
         should_close = self.service.get("visible_window_close_on_success", True) if status == "ok" else self.service.get("visible_window_close_on_error", False)
         result = make_service_result(
             self.service,
@@ -2901,6 +2960,7 @@ class ServiceCheckVisibleDialog(QDialog):
         if self.emitted:
             return
         self.finished = True
+        self.set_state("finished")
         try:
             self.timeout_timer.stop()
         except Exception:
