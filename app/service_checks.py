@@ -486,6 +486,27 @@ def build_load_false_diagnostics_js(service):
     }});
     return results.find(function(item) {{ return item.found; }}) || null;
   }}
+  function sanitizeUrl(value) {{
+    try {{
+      const url = new URL(String(value || ""), window.location.href);
+      return String(url.protocol || "") + "//" + String(url.host || "") + String(url.pathname || "");
+    }} catch (error) {{
+      return "";
+    }}
+  }}
+  function iframeDiagnostics() {{
+    try {{
+      return Array.from(document.querySelectorAll("iframe, frame")).slice(0, 10).map(function(frame) {{
+        try {{
+          return sanitizeUrl(frame.getAttribute("src") || frame.src || "");
+        }} catch (error) {{
+          return "";
+        }}
+      }}).filter(function(src) {{ return !!src; }});
+    }} catch (error) {{
+      return [];
+    }}
+  }}
   try {{
     const login = check({login_selector});
     const password = check({password_selector});
@@ -500,6 +521,8 @@ def build_load_false_diagnostics_js(service):
       location_protocol: String(window.location.protocol || ""),
       location_host: String(window.location.host || ""),
       location_pathname: String(window.location.pathname || ""),
+      iframe_count: document.querySelectorAll("iframe, frame").length,
+      iframe_srcs: iframeDiagnostics(),
       login_found: !!login.found,
       password_found: !!password.found,
       submit_found: !!submit.found,
@@ -523,7 +546,9 @@ def build_load_false_diagnostics_js(service):
       title: safeText(document.title || ""),
       location_protocol: String(window.location.protocol || ""),
       location_host: String(window.location.host || ""),
-      location_pathname: String(window.location.pathname || "")
+      location_pathname: String(window.location.pathname || ""),
+      iframe_count: document.querySelectorAll("iframe, frame").length,
+      iframe_srcs: iframeDiagnostics()
     }});
   }}
 }})()
@@ -537,6 +562,8 @@ def load_false_diagnostics_log_parts(diagnostics):
         "ready_state": str(diagnostics.get("ready_state", "")),
         "title": str(diagnostics.get("title", ""))[:120],
         "location": f"{diagnostics.get('location_protocol', '')}//{diagnostics.get('location_host', '')}{diagnostics.get('location_pathname', '')}",
+        "iframe_count": int(diagnostics.get("iframe_count") or 0),
+        "iframe_srcs": [str(src) for src in (diagnostics.get("iframe_srcs") or [])][:10],
         "login_found": bool(diagnostics.get("login_found")),
         "password_found": bool(diagnostics.get("password_found")),
         "submit_found": bool(diagnostics.get("submit_found")),
@@ -555,6 +582,20 @@ def should_continue_after_http_error_load(service, diagnostics):
         return False
     diagnostics = diagnostics or {}
     return load_false_auth_form_available(diagnostics) or bool(diagnostics.get("success_found")) or bool(diagnostics.get("error_found"))
+
+
+def load_false_continuation_action(service, diagnostics):
+    """Return the next action for loadFinished(False) diagnostics."""
+    if not bool((service or {}).get("allow_http_error_load", False)):
+        return "load_error"
+    diagnostics = diagnostics or {}
+    if load_false_auth_form_available(diagnostics):
+        return "autofill"
+    if bool(diagnostics.get("error_found")):
+        return "error_selector"
+    if bool(diagnostics.get("success_found")):
+        return "result_selector"
+    return "wait"
 
 
 

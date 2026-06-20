@@ -55,7 +55,7 @@ from app.service_checks import (
     build_load_false_diagnostics_js,
     build_result_selector_check_js,
     build_wait_selector_js,
-    load_false_auth_form_available,
+    load_false_continuation_action,
     load_false_diagnostics_log_parts,
     make_service_result,
     parse_autofill_callback_result,
@@ -67,7 +67,6 @@ from app.service_checks import (
     build_service_check_note_text,
     visible_service_start_diagnostics,
     visible_html_form_should_start_autofill_wait,
-    should_continue_after_http_error_load,
 )
 from app.templates import (
     format_dt,
@@ -2377,7 +2376,11 @@ class ServiceCheckVisibleDialog(QDialog):
         if self.finished:
             return
         if not ok:
-            self.page.runJavaScript(build_load_false_diagnostics_js(self.service), self.after_load_false_diagnostics)
+            if not self.service.get("allow_http_error_load", False):
+                self.logger.warning("Service check visible load failed: service_id=%s error=%s", service_id, "Страница не загрузилась")
+                self.finish("load_error", error="Страница не загрузилась")
+                return
+            self.start_load_false_retry_wait()
             return
         self.start_visible_auth_flow()
 
@@ -2397,6 +2400,18 @@ class ServiceCheckVisibleDialog(QDialog):
             return
         self.start_autofill_wait()
 
+    def start_load_false_retry_wait(self):
+        self.load_false_attempt = 0
+        self.load_false_deadline = datetime.now() + timedelta(seconds=self.autofill_wait_seconds())
+        self.load_false_last_diagnostics = {}
+        self.check_load_false_diagnostics()
+
+    def check_load_false_diagnostics(self):
+        if self.finished:
+            return
+        self.load_false_attempt += 1
+        self.page.runJavaScript(build_load_false_diagnostics_js(self.service), self.after_load_false_diagnostics)
+
     def after_load_false_diagnostics(self, result):
         if self.finished:
             return
@@ -2404,10 +2419,12 @@ class ServiceCheckVisibleDialog(QDialog):
         diagnostics, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
         if parse_error is not None:
             diagnostics = {}
+        self.load_false_last_diagnostics = diagnostics
         parts = load_false_diagnostics_log_parts(diagnostics)
         self.logger.warning(
-            "Service check visible load false diagnostics: service_id=%s body_found=%s readyState=%s title=%s location=%s login_found=%s password_found=%s submit_found=%s success_found=%s error_found=%s",
+            "Service check visible load false diagnostics retry: service_id=%s attempt=%s body_found=%s readyState=%s title=%s location=%s login_found=%s password_found=%s submit_found=%s success_found=%s error_found=%s iframe_count=%s",
             service_id,
+            self.load_false_attempt,
             parts["body_found"],
             parts["ready_state"],
             parts["title"],
@@ -2417,15 +2434,40 @@ class ServiceCheckVisibleDialog(QDialog):
             parts["submit_found"],
             parts["success_found"],
             parts["error_found"],
+            parts["iframe_count"],
         )
-        if should_continue_after_http_error_load(self.service, diagnostics):
-            if load_false_auth_form_available(diagnostics):
-                self.logger.warning("Service check visible load finished false but auth form is available, continuing")
-                self.start_visible_auth_flow()
-                return
-            self.logger.warning("Service check visible load finished false but result selector is available, continuing")
+        action = load_false_continuation_action(self.service, diagnostics)
+        if action == "autofill":
+            self.logger.warning("Service check visible load false selectors became available, continuing")
+            self.start_visible_auth_flow()
+            return
+        if action == "result_selector":
+            self.logger.warning("Service check visible load false result selector became available, continuing")
             self.read_page_text()
             return
+        if action == "error_selector":
+            self.logger.warning("Service check visible load false error selector matched")
+            self.read_page_text()
+            return
+        if datetime.now() < self.load_false_deadline:
+            QTimer.singleShot(500, self.check_load_false_diagnostics)
+            return
+        self.logger.warning("Service check visible load false selectors timeout: service_id=%s", service_id)
+        final_parts = load_false_diagnostics_log_parts(self.load_false_last_diagnostics)
+        self.logger.warning(
+            "Service check visible load false final diagnostics: service_id=%s body_found=%s readyState=%s title=%s location=%s login_found=%s password_found=%s submit_found=%s success_found=%s error_found=%s iframe_count=%s",
+            service_id,
+            final_parts["body_found"],
+            final_parts["ready_state"],
+            final_parts["title"],
+            final_parts["location"],
+            final_parts["login_found"],
+            final_parts["password_found"],
+            final_parts["submit_found"],
+            final_parts["success_found"],
+            final_parts["error_found"],
+            final_parts["iframe_count"],
+        )
         self.logger.warning("Service check visible load failed: service_id=%s error=%s", service_id, "Страница не загрузилась")
         self.finish("load_error", error="Страница не загрузилась")
 

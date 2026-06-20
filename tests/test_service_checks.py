@@ -25,6 +25,7 @@ from app.service_checks import (
     safe_autofill_script_preview,
     service_result_display_label,
     service_status_label,
+    load_false_continuation_action,
     should_continue_after_http_error_load,
     summarize_service_results,
     load_false_auth_form_available,
@@ -115,6 +116,9 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("location_protocol", js)
         self.assertIn("location_host", js)
         self.assertIn("location_pathname", js)
+        self.assertIn("iframe_count", js)
+        self.assertIn("iframe_srcs", js)
+        self.assertIn("sanitizeUrl", js)
         self.assertIn("login_found", js)
         self.assertIn("success_found", js)
         self.assertNotIn(".value", js.lower())
@@ -132,6 +136,11 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertTrue(should_continue_after_http_error_load(service, {"error_found": True}))
         self.assertFalse(should_continue_after_http_error_load(service, {"body_found": True}))
         self.assertFalse(should_continue_after_http_error_load({"allow_http_error_load": False}, diagnostics))
+        self.assertEqual(load_false_continuation_action({"allow_http_error_load": False}, diagnostics), "load_error")
+        self.assertEqual(load_false_continuation_action(service, {"body_found": True}), "wait")
+        self.assertEqual(load_false_continuation_action(service, diagnostics), "autofill")
+        self.assertEqual(load_false_continuation_action(service, {"success_found": True}), "result_selector")
+        self.assertEqual(load_false_continuation_action(service, {"error_found": True}), "error_selector")
 
     def test_allow_http_error_load_default_false_and_migration(self):
         item = default_service_item("svc")
