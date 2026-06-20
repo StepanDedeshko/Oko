@@ -76,7 +76,9 @@ def ensure_home_defaults(config):
     duty = config.setdefault("duty_mode", {})
     duty.setdefault("otrs_login_enabled", False)
     duty.setdefault("otrs_auto_submit_login", False)
-    duty.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
+    duty.setdefault("duty_zabbix_expected_task_title", duty.get("expected_ticket_subject", "Дежурная проверка Zabbix / графиков"))
+    duty.setdefault("duty_service_checks_expected_task_title", "Дежурная проверка сервисов")
+    duty.setdefault("expected_ticket_subject", duty.get("duty_zabbix_expected_task_title", "Дежурная проверка Zabbix / графиков"))
     ensure_service_checks_defaults(config)
     return config
 

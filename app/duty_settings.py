@@ -324,15 +324,20 @@ class DutyModeSettingsWidget(QWidget):
         otrs_row.addWidget(self.otrs_create_url, stretch=1)
         root.addLayout(otrs_row)
 
-        subject_row = QHBoxLayout()
-        subject_row.addWidget(QLabel("Ожидаемая тема задачи:"))
+        subject_box = QGroupBox("Ожидаемые темы задач")
+        subject_form = QFormLayout(subject_box)
 
-        self.expected_subject_input = QLineEdit()
-        self.expected_subject_input.setText(self.settings().get("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)"))
-        self.expected_subject_input.setPlaceholderText("Например: Проверка Zabbix (Важных IT-сервисов)")
+        self.zabbix_expected_title_input = QLineEdit()
+        self.zabbix_expected_title_input.setText(self.settings().get("duty_zabbix_expected_task_title", "Дежурная проверка Zabbix / графиков"))
+        self.zabbix_expected_title_input.setPlaceholderText("Например: Дежурная проверка Zabbix / графиков")
+        subject_form.addRow("Ожидаемая тема задачи Zabbix / графиков:", self.zabbix_expected_title_input)
 
-        subject_row.addWidget(self.expected_subject_input, stretch=1)
-        root.addLayout(subject_row)
+        self.service_checks_expected_title_input = QLineEdit()
+        self.service_checks_expected_title_input.setText(self.settings().get("duty_service_checks_expected_task_title", "Дежурная проверка сервисов"))
+        self.service_checks_expected_title_input.setPlaceholderText("Например: Дежурная проверка сервисов")
+        subject_form.addRow("Ожидаемая тема задачи проверки сервисов:", self.service_checks_expected_title_input)
+
+        root.addWidget(subject_box)
 
         task_box = QGroupBox("Задачи дежурства")
         task_form = QFormLayout(task_box)
@@ -591,7 +596,12 @@ class DutyModeSettingsWidget(QWidget):
         if settings["sound_path"] == "Звук не выбран":
             settings["sound_path"] = ""
         settings["otrs_create_url"] = self.otrs_create_url.text().strip()
-        settings["expected_ticket_subject"] = self.expected_subject_input.text().strip() or "Проверка Zabbix (Важных IT-сервисов)"
+        settings["duty_zabbix_expected_task_title"] = self.zabbix_expected_title_input.text().strip() or "Дежурная проверка Zabbix / графиков"
+        settings["duty_service_checks_expected_task_title"] = self.service_checks_expected_title_input.text().strip() or "Дежурная проверка сервисов"
+        settings["expected_ticket_subject"] = settings["duty_zabbix_expected_task_title"]
+        settings["expected_service_checks_ticket_subject"] = settings["duty_service_checks_expected_task_title"]
+        self.logger.info("Duty Zabbix expected task title saved")
+        self.logger.info("Duty service checks expected task title saved")
         settings["duty_service_checks_enabled"] = self.duty_service_checks_enabled_checkbox.isChecked()
         settings["duty_zabbix_task_number"] = self.duty_zabbix_task_number_input.text().strip()
         settings["duty_service_checks_task_number"] = self.duty_service_checks_task_number_input.text().strip()

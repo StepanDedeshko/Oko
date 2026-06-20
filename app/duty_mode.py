@@ -593,8 +593,8 @@ class AttachExistingTaskDialog(QDialog):
     def _expected_subject(self):
         settings = self.get_settings()
         if self.task_type == "service_checks":
-            return settings.get("expected_service_checks_ticket_subject", "Дежурная проверка сервисов")
-        return settings.get("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
+            return settings.get("duty_service_checks_expected_task_title") or settings.get("expected_service_checks_ticket_subject", "Дежурная проверка сервисов")
+        return settings.get("duty_zabbix_expected_task_title") or settings.get("expected_ticket_subject", "Дежурная проверка Zabbix / графиков")
 
     def _save_task_binding(self, number="", ticket_id="", ticket_url=""):
         settings = self.get_settings()
@@ -1198,9 +1198,12 @@ class OtrsCreateTaskDialog(QDialog):
         return "Создать задачу проверки сервисов" if self.task_type == "service_checks" else "Создать задачу Zabbix / графиков"
 
     def _task_create_hint(self):
+        settings = self.get_settings()
         if self.task_type == "service_checks":
-            return "Создай задачу ОТРС с заголовком «Дежурная проверка сервисов». После создания укажи номер задачи проверки сервисов ниже."
-        return "Создай задачу ОТРС с заголовком «Дежурная проверка Zabbix / графиков». После создания укажи номер задачи Zabbix / графиков ниже."
+            expected = settings.get("duty_service_checks_expected_task_title") or "Дежурная проверка сервисов"
+            return f"Создай задачу ОТРС с заголовком «{expected}». После создания укажи номер задачи проверки сервисов ниже."
+        expected = settings.get("duty_zabbix_expected_task_title") or "Дежурная проверка Zabbix / графиков"
+        return f"Создай задачу ОТРС с заголовком «{expected}». После создания укажи номер задачи Zabbix / графиков ниже."
 
     def _current_task_number(self):
         settings = self.get_settings()

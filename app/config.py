@@ -111,8 +111,19 @@ def ensure_duty_mode_defaults(config):
     settings.setdefault("duty_service_checks_task_id", "")
     settings.setdefault("duty_service_checks_task_url", "")
     settings.setdefault("duty_service_checks_enabled", False)
-    settings.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
-    settings.setdefault("expected_service_checks_ticket_subject", "Дежурная проверка сервисов")
+    legacy_expected_title = (
+        settings.get("duty_zabbix_expected_task_title")
+        or settings.get("expected_task_title")
+        or settings.get("duty_expected_task_title")
+        or settings.get("expected_ticket_title")
+        or settings.get("duty_ticket_title")
+        or settings.get("expected_ticket_subject")
+        or "Дежурная проверка Zabbix / графиков"
+    )
+    settings.setdefault("duty_zabbix_expected_task_title", str(legacy_expected_title or "Дежурная проверка Zabbix / графиков"))
+    settings.setdefault("duty_service_checks_expected_task_title", str(settings.get("expected_service_checks_ticket_subject") or "Дежурная проверка сервисов"))
+    settings.setdefault("expected_ticket_subject", settings.get("duty_zabbix_expected_task_title", "Дежурная проверка Zabbix / графиков"))
+    settings.setdefault("expected_service_checks_ticket_subject", settings.get("duty_service_checks_expected_task_title", "Дежурная проверка сервисов"))
     settings.setdefault("otrs_login_enabled", False)
     settings.setdefault("otrs_login", "")
     settings.setdefault("otrs_password", "")
@@ -152,7 +163,9 @@ def _default_config():
             "otrs_login": "",
             "otrs_password": "",
             "otrs_auto_submit_login": False,
-            "expected_ticket_subject": "Проверка Zabbix (Важных IT-сервисов)",
+            "expected_ticket_subject": "Дежурная проверка Zabbix / графиков",
+            "duty_zabbix_expected_task_title": "Дежурная проверка Zabbix / графиков",
+            "duty_service_checks_expected_task_title": "Дежурная проверка сервисов",
             "duty_service_checks_enabled": False,
             "duty_zabbix_task_number": "",
             "duty_zabbix_task_id": "",

@@ -651,6 +651,15 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(settings["duty_zabbix_task_id"], "")
         self.assertEqual(settings["duty_service_checks_task_id"], "")
         self.assertEqual(settings["duty_service_checks_task_url"], "")
+        self.assertEqual(settings["duty_zabbix_expected_task_title"], "Дежурная проверка Zabbix / графиков")
+        self.assertEqual(settings["duty_service_checks_expected_task_title"], "Дежурная проверка сервисов")
+
+
+    def test_duty_expected_title_legacy_migrates_only_to_zabbix(self):
+        config = {"duty_mode": {"expected_ticket_subject": "Legacy Zabbix title"}}
+        settings = ensure_duty_mode_defaults(config)
+        self.assertEqual(settings["duty_zabbix_expected_task_title"], "Legacy Zabbix title")
+        self.assertEqual(settings["duty_service_checks_expected_task_title"], "Дежурная проверка сервисов")
 
     def test_duty_mode_source_separates_zabbix_and_service_tasks(self):
         duty_source = (Path(__file__).resolve().parents[1] / "app" / "duty_mode.py").read_text(encoding="utf-8")
@@ -663,6 +672,12 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Duty Zabbix check started", duty_source)
         self.assertIn("Duty check finished", duty_source)
         self.assertIn("Проверять сервисы в режиме дежурства", settings_source)
+        self.assertIn("Ожидаемая тема задачи Zabbix / графиков", settings_source)
+        self.assertIn("Ожидаемая тема задачи проверки сервисов", settings_source)
+        self.assertIn("duty_zabbix_expected_task_title", duty_source + settings_source)
+        self.assertIn("duty_service_checks_expected_task_title", duty_source + settings_source)
+        self.assertIn("Duty Zabbix expected task title saved", settings_source)
+        self.assertIn("Duty service checks expected task title saved", settings_source)
         self.assertIn("№ задачи для Zabbix / графиков", settings_source)
         self.assertIn("№ задачи для проверки сервисов", settings_source)
         self.assertIn("Задача для проверки Zabbix / графиков", duty_source + settings_source)
