@@ -690,6 +690,30 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Duty service checks task attached", duty_source)
         self.assertIn("Duty Zabbix task create requested", duty_source)
         self.assertIn("Duty service checks task create requested", duty_source)
+        self.assertIn("Отправить заметку в задачу Zabbix / графиков", duty_source)
+        self.assertIn("Отправить заметку в задачу проверки сервисов", duty_source)
+        self.assertIn("Отправить обе заметки", duty_source)
+        self.assertIn("Текущий этап: проверка сервисов", duty_source)
+        self.assertIn("Текущий этап: проверка Zabbix / графиков", duty_source)
+        self.assertIn("Проверка дежурства завершена", duty_source)
+        self.assertIn("Duty summary dialog opened", duty_source)
+        self.assertIn("Duty check ignored: reason=already_running", duty_source)
+        self.assertIn("start_duty_check_flow", duty_source)
+        self.assertIn("start_duty_zabbix_stage", duty_source)
+        self.assertIn("build_graph_check_note_text", duty_source)
+        self.assertIn("build_service_check_note_text", duty_source)
+
+    def test_duty_template_context_variables_are_present(self):
+        duty_source = (Path(__file__).resolve().parents[1] / "app" / "duty_mode.py").read_text(encoding="utf-8")
+        for marker in [
+            '"service_checks_total"',
+            '"service_checks_ok"',
+            '"service_checks_errors"',
+            '"service_checks_timeouts"',
+            '"zabbix_status"',
+            '"zabbix_summary"',
+        ]:
+            self.assertIn(marker, duty_source)
 
     def test_service_checks_settings_widget_uses_scroll_area_for_large_form(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
