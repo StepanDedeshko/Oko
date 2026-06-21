@@ -27,10 +27,13 @@ def normalize_mode(mode):
 
 def default_music_widget_config():
     return {
-        "enabled": True, "visible": True, "collapsed": False, "active_provider": "yandex_music",
+        "enabled": True, "visible": True, "collapsed": True, "active_provider": "yandex_music",
         "width": 420, "height": 220, "show_in_header": True,
+        "mini_player_enabled": True, "mini_player_width": 680, "mini_player_height": 48,
+        "mini_player_show_artwork": True, "mini_player_show_progress": True, "mini_player_show_equalizer": True,
+        "panel_width": 420, "panel_open": False, "metadata_poll_ms": 1000,
         "visualizer_enabled": True, "visualizer_mode": "auto", "visualizer_bar_count": 24,
-        "visualizer_fps": 24, "visualizer_decorative_when_idle": True,
+        "visualizer_compact_bar_count": 14, "visualizer_fps": 24, "visualizer_decorative_when_idle": True,
         "providers": [
             {"id": "yandex_music", "name": "Яндекс Музыка", "url": "https://music.yandex.ru/", "enabled": True, "profile_dir": "web_profiles/music/yandex_music", "cache_dir": "web_profiles/music/yandex_music_cache", "open_external_if_failed": True},
             {"id": "spotify", "name": "Spotify", "url": "https://open.spotify.com/", "enabled": True, "profile_dir": "web_profiles/music/spotify", "cache_dir": "web_profiles/music/spotify_cache", "open_external_if_failed": True},
@@ -72,8 +75,13 @@ def ensure_music_widget_defaults(config):
     settings["visualizer_mode"] = normalize_mode(settings.get("visualizer_mode"))
     settings["visualizer_bar_count"] = normalize_bar_count(settings.get("visualizer_bar_count"))
     settings["visualizer_fps"] = normalize_fps(settings.get("visualizer_fps"))
+    settings["visualizer_compact_bar_count"] = normalize_bar_count(settings.get("visualizer_compact_bar_count", 14))
     settings["width"] = max(260, min(900, int(settings.get("width") or 420)))
     settings["height"] = max(120, min(700, int(settings.get("height") or 220)))
+    settings["mini_player_width"] = max(320, min(900, int(settings.get("mini_player_width") or 680)))
+    settings["mini_player_height"] = max(42, min(72, int(settings.get("mini_player_height") or 48)))
+    settings["panel_width"] = max(320, min(720, int(settings.get("panel_width") or 420)))
+    settings["metadata_poll_ms"] = max(500, min(5000, int(settings.get("metadata_poll_ms") or 1000)))
     if not find_provider(settings, settings.get("active_provider")):
         fallback = first_enabled_provider(settings)
         settings["active_provider"] = (fallback or {}).get("id", "yandex_music")

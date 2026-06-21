@@ -1413,26 +1413,88 @@ class MusicSettingsWidget(QWidget):
         self.music = ensure_music_widget_defaults(self.config)
         root = QVBoxLayout(self)
         form = QFormLayout()
-        self.enabled = QCheckBox("Включить музыкальный виджет"); self.enabled.setChecked(self.music.get("enabled", True))
-        self.visible = QCheckBox("Показывать при запуске"); self.visible.setChecked(self.music.get("visible", True))
-        self.collapsed = QCheckBox("Свернуть при запуске"); self.collapsed.setChecked(self.music.get("collapsed", False))
+
+        self.enabled = QCheckBox("Включить музыкальный виджет")
+        self.enabled.setChecked(self.music.get("enabled", True))
+        self.visible = QCheckBox("Показывать mini-player")
+        self.visible.setChecked(self.music.get("visible", True) and self.music.get("mini_player_enabled", True))
+        self.panel_open = QCheckBox("Открывать панель при запуске")
+        self.panel_open.setChecked(self.music.get("panel_open", False))
         self.provider = NoWheelComboBox()
-        for p in self.music.get("providers", []): self.provider.addItem(p.get("name", p.get("id")), p.get("id"))
-        idx = self.provider.findData(self.music.get("active_provider")); self.provider.setCurrentIndex(max(0, idx))
+        for provider in self.music.get("providers", []):
+            self.provider.addItem(provider.get("name", provider.get("id")), provider.get("id"))
+        idx = self.provider.findData(self.music.get("active_provider"))
+        self.provider.setCurrentIndex(max(0, idx))
         custom_provider = next((p for p in self.music.get("providers", []) if p.get("id") == "custom"), {})
         self.custom_url = QLineEdit(custom_provider.get("url", ""))
-        self.visualizer_enabled = QCheckBox("Включить эквалайзер"); self.visualizer_enabled.setChecked(self.music.get("visualizer_enabled", True))
-        self.mode = NoWheelComboBox(); [self.mode.addItem(x, x) for x in ("auto", "real", "decorative")]; self.mode.setCurrentIndex(max(0, self.mode.findData(self.music.get("visualizer_mode", "auto"))))
-        self.bars = QSpinBox(); self.bars.setRange(4, 96); self.bars.setValue(self.music.get("visualizer_bar_count", 24))
-        self.fps = QSpinBox(); self.fps.setRange(6, 60); self.fps.setValue(self.music.get("visualizer_fps", 24))
-        form.addRow(self.enabled); form.addRow(self.visible); form.addRow(self.collapsed); form.addRow("Активный провайдер:", self.provider); form.addRow("URL своего плеера:", self.custom_url); form.addRow(self.visualizer_enabled); form.addRow("Режим эквалайзера:", self.mode); form.addRow("Количество полосок:", self.bars); form.addRow("FPS:", self.fps)
+        self.mini_width = QSpinBox()
+        self.mini_width.setRange(320, 900)
+        self.mini_width.setValue(self.music.get("mini_player_width", 680))
+        self.panel_width = QSpinBox()
+        self.panel_width.setRange(320, 720)
+        self.panel_width.setValue(self.music.get("panel_width", 420))
+        self.show_artwork = QCheckBox("Показывать обложку")
+        self.show_artwork.setChecked(self.music.get("mini_player_show_artwork", True))
+        self.show_progress = QCheckBox("Показывать progress")
+        self.show_progress.setChecked(self.music.get("mini_player_show_progress", True))
+        self.show_equalizer = QCheckBox("Показывать эквалайзер")
+        self.show_equalizer.setChecked(self.music.get("mini_player_show_equalizer", True))
+        self.mode = NoWheelComboBox()
+        for mode in ("auto", "real", "decorative"):
+            self.mode.addItem(mode, mode)
+        self.mode.setCurrentIndex(max(0, self.mode.findData(self.music.get("visualizer_mode", "auto"))))
+        self.compact_bars = QSpinBox()
+        self.compact_bars.setRange(4, 96)
+        self.compact_bars.setValue(self.music.get("visualizer_compact_bar_count", 14))
+        self.full_bars = QSpinBox()
+        self.full_bars.setRange(4, 96)
+        self.full_bars.setValue(self.music.get("visualizer_bar_count", 24))
+        self.fps = QSpinBox()
+        self.fps.setRange(6, 60)
+        self.fps.setValue(self.music.get("visualizer_fps", 24))
+
+        form.addRow(self.enabled)
+        form.addRow(self.visible)
+        form.addRow(self.panel_open)
+        form.addRow("Активный провайдер:", self.provider)
+        form.addRow("URL своего плеера:", self.custom_url)
+        form.addRow("Ширина mini-player:", self.mini_width)
+        form.addRow("Ширина панели:", self.panel_width)
+        form.addRow(self.show_artwork)
+        form.addRow(self.show_progress)
+        form.addRow(self.show_equalizer)
+        form.addRow("Режим эквалайзера:", self.mode)
+        form.addRow("Количество полосок compact:", self.compact_bars)
+        form.addRow("Количество полосок full:", self.full_bars)
+        form.addRow("FPS:", self.fps)
         root.addLayout(form)
-        save = QPushButton("Сохранить настройки музыки"); save.clicked.connect(self.save); root.addWidget(save); root.addStretch(1)
+        save = QPushButton("Сохранить настройки музыки")
+        save.clicked.connect(self.save)
+        root.addWidget(save)
+        root.addStretch(1)
 
     def save(self):
-        self.music.update({"enabled": self.enabled.isChecked(), "visible": self.visible.isChecked(), "collapsed": self.collapsed.isChecked(), "active_provider": self.provider.currentData(), "visualizer_enabled": self.visualizer_enabled.isChecked(), "visualizer_mode": self.mode.currentData(), "visualizer_bar_count": self.bars.value(), "visualizer_fps": self.fps.value()})
-        for p in self.music.get("providers", []):
-            if p.get("id") == "custom": p["url"] = self.custom_url.text().strip()
+        panel_open = self.panel_open.isChecked()
+        self.music.update({
+            "enabled": self.enabled.isChecked(),
+            "visible": self.visible.isChecked(),
+            "mini_player_enabled": self.visible.isChecked(),
+            "collapsed": not panel_open,
+            "panel_open": panel_open,
+            "active_provider": self.provider.currentData(),
+            "mini_player_width": self.mini_width.value(),
+            "panel_width": self.panel_width.value(),
+            "mini_player_show_artwork": self.show_artwork.isChecked(),
+            "mini_player_show_progress": self.show_progress.isChecked(),
+            "mini_player_show_equalizer": self.show_equalizer.isChecked(),
+            "visualizer_mode": self.mode.currentData(),
+            "visualizer_compact_bar_count": self.compact_bars.value(),
+            "visualizer_bar_count": self.full_bars.value(),
+            "visualizer_fps": self.fps.value(),
+        })
+        for provider in self.music.get("providers", []):
+            if provider.get("id") == "custom":
+                provider["url"] = self.custom_url.text().strip()
         save_config(self.config)
         request_application_restart(self, "Изменены настройки музыкального виджета.")
 
