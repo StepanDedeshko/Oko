@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QWidget,
     QVBoxLayout,
+    QSizePolicy,
 )
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -31,6 +32,8 @@ from app.theme import apply_theme
 from app.theme_logo import load_theme_logo
 from app.app_info import APP_NAME
 from app.logger import get_logger
+from app.music_config import ensure_music_widget_defaults
+from app.music_widget import MusicWidget
 from app.webengine_lifecycle import current_rss_mb, register_web_view, safe_delete_web_view, tracked_web_view_count
 
 
@@ -223,6 +226,17 @@ class MainWindow(QMainWindow):
         self.time_label_action = self.toolbar.addWidget(QLabel("Период: "))
         self.time_combo_action = self.toolbar.addWidget(self.time_combo)
         self.toolbar.addSeparator()
+
+        music_settings = ensure_music_widget_defaults(self.config)
+        if music_settings.get("enabled", True) and music_settings.get("show_in_header", True):
+            spacer = QWidget()
+            spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            self.toolbar.addWidget(spacer)
+            self.music_widget = MusicWidget(self.config, self)
+            self.toolbar.addWidget(self.music_widget)
+        else:
+            self.music_widget = None
+            self.logger.info("Music widget disabled by config")
 
 
     def create_shortcuts(self):

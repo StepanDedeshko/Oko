@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QSpinBox,
     QMessageBox,
     QScrollArea,
     QSizePolicy,
@@ -61,6 +62,7 @@ from app.duty_settings import DutyModeSettingsWidget
 from app.service_checks_widget import ServiceChecksSettingsWidget
 from app.safe_widgets import NoWheelComboBox
 from app.service_checks import ensure_service_checks_defaults
+from app.music_config import ensure_music_widget_defaults
 
 
 def clone(value):
@@ -80,6 +82,7 @@ def ensure_home_defaults(config):
     duty.setdefault("duty_service_checks_expected_task_title", "Дежурная проверка сервисов")
     duty.setdefault("expected_ticket_subject", duty.get("duty_zabbix_expected_task_title", "Дежурная проверка Zabbix / графиков"))
     ensure_service_checks_defaults(config)
+    ensure_music_widget_defaults(config)
     return config
 
 
@@ -1403,6 +1406,99 @@ class ChangelogWidget(QWidget):
 
 
 
+class MusicSettingsWidget(QWidget):
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = ensure_home_defaults(config)
+        self.music = ensure_music_widget_defaults(self.config)
+        root = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.enabled = QCheckBox("Включить музыкальный виджет")
+        self.enabled.setChecked(self.music.get("enabled", True))
+        self.visible = QCheckBox("Показывать mini-player")
+        self.visible.setChecked(self.music.get("visible", True) and self.music.get("mini_player_enabled", True))
+        self.panel_open = QCheckBox("Открывать панель при запуске")
+        self.panel_open.setChecked(self.music.get("panel_open", False))
+        self.provider = NoWheelComboBox()
+        for provider in self.music.get("providers", []):
+            self.provider.addItem(provider.get("name", provider.get("id")), provider.get("id"))
+        idx = self.provider.findData(self.music.get("active_provider"))
+        self.provider.setCurrentIndex(max(0, idx))
+        custom_provider = next((p for p in self.music.get("providers", []) if p.get("id") == "custom"), {})
+        self.custom_url = QLineEdit(custom_provider.get("url", ""))
+        self.mini_width = QSpinBox()
+        self.mini_width.setRange(320, 900)
+        self.mini_width.setValue(self.music.get("mini_player_width", 680))
+        self.panel_width = QSpinBox()
+        self.panel_width.setRange(320, 720)
+        self.panel_width.setValue(self.music.get("panel_width", 420))
+        self.show_artwork = QCheckBox("Показывать обложку")
+        self.show_artwork.setChecked(self.music.get("mini_player_show_artwork", True))
+        self.show_progress = QCheckBox("Показывать progress")
+        self.show_progress.setChecked(self.music.get("mini_player_show_progress", True))
+        self.show_equalizer = QCheckBox("Показывать эквалайзер")
+        self.show_equalizer.setChecked(self.music.get("mini_player_show_equalizer", True))
+        self.mode = NoWheelComboBox()
+        for mode in ("auto", "real", "decorative"):
+            self.mode.addItem(mode, mode)
+        self.mode.setCurrentIndex(max(0, self.mode.findData(self.music.get("visualizer_mode", "auto"))))
+        self.compact_bars = QSpinBox()
+        self.compact_bars.setRange(4, 96)
+        self.compact_bars.setValue(self.music.get("visualizer_compact_bar_count", 14))
+        self.full_bars = QSpinBox()
+        self.full_bars.setRange(4, 96)
+        self.full_bars.setValue(self.music.get("visualizer_bar_count", 24))
+        self.fps = QSpinBox()
+        self.fps.setRange(6, 60)
+        self.fps.setValue(self.music.get("visualizer_fps", 24))
+
+        form.addRow(self.enabled)
+        form.addRow(self.visible)
+        form.addRow(self.panel_open)
+        form.addRow("Активный провайдер:", self.provider)
+        form.addRow("URL своего плеера:", self.custom_url)
+        form.addRow("Ширина mini-player:", self.mini_width)
+        form.addRow("Ширина панели:", self.panel_width)
+        form.addRow(self.show_artwork)
+        form.addRow(self.show_progress)
+        form.addRow(self.show_equalizer)
+        form.addRow("Режим эквалайзера:", self.mode)
+        form.addRow("Количество полосок compact:", self.compact_bars)
+        form.addRow("Количество полосок full:", self.full_bars)
+        form.addRow("FPS:", self.fps)
+        root.addLayout(form)
+        save = QPushButton("Сохранить настройки музыки")
+        save.clicked.connect(self.save)
+        root.addWidget(save)
+        root.addStretch(1)
+
+    def save(self):
+        panel_open = self.panel_open.isChecked()
+        self.music.update({
+            "enabled": self.enabled.isChecked(),
+            "visible": self.visible.isChecked(),
+            "mini_player_enabled": self.visible.isChecked(),
+            "collapsed": not panel_open,
+            "panel_open": panel_open,
+            "active_provider": self.provider.currentData(),
+            "mini_player_width": self.mini_width.value(),
+            "panel_width": self.panel_width.value(),
+            "mini_player_show_artwork": self.show_artwork.isChecked(),
+            "mini_player_show_progress": self.show_progress.isChecked(),
+            "mini_player_show_equalizer": self.show_equalizer.isChecked(),
+            "visualizer_mode": self.mode.currentData(),
+            "visualizer_compact_bar_count": self.compact_bars.value(),
+            "visualizer_bar_count": self.full_bars.value(),
+            "visualizer_fps": self.fps.value(),
+        })
+        for provider in self.music.get("providers", []):
+            if provider.get("id") == "custom":
+                provider["url"] = self.custom_url.text().strip()
+        save_config(self.config)
+        request_application_restart(self, "Изменены настройки музыкального виджета.")
+
+
 class AppSettingsWidget(QWidget):
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -1421,6 +1517,7 @@ class AppSettingsWidget(QWidget):
         self.add_section("Продукты и страницы", ProductsWidget(self.config))
         self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config, show_title=False))
         self.add_section("Проверка сервисов", ServiceChecksSettingsWidget(self.config))
+        self.add_section("Музыка", MusicSettingsWidget(self.config))
         self.add_section("Перенос настроек", SettingsTransferWidget(self.config))
         self.add_section("Шаблоны", TemplatesWidget(self.config))
         self.add_section("Что нового", ChangelogWidget())
@@ -1458,6 +1555,7 @@ class HomePageWidget(QWidget):
         "Продукты и страницы",
         "Настройки дежурки",
         "Проверка сервисов",
+        "Музыка",
         "Перенос настроек",
         "Шаблоны",
         "Что нового",
