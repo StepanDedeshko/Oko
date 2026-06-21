@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.logger import get_logger
+from app.service_checks import default_service_checks_config
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 CONFIG_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "config.example.json"
@@ -87,6 +88,54 @@ def ensure_duty_triggers_defaults(config):
 
     return settings
 
+def ensure_duty_mode_defaults(config):
+    settings = config.setdefault("duty_mode", {})
+    legacy_task_number = (
+        settings.get("duty_zabbix_task_number")
+        or settings.get("current_ticket_number")
+        or settings.get("duty_task_number")
+        or settings.get("task_number")
+        or ""
+    )
+    settings.setdefault("enabled", False)
+    settings.setdefault("hourly_notification", True)
+    settings.setdefault("skip_minutes", 5)
+    settings.setdefault("sound_path", "")
+    settings.setdefault("current_ticket_number", str(legacy_task_number or ""))
+    settings.setdefault("current_ticket_id", "")
+    settings.setdefault("current_ticket_url", "")
+    settings.setdefault("duty_zabbix_task_number", str(legacy_task_number or ""))
+    settings.setdefault("duty_zabbix_task_id", str(settings.get("current_ticket_id") or ""))
+    settings.setdefault("duty_zabbix_task_url", str(settings.get("current_ticket_url") or ""))
+    settings.setdefault("duty_service_checks_task_number", "")
+    settings.setdefault("duty_service_checks_task_id", "")
+    settings.setdefault("duty_service_checks_task_url", "")
+    settings.setdefault("duty_service_checks_enabled", False)
+    legacy_expected_title = (
+        settings.get("duty_zabbix_expected_task_title")
+        or settings.get("expected_task_title")
+        or settings.get("duty_expected_task_title")
+        or settings.get("expected_ticket_title")
+        or settings.get("duty_ticket_title")
+        or settings.get("expected_ticket_subject")
+        or "Дежурная проверка Zabbix / графиков"
+    )
+    settings.setdefault("duty_zabbix_expected_task_title", str(legacy_expected_title or "Дежурная проверка Zabbix / графиков"))
+    settings.setdefault("duty_service_checks_expected_task_title", str(settings.get("expected_service_checks_ticket_subject") or "Дежурная проверка сервисов"))
+    settings.setdefault("expected_ticket_subject", settings.get("duty_zabbix_expected_task_title", "Дежурная проверка Zabbix / графиков"))
+    settings.setdefault("expected_service_checks_ticket_subject", settings.get("duty_service_checks_expected_task_title", "Дежурная проверка сервисов"))
+    settings.setdefault("otrs_login_enabled", False)
+    settings.setdefault("otrs_login", "")
+    settings.setdefault("otrs_password", "")
+    settings.setdefault("otrs_auto_submit_login", False)
+    settings.setdefault("graph_ids", [])
+    settings.setdefault("otrs", {})
+    settings["otrs"].setdefault("create_url", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentNewTicketForm;NewTicketFormID=6")
+    settings["otrs"].setdefault("note_url_base", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=")
+    settings["otrs"].setdefault("note_url_template", "")
+    return settings
+
+
 
 def _default_config():
     return {
@@ -114,9 +163,20 @@ def _default_config():
             "otrs_login": "",
             "otrs_password": "",
             "otrs_auto_submit_login": False,
-            "expected_ticket_subject": "Проверка Zabbix (Важных IT-сервисов)",
+            "expected_ticket_subject": "Дежурная проверка Zabbix / графиков",
+            "duty_zabbix_expected_task_title": "Дежурная проверка Zabbix / графиков",
+            "duty_service_checks_expected_task_title": "Дежурная проверка сервисов",
+            "duty_service_checks_enabled": False,
+            "duty_zabbix_task_number": "",
+            "duty_zabbix_task_id": "",
+            "duty_zabbix_task_url": "",
+            "duty_service_checks_task_number": "",
+            "duty_service_checks_task_id": "",
+            "duty_service_checks_task_url": "",
+            "expected_service_checks_ticket_subject": "Дежурная проверка сервисов",
         },
         "duty_triggers": default_duty_triggers_config(),
+        "service_checks": default_service_checks_config(),
         "app": {"name": "Око"},
     }
 
@@ -147,6 +207,7 @@ EXPORTABLE_CONFIG_KEYS = (
     "mode_pages",
     "duty_mode",
     "duty_triggers",
+    "service_checks",
     "templates",
     "app",
 )
@@ -162,18 +223,43 @@ def _is_secret_key(key):
     return any(part in lowered for part in SECRET_KEY_PARTS)
 
 
-def sanitize_export_data(value):
-    """Return a deep copy without secret-like keys, preserving lists and safe values."""
+SERVICE_CHECK_EXPORT_SAFE_SECRET_KEYS = {
+    "auth_type",
+    "login_selector",
+    "password_selector",
+    "submit_selector",
+    "post_login_actions",
+    "session_group",
+    "session_group_order",
+    "session_group_login_owner",
+    "session_group_logout_owner",
+    "session_group_reuse_webview",
+}
+
+
+def _is_service_check_path(path):
+    return "service_checks" in path
+
+
+def _sanitize_export_data(value, path=()):
     if isinstance(value, dict):
         sanitized = {}
         for key, item in value.items():
-            if _is_secret_key(key):
+            key_text = str(key)
+            if _is_secret_key(key_text) and not (
+                _is_service_check_path(path) and key_text in SERVICE_CHECK_EXPORT_SAFE_SECRET_KEYS
+            ):
                 continue
-            sanitized[key] = sanitize_export_data(item)
+            sanitized[key] = _sanitize_export_data(item, path + (key_text,))
         return sanitized
     if isinstance(value, list):
-        return [sanitize_export_data(item) for item in value]
+        return [_sanitize_export_data(item, path) for item in value]
     return deepcopy(value)
+
+
+def sanitize_export_data(value):
+    """Return a deep copy without credentials, preserving safe service-check selectors."""
+    return _sanitize_export_data(value)
 
 
 def collect_exportable_settings(config):

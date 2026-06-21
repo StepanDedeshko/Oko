@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta, timezone
+import json
 import re
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, QUrl, QUrlQuery, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QColor
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -35,13 +37,43 @@ except Exception:
     QMediaPlayer = None
 
 from app.autologin import make_zabbix_login_js
-from app.config import ensure_duty_triggers_defaults, save_config
-from app.credentials import load_otrs_credentials
+from app.config import ensure_duty_mode_defaults, ensure_duty_triggers_defaults, save_config
+from app.credentials import load_otrs_credentials, load_service_credentials
 from app.duty_settings import DutyModeSettingsWidget
 from app.duty_triggers import evaluate_stagnation_trigger
 from app.logger import get_logger
 from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
+from app.service_checks import (
+    AUTH_HTML_FORM,
+    AUTH_EXTERNAL_BROWSER_GROUP,
+    AUTH_VISIBLE_HTML_FORM,
+    ensure_service_checks_defaults,
+    evaluate_service_check_page,
+    build_auth_form_js,
+    build_auth_form_presence_js,
+    build_autofill_error_message,
+    build_click_selector_js,
+    build_click_action_js,
+    build_load_false_diagnostics_js,
+    build_result_selector_check_js,
+    build_wait_selector_action_js,
+    build_wait_selector_js,
+    build_wait_text_action_js,
+    load_false_continuation_action,
+    load_false_diagnostics_log_parts,
+    make_service_result,
+    parse_autofill_callback_result,
+    safe_autofill_result_repr,
+    safe_autofill_script_preview,
+    service_action_failure_message,
+    service_result_display_label,
+    service_status_label,
+    summarize_service_results,
+    build_service_check_note_text,
+    visible_service_start_diagnostics,
+    visible_html_form_should_start_autofill_wait,
+)
 from app.templates import (
     format_dt,
     format_numbered_lines,
@@ -51,6 +83,42 @@ from app.templates import (
 
 
 MSK = timezone(timedelta(hours=3))
+
+
+def normalize_service_autofill_result(logger, service_id, result):
+    parsed, parse_error = parse_autofill_callback_result(result)
+    if parse_error is None:
+        if isinstance(result, str):
+            logger.info(
+                "Service check autofill JSON parsed: service_id=%s ok=%s clicked=%s",
+                service_id,
+                bool(parsed.get("ok")),
+                bool(parsed.get("clicked")),
+            )
+        return parsed, None
+
+    reason = str(parse_error.get("error") or "invalid_result")
+    if reason == "empty_string_result":
+        logger.warning("Service check autofill empty string result: service_id=%s", service_id)
+    elif reason == "invalid_json":
+        logger.warning(
+            "Service check autofill JSON parse failed: service_id=%s reason=%s",
+            service_id,
+            parse_error.get("details", ""),
+        )
+    elif reason == "invalid_json_type":
+        logger.warning(
+            "Service check autofill JSON type invalid: service_id=%s json_type=%s",
+            service_id,
+            parse_error.get("json_type", ""),
+        )
+    logger.warning(
+        "Service check autofill raw result invalid: service_id=%s result_type=%s result_repr=%s",
+        service_id,
+        type(result).__name__,
+        safe_autofill_result_repr(result),
+    )
+    return None, parse_error
 
 
 DUTY_TRIGGER_STATUS_MESSAGES = {
@@ -440,23 +508,22 @@ class AttachExistingTaskDialog(QDialog):
     пробует прочитать номер вида "Заявка#100068754" и проверяет тему.
     """
 
-    def __init__(self, config, parent=None):
+    def __init__(self, config, parent=None, task_type="zabbix"):
         super().__init__(parent)
 
         self.config = config
-        self.setWindowTitle("Привязать задачу дежурства")
+        self.logger = get_logger()
+        self.task_type = "service_checks" if task_type == "service_checks" else "zabbix"
+        self.setWindowTitle(self._task_window_title())
         self.resize(1000, 720)
 
         root = QVBoxLayout(self)
 
-        title = QLabel("Привязать уже созданную задачу")
+        title = QLabel(self._task_title())
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
-        hint = QLabel(
-            "Вставь полную ссылку на задачу ОТРС. "
-            "Приложение сохранит TicketID и попробует прочитать номер заявки со страницы."
-        )
+        hint = QLabel(self._task_description())
         hint.setWordWrap(True)
         root.addWidget(hint)
 
@@ -474,7 +541,7 @@ class AttachExistingTaskDialog(QDialog):
         manual_check_button = QPushButton("Проверить заголовок ещё раз")
         manual_check_button.clicked.connect(self.start_delayed_detect)
 
-        row.addWidget(QLabel("Ссылка на задачу:"))
+        row.addWidget(QLabel(self._task_link_label()))
         row.addWidget(self.url_input, stretch=1)
         row.addWidget(open_button)
         row.addWidget(attach_button)
@@ -491,6 +558,8 @@ class AttachExistingTaskDialog(QDialog):
         self.detect_attempt = 0
         self.max_detect_attempts = 8
         self._cleaned_up = False
+        self._pending_result = None
+        self._pending_continue_queue = True
 
         self.view = register_web_view(QWebEngineView())
         self.view.setStyleSheet("background-color: #0b0b0b; border: 0;")
@@ -506,13 +575,52 @@ class AttachExistingTaskDialog(QDialog):
 
         root.addWidget(self.view, stretch=1)
 
+
+    def _task_title(self):
+        return "Задача для проверки сервисов" if self.task_type == "service_checks" else "Задача для проверки Zabbix / графиков"
+
+    def _task_window_title(self):
+        return "Привязать задачу проверки сервисов" if self.task_type == "service_checks" else "Привязать задачу Zabbix / графиков"
+
+    def _task_description(self):
+        if self.task_type == "service_checks":
+            return "Используется для отдельной проверки сервисов в режиме дежурства. Вставь ссылку на задачу проверки сервисов."
+        return "Используется для дежурной проверки графиков/Zabbix и уведомлений по графикам. Вставь ссылку на задачу Zabbix / графиков."
+
+    def _task_link_label(self):
+        return "Ссылка на задачу проверки сервисов:" if self.task_type == "service_checks" else "Ссылка на задачу Zabbix / графиков:"
+
+    def _expected_subject(self):
+        settings = self.get_settings()
+        if self.task_type == "service_checks":
+            return settings.get("duty_service_checks_expected_task_title") or settings.get("expected_service_checks_ticket_subject", "Дежурная проверка сервисов")
+        return settings.get("duty_zabbix_expected_task_title") or settings.get("expected_ticket_subject", "Дежурная проверка Zabbix / графиков")
+
+    def _save_task_binding(self, number="", ticket_id="", ticket_url=""):
+        settings = self.get_settings()
+        if self.task_type == "service_checks":
+            if number:
+                settings["duty_service_checks_task_number"] = number
+            if ticket_id:
+                settings["duty_service_checks_task_id"] = ticket_id
+            if ticket_url:
+                settings["duty_service_checks_task_url"] = ticket_url
+            self.logger.info("Duty service checks task attached: ticket_id=%s", ticket_id or "not_set")
+        else:
+            if number:
+                settings["current_ticket_number"] = number
+                settings["duty_zabbix_task_number"] = number
+            if ticket_id:
+                settings["current_ticket_id"] = ticket_id
+                settings["duty_zabbix_task_id"] = ticket_id
+            if ticket_url:
+                settings["current_ticket_url"] = ticket_url
+                settings["duty_zabbix_task_url"] = ticket_url
+            self.logger.info("Duty Zabbix task attached: ticket_id=%s", ticket_id or "not_set")
+        save_config(self.config)
+
     def get_settings(self):
-        settings = self.config.setdefault("duty_mode", {})
-        settings.setdefault("current_ticket_number", "")
-        settings.setdefault("current_ticket_id", "")
-        settings.setdefault("current_ticket_url", "")
-        settings.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
-        return settings
+        return ensure_duty_mode_defaults(self.config)
 
     def inject_otrs_login_if_needed(self):
         settings = self.config.setdefault("duty_mode", {})
@@ -663,6 +771,10 @@ class AttachExistingTaskDialog(QDialog):
         self.pending_ticket_url = current_url or self.pending_ticket_url
 
         self.detect_attempt = 0
+        if self.task_type == "service_checks":
+            self.logger.info("Duty service checks task title check started")
+        else:
+            self.logger.info("Duty Zabbix task title check started")
         self.status_label.setText("Жду 3 секунды и читаю заголовок активной страницы...")
         QTimer.singleShot(3000, self.detect_task_number_from_page)
 
@@ -671,10 +783,7 @@ class AttachExistingTaskDialog(QDialog):
         return re.sub(r"\s+", " ", str(text or "")).strip()
 
     def subject_matches(self, subject):
-        expected = self.get_settings().get(
-            "expected_ticket_subject",
-            "Проверка Zabbix (Важных IT-сервисов)"
-        )
+        expected = self._expected_subject()
 
         subject_norm = self.normalize_text(subject).lower()
         expected_norm = self.normalize_text(expected).lower()
@@ -937,10 +1046,7 @@ class AttachExistingTaskDialog(QDialog):
             return
 
         if not self.subject_matches(subject):
-            expected = self.get_settings().get(
-                "expected_ticket_subject",
-                "Проверка Zabbix (Важных IT-сервисов)"
-            )
+            expected = self._expected_subject()
             self.status_label.setText(
                 "Номер заявки прочитан, но тема не совпадает с ожидаемой.\n\n"
                 f"Найдена задача: Заявка#{number}\n"
@@ -960,14 +1066,14 @@ class AttachExistingTaskDialog(QDialog):
             )
             return
 
-        settings = self.get_settings()
-        settings["current_ticket_number"] = number
-        settings["current_ticket_id"] = ticket_id
-        settings["current_ticket_url"] = ticket_url
-        save_config(self.config)
+        self._save_task_binding(number=number, ticket_id=ticket_id, ticket_url=ticket_url)
+        if self.task_type == "service_checks":
+            self.logger.info("Duty service checks task title check finished")
+        else:
+            self.logger.info("Duty Zabbix task title check finished")
 
         self.status_label.setText(
-            f"Задача привязана: Заявка#{number}, TicketID={ticket_id}. Закрываю окно..."
+            f"{self._task_title()} привязана: Заявка#{number}, TicketID={ticket_id}. Закрываю окно..."
         )
         self.accept()
 
@@ -994,24 +1100,23 @@ class OtrsCreateTaskDialog(QDialog):
     или пробует найти номер на странице.
     """
 
-    def __init__(self, config, parent=None):
+    def __init__(self, config, parent=None, task_type="zabbix"):
         super().__init__(parent)
 
         self.config = config
+        self.logger = get_logger()
+        self.task_type = "service_checks" if task_type == "service_checks" else "zabbix"
 
-        self.setWindowTitle("Базовая задача дежурства ОТРС")
+        self.setWindowTitle(self._task_create_title())
         self.resize(1280, 850)
 
         root = QVBoxLayout(self)
 
-        title = QLabel("Базовая задача дежурства ОТРС")
+        title = QLabel(self._task_create_title())
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
-        hint = QLabel(
-            "Создай задачу в ОТРС вручную. После создания укажи номер задачи ниже. "
-            "Приложение привяжет дежурство к этому номеру и будет использовать его для заметок."
-        )
+        hint = QLabel(self._task_create_hint())
         hint.setWordWrap(True)
         root.addWidget(hint)
 
@@ -1035,7 +1140,7 @@ class OtrsCreateTaskDialog(QDialog):
         task_row = QHBoxLayout()
 
         self.ticket_number_input = QLineEdit()
-        self.ticket_number_input.setText(self.get_settings().get("current_ticket_number", ""))
+        self.ticket_number_input.setText(self._current_task_number())
         self.ticket_number_input.setPlaceholderText("Например: 202605261234567")
 
         find_number_button = QPushButton("Попробовать найти номер на странице")
@@ -1044,7 +1149,7 @@ class OtrsCreateTaskDialog(QDialog):
         save_number_button = QPushButton("Привязать номер задачи")
         save_number_button.clicked.connect(self.save_ticket_number)
 
-        task_row.addWidget(QLabel("Номер задачи:"))
+        task_row.addWidget(QLabel("Номер задачи проверки сервисов:" if self.task_type == "service_checks" else "Номер задачи Zabbix / графиков:"))
         task_row.addWidget(self.ticket_number_input, stretch=1)
         task_row.addWidget(find_number_button)
         task_row.addWidget(save_number_button)
@@ -1088,12 +1193,26 @@ class OtrsCreateTaskDialog(QDialog):
         self.auto_captured_ticket_id = ""
         self.load_create_page()
 
+
+    def _task_create_title(self):
+        return "Создать задачу проверки сервисов" if self.task_type == "service_checks" else "Создать задачу Zabbix / графиков"
+
+    def _task_create_hint(self):
+        settings = self.get_settings()
+        if self.task_type == "service_checks":
+            expected = settings.get("duty_service_checks_expected_task_title") or "Дежурная проверка сервисов"
+            return f"Создай задачу ОТРС с заголовком «{expected}». После создания укажи номер задачи проверки сервисов ниже."
+        expected = settings.get("duty_zabbix_expected_task_title") or "Дежурная проверка Zabbix / графиков"
+        return f"Создай задачу ОТРС с заголовком «{expected}». После создания укажи номер задачи Zabbix / графиков ниже."
+
+    def _current_task_number(self):
+        settings = self.get_settings()
+        if self.task_type == "service_checks":
+            return settings.get("duty_service_checks_task_number", "")
+        return settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number", "")
+
     def get_settings(self):
-        settings = self.config.setdefault("duty_mode", {})
-        settings.setdefault("current_ticket_number", "")
-        settings.setdefault("current_ticket_id", "")
-        settings.setdefault("current_ticket_url", "")
-        return settings
+        return ensure_duty_mode_defaults(self.config)
 
     def get_otrs_settings(self):
         settings = self.config.setdefault("duty_mode", {})
@@ -1161,6 +1280,10 @@ class OtrsCreateTaskDialog(QDialog):
         self.get_otrs_settings()["create_url"] = url
         save_config(self.config)
 
+        if self.task_type == "service_checks":
+            self.logger.info("Duty service checks task create requested")
+        else:
+            self.logger.info("Duty Zabbix task create requested")
         self.status_label.setText("Открываю страницу создания задачи ОТРС...")
         self.view.load(QUrl(url))
 
@@ -1191,14 +1314,25 @@ class OtrsCreateTaskDialog(QDialog):
     def save_ticket_binding(self, ticket_id="", ticket_url="", ticket_number="", show_message=True):
         settings = self.get_settings()
 
-        if ticket_id:
-            settings["current_ticket_id"] = ticket_id
-
-        if ticket_url:
-            settings["current_ticket_url"] = ticket_url
-
-        if ticket_number:
-            settings["current_ticket_number"] = ticket_number
+        if self.task_type == "service_checks":
+            if ticket_id:
+                settings["duty_service_checks_task_id"] = ticket_id
+            if ticket_url:
+                settings["duty_service_checks_task_url"] = ticket_url
+            if ticket_number:
+                settings["duty_service_checks_task_number"] = ticket_number
+            self.logger.info("Duty service checks task attached: ticket_id=%s", ticket_id or "not_set")
+        else:
+            if ticket_id:
+                settings["current_ticket_id"] = ticket_id
+                settings["duty_zabbix_task_id"] = ticket_id
+            if ticket_url:
+                settings["current_ticket_url"] = ticket_url
+                settings["duty_zabbix_task_url"] = ticket_url
+            if ticket_number:
+                settings["current_ticket_number"] = ticket_number
+                settings["duty_zabbix_task_number"] = ticket_number
+            self.logger.info("Duty Zabbix task attached: ticket_id=%s", ticket_id or "not_set")
 
         save_config(self.config)
 
@@ -1211,8 +1345,8 @@ class OtrsCreateTaskDialog(QDialog):
 
             QMessageBox.information(
                 self,
-                "Задача дежурства",
-                "Дежурство привязано к задаче: " + ", ".join(parts)
+                self._task_create_title(),
+                self._task_create_title() + " привязана к задаче: " + ", ".join(parts)
             )
 
     def extract_ticket_id_from_url(self, url):
@@ -1329,13 +1463,14 @@ class OtrsNoteDialog(QDialog):
     - вставить текст в CKEditor/contenteditable body.
     """
 
-    def __init__(self, config, note_text, parent=None, on_saved_callback=None, saved_log_message=None):
+    def __init__(self, config, note_text, parent=None, on_saved_callback=None, saved_log_message=None, initial_note_url=None):
         super().__init__(parent)
 
         self.config = config
         self.note_text = note_text
         self.on_saved_callback = on_saved_callback
         self.saved_log_message = saved_log_message
+        self.initial_note_url = str(initial_note_url or "").strip()
         self.note_saved = False
         self.logger = get_logger()
 
@@ -1369,7 +1504,7 @@ class OtrsNoteDialog(QDialog):
         url_row = QHBoxLayout()
 
         self.url_input = QLineEdit()
-        self.url_input.setText(self.build_note_url())
+        self.url_input.setText(self.initial_note_url or self.build_note_url())
 
         open_button = QPushButton("Открыть страницу заметки")
         open_button.clicked.connect(self.load_note_page)
@@ -1465,6 +1600,7 @@ class OtrsNoteDialog(QDialog):
         """
 
         self.view.page().runJavaScript(js)
+
 
     def get_settings(self):
         return self.config.setdefault("duty_mode", {})
@@ -1632,6 +1768,7 @@ class OtrsNoteDialog(QDialog):
 
         if number:
             settings["current_ticket_number"] = number
+            settings["duty_zabbix_task_number"] = number
             changed = True
 
         if changed:
@@ -1881,7 +2018,8 @@ class ProblemTemplateDialog(QDialog):
             QMessageBox.warning(self, "Есть проблема", "Выбери хотя бы один график.")
             return
 
-        task_number = self.config.get("duty_mode", {}).get("current_ticket_number", "").strip()
+        duty_settings = self.config.get("duty_mode", {})
+        task_number = (duty_settings.get("duty_zabbix_task_number") or duty_settings.get("current_ticket_number", "")).strip()
 
         if len(titles) == 1:
             text = (
@@ -1942,6 +2080,8 @@ class DutyGraphCard(QFrame):
         self.time_range = time_range
         self.logger = get_logger()
         self._cleaned_up = False
+        self._pending_result = None
+        self._pending_continue_queue = True
 
         self.setObjectName("GraphCard")
         self.initial_view_height = 430
@@ -2182,6 +2322,1120 @@ class DutyGraphCard(QFrame):
         super().closeEvent(event)
 
 
+
+class ServiceCheckVisibleDialog(QDialog):
+    completed = Signal(object, bool)
+    cleanup_completed = Signal(str)
+
+    def __init__(self, service, parent=None, group_services=None):
+        super().__init__(parent)
+        self.group_services = list(group_services or [service])
+        self.group_index = 0
+        self.group_results = []
+        self.service = self.group_services[self.group_index]
+        self.logger = get_logger()
+        self.started_at = None
+        self.finished = False
+        self.emitted = False
+        self.ssl_warning = ""
+        self._cleaned_up = False
+        self._pending_result = None
+        self._pending_continue_queue = True
+        self.state = "loading"
+        self.auth_submitted = False
+        self.logout_started = False
+
+        self.setWindowTitle(f"Проверка сервиса: {service.get('name') or service.get('id') or 'Сервис'}")
+        self.resize(1100, 760)
+
+        layout = QVBoxLayout(self)
+        self.status_label = QLabel("Загрузка страницы проверки сервиса…")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.view = register_web_view(QWebEngineView())
+        self.page = QWebEnginePage(self.view)
+        self.view.setPage(self.page)
+        layout.addWidget(self.view, stretch=1)
+
+        manual_actions = QHBoxLayout()
+        self.confirm_ok_button = QPushButton("Подтвердить ОК")
+        self.confirm_ok_button.setObjectName("PrimaryAction")
+        self.confirm_error_button = QPushButton("Ошибка")
+        self.skip_button = QPushButton("Пропустить")
+        self.close_continue_button = QPushButton("Закрыть и продолжить")
+        self.confirm_ok_button.clicked.connect(self.confirm_ok)
+        self.confirm_error_button.clicked.connect(self.confirm_error)
+        self.skip_button.clicked.connect(self.skip_check)
+        self.close_continue_button.clicked.connect(self.close_and_continue)
+        manual_actions.addWidget(self.confirm_ok_button)
+        manual_actions.addWidget(self.confirm_error_button)
+        manual_actions.addWidget(self.skip_button)
+        manual_actions.addWidget(self.close_continue_button)
+        manual_actions.addStretch(1)
+        layout.addLayout(manual_actions)
+
+        self.timeout_timer = QTimer(self)
+        self.timeout_timer.setSingleShot(True)
+        self.timeout_timer.timeout.connect(self.on_timeout)
+
+        self.view.loadFinished.connect(self.on_loaded)
+        try:
+            self.page.certificateError.connect(self.on_certificate_error)
+        except Exception:
+            self.logger.warning("Service check certificateError signal is not available")
+
+    def set_state(self, new_state):
+        old_state = getattr(self, "state", "")
+        if old_state == new_state:
+            return
+        self.state = new_state
+        self.logger.info("Service check state changed: service_id=%s from=%s to=%s", self.service.get("id", ""), old_state, new_state)
+
+    def callback_allowed(self, callback_name, expected_states):
+        if self.finished or self.state in {"finished", "manual_required"} or self.state not in set(expected_states):
+            self.logger.warning(
+                "Service check callback ignored: service_id=%s callback=%s state=%s expected=%s",
+                self.service.get("id", ""),
+                callback_name,
+                self.state,
+                ",".join(expected_states),
+            )
+            return False
+        return True
+
+    def cancel_pending_timers(self, reason):
+        service_id = self.service.get("id", "")
+        self.autofill_wait_deadline = datetime.now()
+        self.load_false_deadline = datetime.now()
+        self.logger.info("Service check timers cancelled: service_id=%s reason=%s", service_id, reason)
+
+    def is_shared_group(self):
+        return len(getattr(self, "group_services", []) or []) > 1
+
+    def group_name(self):
+        return self.service.get("session_group", "")
+
+    def is_group_login_owner(self):
+        return (not self.is_shared_group()) or self.group_index == 0 or bool(self.service.get("session_group_login_owner", False))
+
+    def is_group_logout_owner(self):
+        return (not self.is_shared_group()) or self.group_index == len(self.group_services) - 1 or bool(self.service.get("session_group_logout_owner", False))
+
+    def start(self):
+        self.started_at = datetime.now()
+        service_id = self.service.get("id", "")
+        diagnostics = visible_service_start_diagnostics(self.service)
+        self.logger.info(
+            "Service check visible start: service_id=%s auth_type=%s has_url=%s has_login_selector=%s has_password_selector=%s has_submit_selector=%s",
+            service_id,
+            diagnostics["auth_type"],
+            diagnostics["has_url"],
+            diagnostics["has_login_selector"],
+            diagnostics["has_password_selector"],
+            diagnostics["has_submit_selector"],
+        )
+        self.logger.info("Service check visible dialog opened: service_id=%s", service_id)
+        if self.is_shared_group():
+            self.logger.info("Service check group started: group=%s services_count=%s", self.group_name(), len(self.group_services))
+            self.logger.info("Service check group webview created: group=%s", self.group_name())
+            self.logger.info("Service check group service started: group=%s service_id=%s index=%s/%s", self.group_name(), service_id, self.group_index + 1, len(self.group_services))
+        self.timeout_timer.start(max(1, int(self.service.get("timeout_seconds", 15))) * 1000)
+        self.logger.info("Service check visible load started: service_id=%s", service_id)
+        self.view.load(QUrl(self.service.get("url", "")))
+
+    def duration_ms(self):
+        if not self.started_at:
+            return 0
+        return int((datetime.now() - self.started_at).total_seconds() * 1000)
+
+    def on_certificate_error(self, error):
+        service_id = self.service.get("id", "")
+        service_name = self.service.get("name", "")
+        service_url = self.service.get("url", "")
+        self.logger.warning(
+            "Service check SSL error: service_id=%s name=%s url=%s",
+            service_id,
+            service_name,
+            service_url,
+        )
+        description = ""
+        try:
+            description = str(error.description() or "")
+        except Exception:
+            description = ""
+        if self.service.get("allow_insecure_ssl", False):
+            self.logger.warning("Service check SSL error accepted by config: service_id=%s", service_id)
+            self.ssl_warning = "SSL-сертификат был принят как внутренний/самоподписанный."
+            try:
+                error.acceptCertificate()
+            except Exception:
+                self.logger.exception("Service check SSL accept failed: service_id=%s", service_id)
+                self.finish("ssl_error", error="Ошибка SSL-сертификата: не удалось принять сертификат сервиса.")
+            return
+
+        self.logger.warning("Service check SSL error rejected: service_id=%s", service_id)
+        try:
+            error.rejectCertificate()
+        except Exception:
+            pass
+        detail = "Ошибка SSL-сертификата: проверьте сертификат сервиса или включите “Разрешить внутренний/самоподписанный SSL-сертификат” в настройках сервиса."
+        if description:
+            detail += f" Подробности: {description}"
+        self.finish("ssl_error", error=detail)
+
+    def on_timeout(self):
+        self.finish("timeout", error=f"страница не загрузилась за {self.service.get('timeout_seconds', 15)} секунд")
+
+    def on_loaded(self, ok):
+        service_id = self.service.get("id", "")
+        self.logger.info("Service check visible load finished: service_id=%s ok=%s", service_id, ok)
+        if not self.callback_allowed("load_finished", {"loading"}):
+            return
+        if self.finished:
+            return
+        if not ok:
+            if not self.service.get("allow_http_error_load", False):
+                self.logger.warning("Service check visible load failed: service_id=%s error=%s", service_id, "Страница не загрузилась")
+                self.finish("load_error", error="Страница не загрузилась")
+                return
+            self.start_load_false_retry_wait()
+            return
+        self.start_visible_auth_flow()
+
+    def start_visible_auth_flow(self):
+        service_id = self.service.get("id", "")
+        if self.is_shared_group() and not self.is_group_login_owner():
+            self.logger.info("Service check group skip auth: group=%s service_id=%s reason=shared_session", self.group_name(), service_id)
+            self.set_state("result_check")
+            self.start_result_check_after_delay()
+            return
+        if self.is_shared_group():
+            self.logger.info("Service check group login owner: group=%s service_id=%s", self.group_name(), service_id)
+        missing_reasons = []
+        if not self.service.get("login_selector"):
+            missing_reasons.append("login_selector")
+        if not self.service.get("password_selector"):
+            missing_reasons.append("password_selector")
+        if not self.service.get("submit_selector"):
+            missing_reasons.append("submit_selector")
+        if not visible_html_form_should_start_autofill_wait(self.service):
+            reason = ", ".join(missing_reasons)
+            self.logger.warning("Service check visible autofill wait not started: service_id=%s reason=%s", service_id, reason)
+            self.finish("autofill_error", error=f"Не заполнены обязательные selector поля: {reason}", wait_for_manual=True)
+            return
+        self.start_autofill_wait()
+
+    def start_load_false_retry_wait(self):
+        self.set_state("auth_wait")
+        self.load_false_attempt = 0
+        self.load_false_deadline = datetime.now() + timedelta(seconds=self.autofill_wait_seconds())
+        self.load_false_last_diagnostics = {}
+        self.check_load_false_diagnostics()
+
+    def check_load_false_diagnostics(self):
+        if not self.callback_allowed("load_false_retry", {"auth_wait"}):
+            return
+        self.load_false_attempt += 1
+        self.page.runJavaScript(build_load_false_diagnostics_js(self.service), self.after_load_false_diagnostics)
+
+    def after_load_false_diagnostics(self, result):
+        if not self.callback_allowed("load_false_diagnostics", {"auth_wait"}):
+            return
+        service_id = self.service.get("id", "")
+        diagnostics, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None:
+            diagnostics = {}
+        self.load_false_last_diagnostics = diagnostics
+        parts = load_false_diagnostics_log_parts(diagnostics)
+        self.logger.warning(
+            "Service check visible load false diagnostics retry: service_id=%s attempt=%s body_found=%s readyState=%s title=%s location=%s login_found=%s password_found=%s submit_found=%s success_found=%s error_found=%s iframe_count=%s",
+            service_id,
+            self.load_false_attempt,
+            parts["body_found"],
+            parts["ready_state"],
+            parts["title"],
+            parts["location"],
+            parts["login_found"],
+            parts["password_found"],
+            parts["submit_found"],
+            parts["success_found"],
+            parts["error_found"],
+            parts["iframe_count"],
+        )
+        action = load_false_continuation_action(self.service, diagnostics)
+        if action == "autofill":
+            self.logger.warning("Service check visible load false selectors became available, continuing")
+            self.start_visible_auth_flow()
+            return
+        if action == "result_selector":
+            self.logger.warning("Service check visible load false result selector became available, continuing")
+            self.set_state("result_check")
+            self.read_page_text()
+            return
+        if action == "error_selector":
+            self.logger.warning("Service check visible load false error selector matched")
+            self.set_state("result_check")
+            self.read_page_text()
+            return
+        if datetime.now() < self.load_false_deadline:
+            QTimer.singleShot(500, self.check_load_false_diagnostics)
+            return
+        self.logger.warning("Service check visible load false selectors timeout: service_id=%s", service_id)
+        final_parts = load_false_diagnostics_log_parts(self.load_false_last_diagnostics)
+        self.logger.warning(
+            "Service check visible load false final diagnostics: service_id=%s body_found=%s readyState=%s title=%s location=%s login_found=%s password_found=%s submit_found=%s success_found=%s error_found=%s iframe_count=%s",
+            service_id,
+            final_parts["body_found"],
+            final_parts["ready_state"],
+            final_parts["title"],
+            final_parts["location"],
+            final_parts["login_found"],
+            final_parts["password_found"],
+            final_parts["submit_found"],
+            final_parts["success_found"],
+            final_parts["error_found"],
+            final_parts["iframe_count"],
+        )
+        self.logger.warning("Service check visible load failed: service_id=%s error=%s", service_id, "Страница не загрузилась")
+        self.finish("load_error", error="Страница не загрузилась")
+
+    def autofill_wait_seconds(self):
+        try:
+            return max(1, int(self.service.get("autofill_wait_seconds") or self.service.get("timeout_seconds", 15)))
+        except Exception:
+            return 15
+
+    def start_autofill_wait(self):
+        self.set_state("auth_wait")
+        self.autofill_wait_attempt = 0
+        self.autofill_wait_deadline = datetime.now() + timedelta(seconds=self.autofill_wait_seconds())
+        service_id = self.service.get("id", "")
+        self.logger.info("Service check autofill wait started: service_id=%s", service_id)
+        self.status_label.setText("Ожидание появления формы авторизации…")
+        self.check_autofill_form_presence()
+
+    def check_autofill_form_presence(self):
+        if not self.callback_allowed("autofill_wait", {"auth_wait"}):
+            return
+        self.autofill_wait_attempt += 1
+        self.page.runJavaScript(build_auth_form_presence_js(self.service), self.after_autofill_wait_js)
+
+    def after_autofill_wait_js(self, result):
+        if not self.callback_allowed("autofill_wait_callback", {"auth_wait"}):
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None:
+            self.logger.warning("Service check autofill wait failed: service_id=%s reason=%s", service_id, parse_error.get("error", "invalid_result"))
+            self.finish("autofill_error", error=build_autofill_error_message(self.service, parse_error), wait_for_manual=True)
+            return
+        diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else result
+        login_found = bool(diagnostics.get("login_found"))
+        password_found = bool(diagnostics.get("password_found"))
+        submit_found = bool(diagnostics.get("submit_found"))
+        self.logger.info(
+            "Service check autofill wait attempt: service_id=%s attempt=%s login_found=%s password_found=%s submit_found=%s",
+            service_id,
+            self.autofill_wait_attempt,
+            login_found,
+            password_found,
+            submit_found,
+        )
+        if login_found and password_found and submit_found:
+            self.logger.info("Service check autofill form ready: service_id=%s", service_id)
+            self.run_visible_autofill()
+            return
+        if datetime.now() >= self.autofill_wait_deadline:
+            self.logger.warning("Service check autofill wait timeout: service_id=%s", service_id)
+            wait_result = dict(result)
+            wait_result["error"] = "missing_form_elements"
+            wait_result["missing"] = [name for name, found in (("login", login_found), ("password", password_found), ("submit", submit_found)) if not found]
+            self.finish("autofill_error", error=build_autofill_error_message(self.service, wait_result), wait_for_manual=True)
+            return
+        QTimer.singleShot(500, self.check_autofill_form_presence)
+
+    def run_visible_autofill(self):
+        if self.auth_submitted:
+            self.logger.warning("Service check auth submit ignored: service_id=%s reason=already_submitted state=%s", self.service.get("id", ""), self.state)
+            return
+        self.set_state("authenticating")
+        creds = load_service_credentials(self.service.get("id", ""))
+        js = self.make_visible_login_js(creds)
+        service_id = self.service.get("id", "")
+        self.logger.info("Service check autofill script length: service_id=%s length=%s", service_id, len(js))
+        head, tail = safe_autofill_script_preview(js, creds)
+        self.logger.info("Service check autofill script preview: service_id=%s head=%s tail=%s", service_id, head, tail)
+        self.page.runJavaScript(js, self.after_login_js)
+
+    def make_visible_login_js(self, creds):
+        return build_auth_form_js(self.service, creds, blur_fields=True)
+
+    def after_login_js(self, result):
+        if not self.callback_allowed("auth_submit_callback", {"authenticating"}):
+            return
+        service_id = self.service.get("id", "")
+        self.logger.info("Service check autofill callback received: service_id=%s result_type=%s", service_id, type(result).__name__)
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None:
+            reason = str(parse_error.get("error") or "invalid_result")
+            error_message = build_autofill_error_message(self.service, parse_error)
+            self.logger.warning("Service check autofill failed: service_id=%s reason=%s", service_id, reason)
+            self.finish("autofill_error", error=error_message, wait_for_manual=True)
+            return
+        missing = set(result.get("missing") or [])
+        self.logger.info(
+            "Service check visible auth form found: service_id=%s login_found=%s password_found=%s submit_found=%s",
+            service_id,
+            "login" not in missing,
+            "password" not in missing,
+            "submit" not in missing,
+        )
+        if not result.get("ok"):
+            reason = str(result.get("error") or "unknown")
+            if reason == "unknown":
+                self.logger.warning(
+                    "Service check autofill raw result invalid: service_id=%s result_type=%s result_repr=%s",
+                    service_id,
+                    type(result).__name__,
+                    safe_autofill_result_repr(result),
+                )
+            self.logger.warning("Service check autofill failed: service_id=%s reason=%s", service_id, reason)
+            self.finish("autofill_error", error=build_autofill_error_message(self.service, result), wait_for_manual=True)
+            return
+        self.logger.info("Service check visible auth values dispatched: service_id=%s", service_id)
+        if result.get("clicked"):
+            self.auth_submitted = True
+            self.logger.info("Service check visible auth submit clicked: service_id=%s", service_id)
+        self.status_label.setText("Форма отправлена. Ожидание результата проверки…")
+        self.set_state("result_check")
+        self.start_result_check_after_delay()
+
+    def result_wait_seconds(self):
+        try:
+            return max(30 if self.is_shared_group() else 1, int(self.service.get("result_wait_seconds") or self.service.get("timeout_seconds", 15)))
+        except Exception:
+            return 30 if self.is_shared_group() else 15
+
+    def start_result_check_after_delay(self):
+        if self.is_shared_group():
+            try:
+                self.timeout_timer.stop()
+            except Exception:
+                pass
+            self.result_check_deadline = datetime.now() + timedelta(seconds=self.result_wait_seconds())
+            self.logger.info("Service check group result check started: group=%s service_id=%s", self.group_name(), self.service.get("id", ""))
+        QTimer.singleShot(max(0, int(self.service.get("post_login_delay_ms", 1500))), self.read_page_text)
+
+    def read_page_text(self):
+        if not self.callback_allowed("result_check", {"result_check"}):
+            return
+        self.page.runJavaScript(build_result_selector_check_js(self.service), self.after_result_selector_check)
+
+    def after_result_selector_check(self, result):
+        if not self.callback_allowed("result_selector_check", {"result_check"}):
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None:
+            self.logger.warning("Service check result selector parse failed: service_id=%s reason=%s", service_id, parse_error.get("error", "invalid_result"))
+            result = {}
+        self.result_selector_result = result
+        success_found = bool(result.get("success_found"))
+        error_found = bool(result.get("error_found"))
+        self.logger.info("Service check result selector check: service_id=%s success_found=%s error_found=%s", service_id, success_found, error_found)
+        if success_found:
+            self.logger.info("Service check result success selector matched: service_id=%s selector=%s", service_id, result.get("matched_success_selector", ""))
+        if error_found:
+            self.logger.info("Service check result error selector matched: service_id=%s selector=%s", service_id, result.get("matched_error_selector", ""))
+        if self.is_shared_group():
+            if success_found:
+                self.logger.info("Service check group result success: group=%s service_id=%s", self.group_name(), service_id)
+            if not success_found and not error_found:
+                if not self.service.get("success_selectors") and self.service.get("post_login_actions"):
+                    self.logger.info("Service check group post_login started without result selector: group=%s service_id=%s reason=no_success_selectors", self.group_name(), service_id)
+                    QTimer.singleShot(2000, lambda: self.start_post_login_actions("", "", "", ""))
+                    return
+                if datetime.now() < getattr(self, "result_check_deadline", datetime.now()):
+                    QTimer.singleShot(500, self.read_page_text)
+                    return
+                self.logger.warning("Service check group result timeout: group=%s service_id=%s", self.group_name(), service_id)
+                self.logger.warning(
+                    "Service check group result timeout diagnostics: service_id=%s success_selectors_count=%s error_selectors_count=%s post_login_actions_count=%s current_title=%s sanitized_location=%s",
+                    service_id,
+                    len(self.service.get("success_selectors") or []),
+                    len(self.service.get("error_selectors") or []),
+                    len(self.service.get("post_login_actions") or []),
+                    "",
+                    "",
+                )
+                self.finish("timeout", error="Не найдены признаки результата в общей сессии.")
+                return
+        self.page.runJavaScript("document.body ? document.body.innerText : ''", self.analyze_text)
+
+    def analyze_text(self, text):
+        if not self.callback_allowed("analyze_text", {"result_check"}):
+            return
+        selector_result = getattr(self, "result_selector_result", {})
+        status, matched_success, matched_error, error = evaluate_service_check_page(self.service, text, loaded=True, selector_result=selector_result)
+        details = error if status == "ok" and str(error).startswith("Успешный признак найден по CSS selector:") else ""
+        if status == "ok":
+            self.start_post_login_actions(text, matched_success, matched_error, details)
+            return
+        self.finish(
+            status,
+            error="" if details else error,
+            html_text=text,
+            matched_success=matched_success,
+            matched_error=matched_error,
+            details=details,
+        )
+
+    def start_post_login_actions(self, html_text, matched_success, matched_error, login_details):
+        actions = self.service.get("post_login_actions") or []
+        if not actions:
+            self._post_login_actions_completed = False
+            self.start_logout_flow(html_text, matched_success, matched_error, login_details)
+            return
+        if self.is_shared_group():
+            self.logger.info("Service check group post_login started: group=%s service_id=%s", self.group_name(), self.service.get("id", ""))
+        self.set_state("post_login_actions")
+        self.run_action_sequence(
+            "post_login",
+            actions,
+            on_success=lambda: self.after_post_login_actions_success(html_text, matched_success, matched_error, login_details),
+            on_failure=lambda action, reason: self.finish(
+                "manual_required",
+                error="Вход выполнен, но мини-тест не пройден.",
+                html_text=html_text,
+                matched_success=matched_success,
+                matched_error=matched_error,
+                details=service_action_failure_message("post_login", action, reason),
+            ),
+        )
+
+    def after_post_login_actions_success(self, html_text, matched_success, matched_error, login_details):
+        self._post_login_actions_completed = True
+        if self.is_shared_group():
+            self.logger.info("Service check group post_login success: group=%s service_id=%s", self.group_name(), self.service.get("id", ""))
+        self.start_logout_flow(html_text, matched_success, matched_error, login_details)
+
+    def run_action_sequence(self, sequence_name, actions, on_success, on_failure):
+        self._action_sequence = {
+            "name": sequence_name,
+            "actions": list(actions or []),
+            "index": 0,
+            "on_success": on_success,
+            "on_failure": on_failure,
+            "deadline": None,
+        }
+        service_id = self.service.get("id", "")
+        self.logger.info("Service check action sequence started: service_id=%s sequence=%s steps_count=%s", service_id, sequence_name, len(actions or []))
+        self.run_current_action_step()
+
+    def run_current_action_step(self):
+        expected_state = "post_login_actions" if getattr(self, "_action_sequence", {}).get("name") == "post_login" else "logout_actions"
+        if not self.callback_allowed("action_step", {expected_state}):
+            return
+        sequence = getattr(self, "_action_sequence", {})
+        actions = sequence.get("actions") or []
+        index = int(sequence.get("index", 0))
+        service_id = self.service.get("id", "")
+        sequence_name = sequence.get("name", "")
+        if index >= len(actions):
+            self.logger.info("Service check action sequence success: service_id=%s sequence=%s", service_id, sequence_name)
+            sequence.get("on_success", lambda: None)()
+            return
+        action = actions[index]
+        action_type = action.get("type")
+        self.logger.info("Service check action step wait: service_id=%s sequence=%s step=%s/%s type=%s", service_id, sequence_name, index + 1, len(actions), action_type)
+        sequence["deadline"] = datetime.now() + timedelta(seconds=max(1, int(action.get("timeout_seconds", 5))))
+        self.execute_action_step(action)
+
+    def execute_action_step(self, action):
+        expected_state = "post_login_actions" if getattr(self, "_action_sequence", {}).get("name") == "post_login" else "logout_actions"
+        if not self.callback_allowed("execute_action_step", {expected_state}):
+            return
+        action_type = action.get("type")
+        if action_type == "delay":
+            QTimer.singleShot(max(0, int(action.get("delay_ms", 0))), self.finish_action_step_success)
+            return
+        if action_type == "click":
+            self.page.runJavaScript(build_click_action_js(action.get("selector", "")), lambda result: self.after_action_step_js(action, result))
+            return
+        if action_type == "wait_selector":
+            self.page.runJavaScript(build_wait_selector_action_js(action.get("selector", "")), lambda result: self.after_action_step_js(action, result))
+            return
+        if action_type == "wait_text":
+            self.page.runJavaScript(build_wait_text_action_js(action.get("text", "")), lambda result: self.after_action_step_js(action, result))
+            return
+        self.finish_action_step_failed(action, "unsupported_action_type")
+
+    def after_action_step_js(self, action, result):
+        expected_state = "post_login_actions" if getattr(self, "_action_sequence", {}).get("name") == "post_login" else "logout_actions"
+        if not self.callback_allowed("action_step_callback", {expected_state}):
+            return
+        service_id = self.service.get("id", "")
+        sequence = getattr(self, "_action_sequence", {})
+        sequence_name = sequence.get("name", "")
+        index = int(sequence.get("index", 0))
+        total = len(sequence.get("actions") or [])
+        parsed, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        action_type = action.get("type")
+        if parse_error is None and parsed.get("ok") and (parsed.get("found", True) or parsed.get("clicked", False)):
+            if action_type == "click":
+                self.logger.info("Service check action step click: service_id=%s sequence=%s step=%s/%s selector=%s", service_id, sequence_name, index + 1, total, action.get("selector", ""))
+            self.finish_action_step_success()
+            return
+        reason = parse_error.get("error") if parse_error else (parsed.get("reason") or parsed.get("error") or "selector_not_found")
+        if datetime.now() < sequence.get("deadline", datetime.now()):
+            QTimer.singleShot(500, lambda: self.execute_action_step(action))
+            return
+        self.finish_action_step_failed(action, reason)
+
+    def finish_action_step_success(self):
+        expected_state = "post_login_actions" if getattr(self, "_action_sequence", {}).get("name") == "post_login" else "logout_actions"
+        if not self.callback_allowed("action_step_success", {expected_state}):
+            return
+        sequence = getattr(self, "_action_sequence", {})
+        service_id = self.service.get("id", "")
+        sequence_name = sequence.get("name", "")
+        index = int(sequence.get("index", 0))
+        actions = sequence.get("actions") or []
+        action = actions[index] if index < len(actions) else {}
+        self.logger.info("Service check action step success: service_id=%s sequence=%s step=%s/%s", service_id, sequence_name, index + 1, len(actions))
+        sequence["index"] = index + 1
+        QTimer.singleShot(max(0, int(action.get("delay_ms", 0))), self.run_current_action_step)
+
+    def finish_action_step_failed(self, action, reason):
+        sequence = getattr(self, "_action_sequence", {})
+        service_id = self.service.get("id", "")
+        sequence_name = sequence.get("name", "")
+        index = int(sequence.get("index", 0))
+        total = len(sequence.get("actions") or [])
+        self.logger.warning("Service check action step failed: service_id=%s sequence=%s step=%s/%s reason=%s", service_id, sequence_name, index + 1, total, reason)
+        self.logger.warning("Service check action sequence failed: service_id=%s sequence=%s reason=%s", service_id, sequence_name, reason)
+        sequence.get("on_failure", lambda _action, _reason: None)(action, reason)
+
+    def navigate_next_group_service(self):
+        if self.group_index + 1 >= len(self.group_services):
+            return
+        previous_id = self.service.get("id", "")
+        self.group_index += 1
+        self.service = self.group_services[self.group_index]
+        self.state = "loading"
+        self.logout_started = False
+        self.auth_submitted = True
+        self.cancel_pending_timers("group_navigation_next")
+        next_id = self.service.get("id", "")
+        self.logger.info("Service check group navigate next: group=%s from_service_id=%s to_service_id=%s", self.group_name(), previous_id, next_id)
+        self.logger.info("Service check group service started: group=%s service_id=%s index=%s/%s", self.group_name(), next_id, self.group_index + 1, len(self.group_services))
+        self.setWindowTitle(f"Проверка сервиса: {self.service.get('name') or next_id or 'Сервис'}")
+        self.timeout_timer.start(max(1, int(self.service.get("timeout_seconds", 15))) * 1000)
+        self.logger.info("Service check visible load started: service_id=%s", next_id)
+        self.view.load(QUrl(self.service.get("url", "")))
+
+    def start_logout_flow(self, html_text, matched_success, matched_error, login_details):
+        service_id = self.service.get("id", "")
+        if self.is_shared_group() and not self.is_group_logout_owner():
+            self.group_results.append(make_service_result(
+                self.service,
+                status="ok",
+                matched_success_text=matched_success,
+                matched_error_text=matched_error,
+                page_excerpt=html_text,
+                duration_ms=self.duration_ms(),
+                warning=self.ssl_warning,
+                details="Вход выполнен, мини-тест пройден, общая сессия продолжается.",
+            ))
+            self.navigate_next_group_service()
+            return
+        if self.logout_started:
+            self.logger.warning("Service check logout ignored: service_id=%s reason=already_started state=%s", service_id, self.state)
+            self.finish("manual_required", error="Повторный запуск выхода предотвращён.", html_text=html_text, matched_success=matched_success, matched_error=matched_error, details="Повторный запуск выхода предотвращён.")
+            return
+        self.logout_started = True
+        self.cancel_pending_timers("entering_logout")
+        self.set_state("logout_actions")
+        self._logout_html_text = html_text
+        self._logout_matched_success = matched_success
+        self._logout_matched_error = matched_error
+        self._logout_login_details = login_details
+        self.logger.info("Service check logout started: service_id=%s", service_id)
+        if self.is_shared_group():
+            self.logger.info("Service check group logout owner: group=%s service_id=%s", self.group_name(), service_id)
+        logout_actions = self.service.get("logout_actions") or []
+        if logout_actions:
+            self.run_action_sequence(
+                "logout",
+                logout_actions,
+                on_success=self.after_logout_actions_success,
+                on_failure=lambda action, reason: self.finish(
+                    "manual_required",
+                    error="Вход выполнен, но сценарий выхода не завершён.",
+                    html_text=self._logout_html_text,
+                    matched_success=self._logout_matched_success,
+                    matched_error=self._logout_matched_error,
+                    details="Вход выполнен, мини-тест пройден, но автоматический выход не подтверждён. " + service_action_failure_message("logout", action, reason),
+                ),
+            )
+            return
+        if not self.service.get("logout_button_selector"):
+            self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "missing_logout_button_selector")
+            self.finish("manual_required", error="Вход выполнен, но selector кнопки выхода не указан.", html_text=html_text, matched_success=matched_success, matched_error=matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+            return
+        menu_selector = self.service.get("logout_menu_selector", "")
+        if menu_selector:
+            self.logger.info("Service check logout menu click: service_id=%s selector=%s", service_id, menu_selector)
+            self.page.runJavaScript(build_click_selector_js(menu_selector), self.after_logout_menu_click)
+            return
+        self.click_logout_button()
+
+    def after_logout_actions_success(self):
+        self.set_state("logout_success_wait")
+        self.logout_deadline = datetime.now() + timedelta(seconds=max(1, int(self.service.get("logout_wait_seconds", 10))))
+        QTimer.singleShot(500, self.check_logout_success)
+
+    def after_logout_menu_click(self, result):
+        if not self.callback_allowed("logout_menu_click", {"logout_actions"}):
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None or not result.get("ok"):
+            self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "logout_menu_not_found")
+            self.finish("manual_required", error="Вход выполнен, но меню выхода не найдено.", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+            return
+        self.logger.info("Service check logout menu opened: service_id=%s", service_id)
+        self.logout_menu_deadline = datetime.now() + timedelta(seconds=max(1, int(self.service.get("logout_menu_wait_seconds", 5))))
+        self.wait_logout_button()
+
+    def wait_logout_button(self):
+        if not self.callback_allowed("wait_logout_button", {"logout_actions"}):
+            return
+        self.page.runJavaScript(build_wait_selector_js([self.service.get("logout_button_selector", "")]), self.after_wait_logout_button)
+
+    def after_wait_logout_button(self, result):
+        if not self.callback_allowed("wait_logout_button_callback", {"logout_actions"}):
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is None and result.get("found"):
+            self.click_logout_button()
+            return
+        if datetime.now() >= getattr(self, "logout_menu_deadline", datetime.now()):
+            self.logger.warning("Service check logout timeout: service_id=%s", service_id)
+            self.finish("manual_required", error="Вход выполнен, но кнопка выхода не появилась после открытия меню.", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+            return
+        QTimer.singleShot(500, self.wait_logout_button)
+
+    def click_logout_button(self):
+        service_id = self.service.get("id", "")
+        selector = self.service.get("logout_button_selector", "")
+        self.logger.info("Service check logout button click: service_id=%s selector=%s", service_id, selector)
+        self.page.runJavaScript(build_click_selector_js(selector), self.after_logout_button_click)
+
+    def after_logout_button_click(self, result):
+        if not self.callback_allowed("logout_button_click", {"logout_actions"}):
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is not None or not result.get("ok"):
+            self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "logout_button_not_found")
+            self.finish("manual_required", error="Вход выполнен, но кнопка выхода не найдена.", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+            return
+        self.set_state("logout_success_wait")
+        self.logout_deadline = datetime.now() + timedelta(seconds=max(1, int(self.service.get("logout_wait_seconds", 10))))
+        QTimer.singleShot(500, self.check_logout_success)
+
+    def check_logout_success(self):
+        if not self.callback_allowed("logout_success_wait", {"logout_success_wait"}):
+            return
+        self.page.runJavaScript(build_wait_selector_js(self.service.get("logout_success_selectors", [])), self.after_logout_success_selectors)
+
+    def after_logout_success_selectors(self, result):
+        if not self.callback_allowed("logout_success_selector", {"logout_success_wait"}):
+            return
+        service_id = self.service.get("id", "")
+        result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+        if parse_error is None and result.get("found"):
+            self.logger.info("Service check logout success: service_id=%s", service_id)
+            self.finish("ok", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details=self.logout_success_details())
+            return
+        self.page.runJavaScript("document.body ? document.body.innerText : ''", self.after_logout_success_text)
+
+    def after_logout_success_text(self, text):
+        if not self.callback_allowed("logout_success_text", {"logout_success_wait"}):
+            return
+        service_id = self.service.get("id", "")
+        lowered = str(text or "").casefold()
+        for marker in self.service.get("logout_success_texts", []):
+            if str(marker).casefold() in lowered:
+                self.logger.info("Service check logout success: service_id=%s", service_id)
+                self.finish("ok", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details=self.logout_success_details())
+                return
+        if datetime.now() >= getattr(self, "logout_deadline", datetime.now()):
+            self.logger.warning("Service check logout timeout: service_id=%s", service_id)
+            self.finish("manual_required", error="Вход выполнен, но автоматический выход не подтверждён.", html_text=self._logout_html_text, matched_success=self._logout_matched_success, matched_error=self._logout_matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+            return
+        QTimer.singleShot(500, self.check_logout_success)
+
+    def logout_success_details(self):
+        if getattr(self, "_post_login_actions_completed", False):
+            return "Вход выполнен, мини-тест пройден, выход выполнен"
+        return "Вход выполнен, сервис работает, выход выполнен"
+
+    def finish(self, status, error="", html_text="", matched_success="", matched_error="", wait_for_manual=False, details=""):
+
+        if self.finished:
+            return
+        try:
+            self.timeout_timer.stop()
+        except Exception:
+            pass
+        service_id = self.service.get("id", "")
+        if wait_for_manual or status in {"unknown", "autofill_error"}:
+            self.set_state("manual_required")
+            self.status_label.setText(
+                f"Результат: {service_status_label(status)}\n{error or 'Требуется ручное подтверждение результата.'}"
+            )
+            self.logger.info("Service check visible waiting for manual confirmation: service_id=%s", service_id)
+            return
+
+        self.finished = True
+        self.set_state("finished")
+        self.logger.info("Service check finished: service_id=%s status=%s", service_id, status)
+        should_close = self.service.get("visible_window_close_on_success", True) if status == "ok" else self.service.get("visible_window_close_on_error", False)
+        result = make_service_result(
+            self.service,
+            status=status,
+            error=error or "",
+            matched_success_text=matched_success,
+            matched_error_text=matched_error,
+            page_excerpt=html_text,
+            duration_ms=self.duration_ms(),
+            warning=self.ssl_warning,
+            details=details,
+        )
+        if self.is_shared_group():
+            self.group_results.append(result)
+            result = list(self.group_results)
+            self.logger.info("Service check group finished: group=%s status=%s", self.group_name(), status)
+        self.status_label.setText(f"Результат: {service_status_label(status)}" + (f"\n{error}" if error else ""))
+        if should_close:
+            delay_seconds = max(0, int(self.service.get("visible_window_close_delay_seconds", 3)))
+            self.logger.info("Service check visible window close scheduled: service_id=%s delay=%s", service_id, delay_seconds)
+            QTimer.singleShot(delay_seconds * 1000, lambda: self.close_and_emit(result, True))
+            return
+        self.logger.info("Service check visible waiting for manual confirmation: service_id=%s", service_id)
+
+    def finish_manual(self, status, details):
+        if self.emitted:
+            return
+        self.finished = True
+        self.set_state("finished")
+        try:
+            self.timeout_timer.stop()
+        except Exception:
+            pass
+        service_id = self.service.get("id", "")
+        self.logger.info("Service check visible manual result: service_id=%s status=%s", service_id, status)
+        result = make_service_result(
+            self.service,
+            status=status,
+            error="",
+            duration_ms=self.duration_ms(),
+            warning=self.ssl_warning,
+            manual=True,
+            details=details,
+        )
+        self.close_and_emit(result, True)
+
+    def confirm_ok(self):
+        self.finish_manual("ok", "Результат подтверждён вручную дежурным.")
+
+    def confirm_error(self):
+        self.finish_manual("error", "Ошибка подтверждена вручную дежурным.")
+
+    def skip_check(self):
+        self.finish_manual("unknown", "Проверка пропущена вручную.")
+
+    def close_and_continue(self):
+        self.finish_manual("manual_required", "Окно проверки закрыто вручную без подтверждения результата.")
+
+    def close_and_emit(self, result, continue_queue):
+        self._pending_result = result
+        self._pending_continue_queue = continue_queue
+        if continue_queue:
+            previous_service_id = result[-1].get("service_id", "") if isinstance(result, list) and result else result.get("service_id", "")
+            self.logger.info("Service check queue waiting for visible cleanup: previous_service_id=%s", previous_service_id)
+        self.close()
+
+    def emit_completed(self, result, continue_queue):
+        if self.emitted:
+            return
+        self.emitted = True
+        if isinstance(result, dict) and result.get("manual") and continue_queue:
+            self.logger.info("Service check queue continue after manual result: service_id=%s", result.get("service_id", ""))
+        self.completed.emit(result, continue_queue)
+
+    def cleanup(self):
+        service_id = self.service.get("id", "")
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+        view = getattr(self, "view", None)
+        self.view = None
+        self.page = None
+        safe_delete_web_view(view, logger=self.logger, context=f"ServiceCheckVisibleDialog service_id={service_id}", load_handler=self.on_loaded)
+        self.logger.info("Service check visible cleanup completed: service_id=%s", service_id)
+        self.cleanup_completed.emit(service_id)
+
+    def closeEvent(self, event):
+        if not self.emitted and self._pending_result is None:
+            try:
+                self.timeout_timer.stop()
+            except Exception:
+                pass
+            service_id = self.service.get("id", "")
+            self.logger.info("Service check visible manual result: service_id=%s status=manual_required", service_id)
+            self._pending_result = make_service_result(
+                self.service,
+                status="manual_required",
+                duration_ms=self.duration_ms(),
+                warning=self.ssl_warning,
+                manual=True,
+                details="Окно проверки закрыто вручную без подтверждения результата.",
+            )
+            self._pending_continue_queue = True
+            self.logger.info("Service check queue waiting for visible cleanup: previous_service_id=%s", service_id)
+        self.cleanup()
+        if self._pending_result is not None and not self.emitted:
+            result = self._pending_result
+            continue_queue = self._pending_continue_queue
+            self._pending_result = None
+            self.emit_completed(result, continue_queue)
+        super().closeEvent(event)
+
+
+class ExternalBrowserServiceCheckDialog(QDialog):
+    completed = Signal(object, bool)
+
+    def __init__(self, services, parent=None):
+        super().__init__(parent)
+        self.services = list(services or [])
+        self.logger = get_logger()
+        self.group = (self.services[0].get("session_group", "") if self.services else "") or "external_browser_group"
+        self.setWindowTitle("Проверка во внешнем браузере")
+        self.resize(620, 260)
+        layout = QVBoxLayout(self)
+        text = QLabel(
+            f"Око открыло страницы группы {self.group} во внешнем браузере.\n"
+            "Проверьте их вручную и подтвердите результат.\n\n"
+            "Автоматическое управление внешним браузером недоступно."
+        )
+        text.setWordWrap(True)
+        layout.addWidget(text)
+        row = QHBoxLayout()
+        ok_button = QPushButton("Проверено успешно")
+        error_button = QPushButton("Ошибка")
+        skip_button = QPushButton("Пропустить")
+        reopen_button = QPushButton("Открыть ещё раз")
+        ok_button.setObjectName("PrimaryAction")
+        ok_button.clicked.connect(lambda: self.finish_group("ok"))
+        error_button.clicked.connect(lambda: self.finish_group("error"))
+        skip_button.clicked.connect(lambda: self.finish_group("skipped"))
+        reopen_button.clicked.connect(self.open_all_urls)
+        row.addWidget(ok_button)
+        row.addWidget(error_button)
+        row.addWidget(skip_button)
+        row.addWidget(reopen_button)
+        layout.addLayout(row)
+
+    def open_all_urls(self):
+        total = len(self.services)
+        for index, service in enumerate(self.services, start=1):
+            service_id = service.get("id", "")
+            self.logger.info("Service check external browser open requested: group=%s service_id=%s index=%s/%s", self.group, service_id, index, total)
+            ok = QDesktopServices.openUrl(QUrl(service.get("url", "")))
+            if ok:
+                self.logger.info("Service check external browser URL opened: group=%s service_id=%s", self.group, service_id)
+            else:
+                self.logger.warning("Service check external browser open failed: group=%s service_id=%s reason=%s", self.group, service_id, "openUrl returned false")
+
+    def finish_group(self, status):
+        self.logger.info("Service check external browser group manual result: group=%s status=%s", self.group, status)
+        result_status = "ok" if status == "ok" else ("unknown" if status == "skipped" else "manual_required")
+        details = {
+            "ok": "Проверено вручную во внешнем браузере.",
+            "error": "Ошибка подтверждена вручную во внешнем браузере.",
+            "skipped": "Проверка во внешнем браузере пропущена вручную.",
+        }.get(status, "")
+        results = [
+            make_service_result(service, status=result_status, manual=True, details=details)
+            for service in self.services
+        ]
+        self.logger.info("Service check external browser group finished: group=%s status=%s", self.group, status)
+        self.completed.emit(results, True)
+        self.accept()
+
+
+class DutyTasksDialog(QDialog):
+    def __init__(self, config, parent=None, on_changed=None):
+        super().__init__(parent)
+        self.config = config
+        self.on_changed = on_changed
+        self.setWindowTitle("Задачи дежурства")
+        self.resize(760, 360)
+
+        root = QVBoxLayout(self)
+        title = QLabel("Задачи дежурства")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        root.addWidget(self._build_task_group(
+            task_type="zabbix",
+            title="Задача для проверки Zabbix / графиков",
+            description="Используется для дежурной проверки графиков/Zabbix и уведомлений по графикам.",
+            link_label="Ссылка на задачу Zabbix / графиков",
+            create_label="Создать задачу Zabbix / графиков",
+        ))
+        root.addWidget(self._build_task_group(
+            task_type="service_checks",
+            title="Задача для проверки сервисов",
+            description="Используется для отдельной проверки сервисов в режиме дежурства.",
+            link_label="Ссылка на задачу проверки сервисов",
+            create_label="Создать задачу проверки сервисов",
+        ))
+        root.addStretch(1)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        close_button = QPushButton("Закрыть")
+        close_button.clicked.connect(self.accept)
+        close_row.addWidget(close_button)
+        root.addLayout(close_row)
+
+    def _build_task_group(self, task_type, title, description, link_label, create_label):
+        group = QGroupBox(title)
+        layout = QVBoxLayout(group)
+        hint = QLabel(description)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        settings = ensure_duty_mode_defaults(self.config)
+        stored_url = settings.get("duty_service_checks_task_url" if task_type == "service_checks" else "duty_zabbix_task_url", "")
+        row = QHBoxLayout()
+        input_widget = QLineEdit()
+        input_widget.setPlaceholderText("internal task URL")
+        input_widget.setText(stored_url)
+        row.addWidget(QLabel(link_label + ":"))
+        row.addWidget(input_widget, stretch=1)
+
+        open_button = QPushButton("Открыть")
+        open_button.clicked.connect(lambda _checked=False, field=input_widget: QDesktopServices.openUrl(QUrl(field.text().strip())) if field.text().strip() else None)
+        attach_button = QPushButton("Прикрепить")
+        attach_button.clicked.connect(lambda _checked=False, tt=task_type, field=input_widget: self._open_attach(tt, field.text().strip()))
+        check_button = QPushButton("Проверить заголовок ещё раз")
+        check_button.clicked.connect(lambda _checked=False, tt=task_type, field=input_widget: self._open_attach(tt, field.text().strip()))
+        create_button = QPushButton(create_label)
+        create_button.clicked.connect(lambda _checked=False, tt=task_type: self._open_create(tt))
+        row.addWidget(open_button)
+        row.addWidget(attach_button)
+        row.addWidget(check_button)
+        row.addWidget(create_button)
+        layout.addLayout(row)
+        return group
+
+    def _open_attach(self, task_type, url):
+        dialog = AttachExistingTaskDialog(self.config, parent=self, task_type=task_type)
+        if url:
+            dialog.url_input.setText(url)
+        dialog.exec()
+        if self.on_changed:
+            self.on_changed()
+
+    def _open_create(self, task_type):
+        dialog = OtrsCreateTaskDialog(self.config, parent=self, task_type=task_type)
+        dialog.exec()
+        if self.on_changed:
+            self.on_changed()
+
+
+class DutyCheckSummaryDialog(QDialog):
+    def __init__(self, duty_widget, parent=None):
+        super().__init__(parent)
+        self.duty_widget = duty_widget
+        self.setWindowTitle("Проверка дежурства завершена")
+        self.resize(900, 640)
+
+        root = QVBoxLayout(self)
+        title = QLabel("Проверка дежурства завершена")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        stats = summarize_service_results(duty_widget.service_check_results)
+        zabbix_task = duty_widget._task_summary(duty_widget._zabbix_task_number())
+        service_task = duty_widget._task_summary(duty_widget._service_checks_task_number())
+        summary = QLabel(
+            f"Сервисы: {duty_widget.duty_service_checks_status}; total={stats['total']}, OK={stats['ok']}, ошибки={stats['errors']}, таймауты={stats['timeouts']}\n"
+            f"Zabbix / графики: {duty_widget.duty_zabbix_status}\n"
+            f"Задача Zabbix / графики: {zabbix_task}\n"
+            f"Задача проверки сервисов: {service_task}"
+        )
+        summary.setWordWrap(True)
+        root.addWidget(summary)
+
+        zabbix_preview = QTextEdit()
+        zabbix_preview.setReadOnly(True)
+        zabbix_preview.setPlainText(duty_widget.build_graph_check_note_text())
+        zabbix_preview.setMinimumHeight(140)
+        root.addWidget(QLabel("Предпросмотр заметки Zabbix / графиков"))
+        root.addWidget(zabbix_preview)
+
+        service_preview = QTextEdit()
+        service_preview.setReadOnly(True)
+        service_preview.setPlainText(build_service_check_note_text(duty_widget.config, duty_widget.service_check_results))
+        service_preview.setMinimumHeight(140)
+        root.addWidget(QLabel("Предпросмотр заметки проверки сервисов"))
+        root.addWidget(service_preview)
+
+        row = QHBoxLayout()
+        self.zabbix_button = QPushButton("Отправить заметку в задачу Zabbix / графиков")
+        self.zabbix_button.setEnabled(bool(duty_widget._zabbix_task_number()))
+        self.zabbix_button.clicked.connect(self.send_zabbix_note)
+        self.service_button = QPushButton("Отправить заметку в задачу проверки сервисов")
+        self.service_button.setEnabled(bool(duty_widget._service_checks_task_number()))
+        self.service_button.clicked.connect(self.send_service_note)
+        self.both_button = QPushButton("Отправить обе заметки")
+        self.both_button.setEnabled(self.zabbix_button.isEnabled() and self.service_button.isEnabled())
+        self.both_button.clicked.connect(self.send_both_notes)
+        close_button = QPushButton("Не отправлять")
+        close_button.clicked.connect(self.accept)
+        row.addWidget(self.zabbix_button)
+        row.addWidget(self.service_button)
+        row.addWidget(self.both_button)
+        row.addWidget(close_button)
+        root.addLayout(row)
+
+    def send_zabbix_note(self):
+        try:
+            self.duty_widget.open_graph_check_note()
+            self.duty_widget.logger.info("Duty Zabbix note sent: ticket_id=%s", self.duty_widget.get_settings().get("duty_zabbix_task_id", "not_set") or "not_set")
+        except Exception as exc:
+            self.duty_widget.logger.warning("Duty Zabbix note send failed: reason=%s", exc)
+
+    def send_service_note(self):
+        try:
+            self.duty_widget.open_service_check_note()
+            self.duty_widget.logger.info("Duty service checks note sent: ticket_id=%s", self.duty_widget.get_settings().get("duty_service_checks_task_id", "not_set") or "not_set")
+        except Exception as exc:
+            self.duty_widget.logger.warning("Duty service checks note send failed: reason=%s", exc)
+
+    def send_both_notes(self):
+        self.send_zabbix_note()
+        self.send_service_note()
+
+
 class DutyModeWidget(QWidget):
     def __init__(self, config, profiles, credentials=None, graph_card_finder=None, source_view_finder=None, parent=None):
         super().__init__(parent)
@@ -2202,6 +3456,19 @@ class DutyModeWidget(QWidget):
         self.check_graphs = []
         self.cards = []
         self.graph_check_overlay = None
+        self.service_check_queue = []
+        self.service_check_results = []
+        self.service_check_running = False
+        self.service_result_labels = {}
+        self.hidden_service_views = []
+        self.visible_service_dialog = None
+        self.service_checks_launched_from_duty = False
+        self.duty_zabbix_status = "ещё не выполнялась"
+        self.duty_service_checks_status = "отключено"
+        self.duty_current_stage = "завершено"
+        self.duty_flow_running = False
+        self.duty_flow_services_first = False
+        self.duty_summary_dialog = None
 
         self.audio_player = None
         self.audio_output = None
@@ -2234,9 +3501,16 @@ class DutyModeWidget(QWidget):
         self.settings_button.setStyleSheet("padding: 5px 12px;")
         self.settings_button.clicked.connect(self.open_settings)
 
+        self.tasks_button = QPushButton("Задачи дежурства")
+        self.tasks_button.setMinimumHeight(32)
+        self.tasks_button.setMinimumWidth(150)
+        self.tasks_button.setStyleSheet("padding: 5px 12px;")
+        self.tasks_button.clicked.connect(self.open_tasks_dialog)
+
         header.addWidget(title)
         header.addStretch()
         header.addWidget(self.msk_time_label)
+        header.addWidget(self.tasks_button)
         header.addWidget(self.settings_button)
 
         root.addLayout(header)
@@ -2252,13 +3526,21 @@ class DutyModeWidget(QWidget):
 
         self.duty_state_value = QLabel("")
         self.last_check_value = QLabel("ещё не выполнялась")
-        self.task_state_value = QLabel("")
+        self.zabbix_task_state_value = QLabel("")
+        self.service_task_state_value = QLabel("")
+        self.zabbix_status_value = QLabel(self.duty_zabbix_status)
+        self.service_duty_status_value = QLabel(self.duty_service_checks_status)
+        self.duty_stage_value = QLabel("Текущий этап: завершено")
         self.graphs_state_value = QLabel("")
 
         state_labels = [
             QLabel("Дежурство:"),
-            QLabel("Задача ОТРС:"),
             QLabel("Последняя проверка:"),
+            QLabel("Задача для проверки Zabbix / графиков:"),
+            QLabel("Задача для проверки сервисов:"),
+            QLabel("Статус Zabbix / графики:"),
+            QLabel("Статус сервисы:"),
+            QLabel("Текущий этап:"),
             QLabel("Графики:"),
         ]
         for label in state_labels:
@@ -2267,11 +3549,19 @@ class DutyModeWidget(QWidget):
         state_layout.addWidget(state_labels[0], 0, 0)
         state_layout.addWidget(self.duty_state_value, 0, 1)
         state_layout.addWidget(state_labels[1], 0, 2)
-        state_layout.addWidget(self.task_state_value, 0, 3)
+        state_layout.addWidget(self.last_check_value, 0, 3)
         state_layout.addWidget(state_labels[2], 1, 0)
-        state_layout.addWidget(self.last_check_value, 1, 1)
+        state_layout.addWidget(self.zabbix_task_state_value, 1, 1)
         state_layout.addWidget(state_labels[3], 1, 2)
-        state_layout.addWidget(self.graphs_state_value, 1, 3)
+        state_layout.addWidget(self.service_task_state_value, 1, 3)
+        state_layout.addWidget(state_labels[4], 2, 0)
+        state_layout.addWidget(self.zabbix_status_value, 2, 1)
+        state_layout.addWidget(state_labels[5], 2, 2)
+        state_layout.addWidget(self.service_duty_status_value, 2, 3)
+        state_layout.addWidget(state_labels[6], 3, 0)
+        state_layout.addWidget(self.duty_stage_value, 3, 1)
+        state_layout.addWidget(state_labels[7], 3, 2)
+        state_layout.addWidget(self.graphs_state_value, 3, 3)
         root.addWidget(state_group)
 
         actions_layout = QHBoxLayout()
@@ -2284,7 +3574,7 @@ class DutyModeWidget(QWidget):
 
         self.check_triggers_button = QPushButton("Проверить триггеры")
         self.check_triggers_button.setMinimumHeight(34)
-        self.check_triggers_button.clicked.connect(self.run_duty_triggers_check)
+        self.check_triggers_button.clicked.connect(self.start_duty_check_flow)
 
         self.notify_now_button = QPushButton("Показать уведомление сейчас")
         self.notify_now_button.setMinimumHeight(34)
@@ -2295,6 +3585,35 @@ class DutyModeWidget(QWidget):
         actions_layout.addWidget(self.notify_now_button)
         actions_layout.addStretch()
         root.addLayout(actions_layout)
+
+        services_group = QGroupBox("Проверка сервисов")
+        services_layout = QVBoxLayout(services_group)
+        self.duty_service_checks_enabled_checkbox = QCheckBox("Проверять сервисы в режиме дежурства")
+        self.duty_service_checks_enabled_checkbox.setToolTip("Если выключено, при дежурной проверке графиков/Zabbix проверка сервисов запускаться не будет.")
+        self.duty_service_checks_enabled_checkbox.setChecked(bool(self.get_settings().get("duty_service_checks_enabled", False)))
+        self.duty_service_checks_enabled_checkbox.toggled.connect(self.set_duty_service_checks_enabled)
+        services_layout.addWidget(self.duty_service_checks_enabled_checkbox)
+        services_actions = QHBoxLayout()
+        self.check_services_button = QPushButton("Проверить сервисы")
+        self.check_services_button.setMinimumHeight(34)
+        self.check_services_button.clicked.connect(self.run_service_checks)
+        self.service_note_button = QPushButton("Заметка ОТРС")
+        self.service_note_button.setMinimumHeight(34)
+        self.service_note_button.clicked.connect(self.open_service_check_note)
+        services_actions.addWidget(self.check_services_button)
+        services_actions.addWidget(self.service_note_button)
+        services_actions.addStretch(1)
+        services_layout.addLayout(services_actions)
+        self.service_task_hint_label = QLabel("")
+        self.service_task_hint_label.setWordWrap(True)
+        services_layout.addWidget(self.service_task_hint_label)
+        self.service_summary_label = QLabel("Проверка сервисов ещё не выполнялась.")
+        self.service_summary_label.setWordWrap(True)
+        services_layout.addWidget(self.service_summary_label)
+        self.service_results_list = QListWidget()
+        self.service_results_list.setMinimumHeight(120)
+        services_layout.addWidget(self.service_results_list)
+        root.addWidget(services_group)
 
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
@@ -2324,25 +3643,551 @@ class DutyModeWidget(QWidget):
         self.tick()
         self.load_check_graphs()
         self.render_empty_hint()
+        self.render_service_results()
+
+
+    def service_settings(self):
+        return ensure_service_checks_defaults(self.config)
+
+    def enabled_services(self):
+        return [item for item in self.service_settings().get("items", []) if item.get("enabled", True)]
+
+    def render_service_results(self):
+        if not hasattr(self, "service_results_list"):
+            return
+        self.service_results_list.clear()
+        self.service_result_labels = {}
+        result_by_id = {item.get("service_id"): item for item in self.service_check_results}
+        for service in self.service_settings().get("items", []):
+            result = result_by_id.get(service.get("id")) or make_service_result(service, status="not_checked")
+            label = f"{service.get('name') or service.get('id')} — {service_result_display_label(result)}"
+            if result.get("warning"):
+                label += " (SSL-сертификат принят)"
+            if not service.get("enabled", True):
+                label += " (выключен)"
+            list_item = QListWidgetItem(label)
+            if result.get("status") in {"auth_error", "load_error", "timeout", "error", "ssl_error", "autofill_error"}:
+                list_item.setForeground(QColor("#ff5c5c"))
+            elif result.get("status") == "ok":
+                list_item.setForeground(QColor("#7CFC98"))
+            elif result.get("status") == "manual_required" or (result.get("manual") and result.get("status") == "unknown"):
+                list_item.setForeground(QColor("#f6d365"))
+            if result.get("error") or result.get("warning") or result.get("details"):
+                list_item.setToolTip("\n".join(part for part in [result.get("details", ""), result.get("error", ""), result.get("warning", "")] if part))
+            self.service_results_list.addItem(list_item)
+        stats = summarize_service_results(self.service_check_results)
+        if self.service_check_results:
+            self.service_summary_label.setText(
+                "Проверка сервисов завершена: "
+                f"OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}"
+            )
+
+    def _set_service_check_running(self, running):
+        self.service_check_running = bool(running)
+        if hasattr(self, "check_services_button"):
+            self.check_services_button.setEnabled(not running)
+
+    def run_service_checks(self, from_duty=False):
+        if from_duty:
+            self.service_checks_launched_from_duty = True
+        if self.service_check_running:
+            self.service_summary_label.setText("Проверка сервисов уже выполняется.")
+            return
+        services = self.enabled_services()
+        self.service_check_queue = list(services)
+        self.service_check_results = []
+        self.render_service_results()
+        self.service_summary_label.setText(f"Запущена проверка сервисов: {len(services)} шт.")
+        if from_duty:
+            self.duty_service_checks_status = "выполняется"
+            self.update_dashboard_summary()
+        self._set_service_check_running(True)
+        if not services:
+            self._finish_service_checks()
+            return
+        self._run_next_service_check()
+
+    def _run_next_service_check(self):
+        if not self.service_check_queue:
+            self._finish_service_checks()
+            return
+        service = self.service_check_queue.pop(0)
+        if service.get("auth_type") == AUTH_EXTERNAL_BROWSER_GROUP:
+            group_services = self._collect_external_browser_group(service)
+            for grouped_service in group_services:
+                self.service_check_results.append(make_service_result(grouped_service, status="checking"))
+            self.render_service_results()
+            self._run_external_browser_group(group_services)
+            return
+        group_services = [service]
+        if service.get("session_group") and service.get("session_group_reuse_webview", False):
+            group_name = service.get("session_group", "")
+            group_services.extend(
+                sorted(
+                    [item for item in self.service_check_queue if item.get("session_group") == group_name and item.get("session_group_reuse_webview", False)],
+                    key=lambda item: int(item.get("session_group_order", 0) or 0),
+                )
+            )
+            group_ids = {id(item) for item in group_services[1:]}
+            self.service_check_queue = [item for item in self.service_check_queue if id(item) not in group_ids]
+        self.service_check_results.append(make_service_result(service, status="checking"))
+        for grouped_service in group_services[1:]:
+            self.service_check_results.append(make_service_result(grouped_service, status="checking"))
+        self.render_service_results()
+        try:
+            if service.get("auth_type") == AUTH_VISIBLE_HTML_FORM:
+                self._run_visible_service_check(service, group_services=group_services)
+            else:
+                self._run_single_service_check(service)
+        except Exception as exc:
+            self.logger.exception("Service check failed: service_id=%s", service.get("id", ""))
+            self._finish_single_service_check(service, make_service_result(service, status="error", error=str(exc)))
+
+    def _collect_external_browser_group(self, service):
+        group_name = service.get("session_group", "") or service.get("id", "")
+        services = [service]
+        services.extend([item for item in self.service_check_queue if item.get("auth_type") == AUTH_EXTERNAL_BROWSER_GROUP and (item.get("session_group", "") or item.get("id", "")) == group_name])
+        group_ids = {id(item) for item in services[1:]}
+        self.service_check_queue = [item for item in self.service_check_queue if id(item) not in group_ids]
+        return sorted(services, key=lambda item: int(item.get("session_group_order", 0) or 0))
+
+    def _run_external_browser_group(self, services):
+        group = (services[0].get("session_group", "") if services else "") or "external_browser_group"
+        self.logger.info("Service check external browser group started: group=%s services_count=%s", group, len(services))
+        dialog = ExternalBrowserServiceCheckDialog(services, parent=self)
+        self.external_browser_dialog = dialog
+        dialog.completed.connect(self._finish_visible_service_check)
+        delay_ms = int(float(services[0].get("external_browser_open_delay_seconds", 1) or 1) * 1000) if services else 0
+        for index, service in enumerate(services):
+            QTimer.singleShot(index * delay_ms, lambda svc=service, idx=index + 1, total=len(services), dlg=dialog: self._open_external_browser_service(dlg, svc, idx, total))
+        QTimer.singleShot(max(0, len(services) * delay_ms), lambda: self._show_external_browser_dialog(dialog, group))
+
+    def _open_external_browser_service(self, dialog, service, index, total):
+        group = dialog.group
+        service_id = service.get("id", "")
+        self.logger.info("Service check external browser open requested: group=%s service_id=%s index=%s/%s", group, service_id, index, total)
+        ok = QDesktopServices.openUrl(QUrl(service.get("url", "")))
+        if ok:
+            self.logger.info("Service check external browser URL opened: group=%s service_id=%s", group, service_id)
+        else:
+            self.logger.warning("Service check external browser open failed: group=%s service_id=%s reason=%s", group, service_id, "openUrl returned false")
+
+    def _show_external_browser_dialog(self, dialog, group):
+        self.logger.info("Service check external browser manual confirmation required: group=%s", group)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _run_visible_service_check(self, service, group_services=None):
+        if not service.get("url"):
+            self._finish_single_service_check(service, make_service_result(service, status="load_error", error="URL проверки не указан"))
+            return
+        dialog = ServiceCheckVisibleDialog(service, parent=self, group_services=group_services)
+        self.visible_service_dialog = dialog
+        dialog.completed.connect(self._finish_visible_service_check)
+        dialog.destroyed.connect(lambda _obj=None, d=dialog: self._clear_visible_dialog_if_current(d))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        dialog.start()
+
+    def _finish_visible_service_check(self, result, continue_queue):
+        results = result if isinstance(result, list) else [result]
+        result_ids = {item.get("service_id") for item in results}
+        self.service_check_results = [
+            item for item in self.service_check_results
+            if item.get("service_id") not in result_ids
+        ]
+        self.service_check_results.extend(results)
+        self.render_service_results()
+        if continue_queue:
+            last_result = results[-1]
+            if self.visible_service_dialog is not None and self.visible_service_dialog.service.get("id") == last_result.get("service_id"):
+                self.visible_service_dialog = None
+            next_service_id = self.service_check_queue[0].get("id", "") if self.service_check_queue else ""
+            if next_service_id:
+                self.logger.info("Service check queue opening next after cleanup: next_service_id=%s", next_service_id)
+            QTimer.singleShot(0, self._run_next_service_check)
+            return
+        self.service_check_queue = []
+        self._set_service_check_running(False)
+        self.service_summary_label.setText(
+            "Проверка остановлена: окно сервиса оставлено открытым для диагностики."
+        )
+
+    def _clear_visible_dialog_if_current(self, dialog):
+        if self.visible_service_dialog is dialog:
+            self.visible_service_dialog = None
+
+
+    def _run_single_service_check(self, service):
+        if not service.get("url"):
+            self._finish_single_service_check(service, make_service_result(service, status="load_error", error="URL проверки не указан"))
+            return
+        started = datetime.now()
+        context = {"service": service, "started": started, "timed_out": False, "load_finished": False, "finished": False}
+        view = register_web_view(QWebEngineView())
+        page = QWebEnginePage(view)
+        view.setPage(page)
+        self.hidden_service_views.append(view)
+        timeout_ms = max(1, int(service.get("timeout_seconds", 15))) * 1000
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        context["timer"] = timer
+
+        def cleanup():
+            try:
+                timer.stop()
+            except Exception:
+                pass
+            if view in self.hidden_service_views:
+                self.hidden_service_views.remove(view)
+            safe_delete_web_view(view, logger=self.logger, context="hidden WebView service check", load_handler=on_loaded)
+
+        def duration_ms():
+            return int((datetime.now() - started).total_seconds() * 1000)
+
+        def finish(status, error="", html_text="", matched_success="", matched_error="", warning="", details=""):
+
+            if context.get("finished"):
+                return
+            context["finished"] = True
+            cleanup()
+            result = make_service_result(
+                service,
+                status=status,
+                error=error,
+                matched_success_text=matched_success,
+                matched_error_text=matched_error,
+                page_excerpt=html_text,
+                duration_ms=duration_ms(),
+                warning=warning or context.get("ssl_warning", ""),
+                details=details,
+            )
+            self._finish_single_service_check(service, result)
+
+        def analyze_text(text):
+            selector_result = context.get("result_selector_result") if isinstance(context.get("result_selector_result"), dict) else {}
+            status, matched_success, matched_error, error = evaluate_service_check_page(service, text, loaded=True, selector_result=selector_result)
+            details = error if status == "ok" and str(error).startswith("Успешный признак найден по CSS selector:") else ""
+            if status == "ok" and service.get("auth_type") == AUTH_HTML_FORM:
+                start_logout_flow(text, matched_success, matched_error, details)
+                return
+            finish(status, error="" if details else error, html_text=text, matched_success=matched_success, matched_error=matched_error, details=details)
+
+        def start_logout_flow(html_text, matched_success, matched_error, login_details):
+            service_id = service.get("id", "")
+            context["logout_html_text"] = html_text
+            context["logout_matched_success"] = matched_success
+            context["logout_matched_error"] = matched_error
+            self.logger.info("Service check logout started: service_id=%s", service_id)
+            if not service.get("logout_button_selector"):
+                self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "missing_logout_button_selector")
+                finish("manual_required", error="Вход выполнен, но selector кнопки выхода не указан.", html_text=html_text, matched_success=matched_success, matched_error=matched_error, details="Вход выполнен, но автоматический выход не подтверждён.")
+                return
+            if service.get("logout_menu_selector"):
+                self.logger.info("Service check logout menu click: service_id=%s selector=%s", service_id, service.get("logout_menu_selector"))
+                page.runJavaScript(build_click_selector_js(service.get("logout_menu_selector")), after_logout_menu_click)
+                return
+            click_logout_button()
+
+        def after_logout_menu_click(result):
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is not None or not result.get("ok"):
+                self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "logout_menu_not_found")
+                finish("manual_required", error="Вход выполнен, но меню выхода не найдено.", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, но автоматический выход не подтверждён.")
+                return
+            self.logger.info("Service check logout menu opened: service_id=%s", service_id)
+            context["logout_menu_deadline"] = datetime.now() + timedelta(seconds=max(1, int(service.get("logout_menu_wait_seconds", 5))))
+            wait_logout_button()
+
+        def wait_logout_button():
+            if context.get("finished"):
+                return
+            page.runJavaScript(build_wait_selector_js([service.get("logout_button_selector", "")]), after_wait_logout_button)
+
+        def after_wait_logout_button(result):
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is None and result.get("found"):
+                click_logout_button()
+                return
+            if datetime.now() >= context.get("logout_menu_deadline", datetime.now()):
+                self.logger.warning("Service check logout timeout: service_id=%s", service_id)
+                finish("manual_required", error="Вход выполнен, но кнопка выхода не появилась после открытия меню.", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, но автоматический выход не подтверждён.")
+                return
+            QTimer.singleShot(500, wait_logout_button)
+
+        def click_logout_button():
+            service_id = service.get("id", "")
+            self.logger.info("Service check logout button click: service_id=%s selector=%s", service_id, service.get("logout_button_selector", ""))
+            page.runJavaScript(build_click_selector_js(service.get("logout_button_selector", "")), after_logout_button_click)
+
+        def after_logout_button_click(result):
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is not None or not result.get("ok"):
+                self.logger.warning("Service check logout failed: service_id=%s reason=%s", service_id, "logout_button_not_found")
+                finish("manual_required", error="Вход выполнен, но кнопка выхода не найдена.", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, но автоматический выход не подтверждён.")
+                return
+            context["logout_deadline"] = datetime.now() + timedelta(seconds=max(1, int(service.get("logout_wait_seconds", 10))))
+            QTimer.singleShot(500, check_logout_success)
+
+        def check_logout_success():
+            if context.get("finished"):
+                return
+            page.runJavaScript(build_wait_selector_js(service.get("logout_success_selectors", [])), after_logout_success_selectors)
+
+        def after_logout_success_selectors(result):
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is None and result.get("found"):
+                self.logger.info("Service check logout success: service_id=%s", service_id)
+                finish("ok", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, сервис работает, выход выполнен")
+                return
+            page.runJavaScript("document.body ? document.body.innerText : ''", after_logout_success_text)
+
+        def after_logout_success_text(text):
+            service_id = service.get("id", "")
+            lowered = str(text or "").casefold()
+            for marker in service.get("logout_success_texts", []):
+                if str(marker).casefold() in lowered:
+                    self.logger.info("Service check logout success: service_id=%s", service_id)
+                    finish("ok", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, сервис работает, выход выполнен")
+                    return
+            if datetime.now() >= context.get("logout_deadline", datetime.now()):
+                self.logger.warning("Service check logout timeout: service_id=%s", service_id)
+                finish("manual_required", error="Вход выполнен, но автоматический выход не подтверждён.", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, но автоматический выход не подтверждён.")
+                return
+            QTimer.singleShot(500, check_logout_success)
+
+        def after_result_selector_check(result):
+            if context.get("finished"):
+                return
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is not None:
+                self.logger.warning("Service check result selector parse failed: service_id=%s reason=%s", service_id, parse_error.get("error", "invalid_result"))
+                result = {}
+            context["result_selector_result"] = result
+            success_found = bool(result.get("success_found"))
+            error_found = bool(result.get("error_found"))
+            self.logger.info("Service check result selector check: service_id=%s success_found=%s error_found=%s", service_id, success_found, error_found)
+            if success_found:
+                self.logger.info("Service check result success selector matched: service_id=%s selector=%s", service_id, result.get("matched_success_selector", ""))
+            if error_found:
+                self.logger.info("Service check result error selector matched: service_id=%s selector=%s", service_id, result.get("matched_error_selector", ""))
+            page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)
+
+        def read_text_after_login():
+            if context.get("finished"):
+                return
+            page.runJavaScript(build_result_selector_check_js(service), after_result_selector_check)
+
+        def after_login_js(result):
+            service_id = service.get("id", "")
+            self.logger.info("Service check autofill callback received: service_id=%s result_type=%s", service_id, type(result).__name__)
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is not None:
+                self.logger.warning(
+                    "Service check autofill failed: service_id=%s reason=%s",
+                    service_id,
+                    parse_error.get("error", "invalid_result"),
+                )
+                finish("autofill_error", error=build_autofill_error_message(service, parse_error))
+                return
+            if not result.get("ok"):
+                if not result.get("error"):
+                    self.logger.warning(
+                        "Service check autofill raw result invalid: service_id=%s result_type=%s result_repr=%s",
+                        service_id,
+                        type(result).__name__,
+                        safe_autofill_result_repr(result),
+                    )
+                finish("autofill_error", error=build_autofill_error_message(service, result))
+                return
+            QTimer.singleShot(max(0, int(service.get("post_login_delay_ms", 1500))), read_text_after_login)
+
+        def autofill_wait_seconds():
+            try:
+                return max(1, int(service.get("autofill_wait_seconds") or service.get("timeout_seconds", 15)))
+            except Exception:
+                return 15
+
+        def run_hidden_autofill():
+            if context.get("finished"):
+                return
+            creds = load_service_credentials(service.get("id", ""))
+            js = self._make_service_login_js(service, creds)
+            service_id = service.get("id", "")
+            self.logger.info("Service check autofill script length: service_id=%s length=%s", service_id, len(js))
+            head, tail = safe_autofill_script_preview(js, creds)
+            self.logger.info("Service check autofill script preview: service_id=%s head=%s tail=%s", service_id, head, tail)
+            page.runJavaScript(js, after_login_js)
+
+        def start_autofill_wait():
+            context["autofill_wait_attempt"] = 0
+            context["autofill_wait_deadline"] = datetime.now() + timedelta(seconds=autofill_wait_seconds())
+            self.logger.info("Service check autofill wait started: service_id=%s", service.get("id", ""))
+            check_autofill_form_presence()
+
+        def check_autofill_form_presence():
+            if context.get("finished") or context.get("timed_out"):
+                return
+            context["autofill_wait_attempt"] = int(context.get("autofill_wait_attempt", 0)) + 1
+            page.runJavaScript(build_auth_form_presence_js(service), after_autofill_wait_js)
+
+        def after_autofill_wait_js(result):
+            if context.get("finished") or context.get("timed_out"):
+                return
+            service_id = service.get("id", "")
+            result, parse_error = normalize_service_autofill_result(self.logger, service_id, result)
+            if parse_error is not None:
+                self.logger.warning("Service check autofill wait failed: service_id=%s reason=%s", service_id, parse_error.get("error", "invalid_result"))
+                finish("autofill_error", error=build_autofill_error_message(service, parse_error))
+                return
+            diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else result
+            login_found = bool(diagnostics.get("login_found"))
+            password_found = bool(diagnostics.get("password_found"))
+            submit_found = bool(diagnostics.get("submit_found"))
+            self.logger.info(
+                "Service check autofill wait attempt: service_id=%s attempt=%s login_found=%s password_found=%s submit_found=%s",
+                service_id,
+                context.get("autofill_wait_attempt", 0),
+                login_found,
+                password_found,
+                submit_found,
+            )
+            if login_found and password_found and submit_found:
+                self.logger.info("Service check autofill form ready: service_id=%s", service_id)
+                run_hidden_autofill()
+                return
+            if datetime.now() >= context.get("autofill_wait_deadline"):
+                self.logger.warning("Service check autofill wait timeout: service_id=%s", service_id)
+                wait_result = dict(result)
+                wait_result["error"] = "missing_form_elements"
+                wait_result["missing"] = [name for name, found in (("login", login_found), ("password", password_found), ("submit", submit_found)) if not found]
+                finish("autofill_error", error=build_autofill_error_message(service, wait_result))
+                return
+            QTimer.singleShot(500, check_autofill_form_presence)
+
+        def on_loaded(ok):
+            if context.get("timed_out"):
+                return
+            context["load_finished"] = True
+            if not ok:
+                finish("load_error", error="Страница не загрузилась")
+                return
+            if service.get("auth_type") == AUTH_HTML_FORM:
+                start_autofill_wait()
+            else:
+                read_text_after_login()
+
+        def on_timeout():
+            context["timed_out"] = True
+            finish("timeout", error=f"страница не загрузилась за {service.get('timeout_seconds', 15)} секунд")
+
+        def on_certificate_error(error):
+            service_id = service.get("id", "")
+            service_name = service.get("name", "")
+            service_url = service.get("url", "")
+            self.logger.warning(
+                "Service check SSL error: service_id=%s name=%s url=%s",
+                service_id,
+                service_name,
+                service_url,
+            )
+            allow_insecure_ssl = bool(service.get("allow_insecure_ssl", False))
+            description = ""
+            try:
+                description = str(error.description() or "")
+            except Exception:
+                description = ""
+            if allow_insecure_ssl:
+                self.logger.warning("Service check SSL error accepted by config: service_id=%s", service_id)
+                context["ssl_warning"] = "SSL-сертификат был принят как внутренний/самоподписанный."
+                try:
+                    error.acceptCertificate()
+                except Exception:
+                    self.logger.exception("Service check SSL accept failed: service_id=%s", service_id)
+                    finish("ssl_error", error="Ошибка SSL-сертификата: не удалось принять сертификат сервиса.")
+                return
+
+            self.logger.warning("Service check SSL error rejected: service_id=%s", service_id)
+            try:
+                error.rejectCertificate()
+            except Exception:
+                pass
+            detail = "Ошибка SSL-сертификата: проверьте сертификат сервиса или включите “Разрешить внутренний/самоподписанный SSL-сертификат” в настройках сервиса."
+            if description:
+                detail += f" Подробности: {description}"
+            finish("ssl_error", error=detail)
+
+        try:
+            page.certificateError.connect(on_certificate_error)
+        except Exception:
+            self.logger.warning("Service check certificateError signal is not available")
+
+        timer.timeout.connect(on_timeout)
+        view.loadFinished.connect(on_loaded)
+        timer.start(timeout_ms)
+        view.load(QUrl(service.get("url", "")))
+
+    def _make_service_login_js(self, service, creds):
+        return build_auth_form_js(service, creds, blur_fields=True)
+
+    def _finish_single_service_check(self, service, result):
+        self.service_check_results = [item for item in self.service_check_results if item.get("service_id") != service.get("id")]
+        self.service_check_results.append(result)
+        self.render_service_results()
+        QTimer.singleShot(0, self._run_next_service_check)
+
+    def _finish_service_checks(self):
+        self._set_service_check_running(False)
+        stats = summarize_service_results(self.service_check_results)
+        service_status = "выполнено" if stats.get("errors", 0) == 0 and stats.get("timeouts", 0) == 0 else "требуется внимание"
+        self.service_summary_label.setText(
+            "Проверка сервисов завершена: "
+            f"OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}"
+        )
+        self.logger.info("Service checks finished: total=%s ok=%s errors=%s timeouts=%s", stats["total"], stats["ok"], stats["errors"], stats["timeouts"])
+        if self.service_checks_launched_from_duty:
+            self.duty_service_checks_status = service_status
+            self.logger.info(
+                "Duty service checks finished: status=%s ok=%s errors=%s timeouts=%s",
+                service_status,
+                stats["ok"],
+                stats["errors"],
+                stats["timeouts"],
+            )
+            self.service_checks_launched_from_duty = False
+            if self.duty_flow_services_first:
+                self.start_duty_zabbix_stage()
+            else:
+                self.update_dashboard_summary()
+
+    def open_service_check_note(self):
+        task_url = (self.get_settings().get("duty_service_checks_task_url") or self.service_settings().get("otrs_task_url", "")).strip()
+        if not task_url:
+            QMessageBox.warning(
+                self,
+                "Проверка сервисов",
+                "Задача ОТРС для проверки сервисов не указана.\nУкажите задачу в настройках проверки сервисов.",
+            )
+            return
+        note_text = build_service_check_note_text(self.config, self.service_check_results)
+        dialog = OtrsNoteDialog(
+            config=self.config,
+            note_text=note_text,
+            parent=self,
+            saved_log_message="Service check OTRS note saved",
+            initial_note_url=task_url,
+        )
+        dialog.exec()
 
     def get_settings(self):
-        settings = self.config.setdefault("duty_mode", {})
-        settings.setdefault("enabled", False)
-        settings.setdefault("hourly_notification", True)
-        settings.setdefault("skip_minutes", 5)
-        settings.setdefault("sound_path", "")
-        settings.setdefault("current_ticket_number", "")
-        settings.setdefault("current_ticket_id", "")
-        settings.setdefault("current_ticket_url", "")
-        settings.setdefault("expected_ticket_subject", "Проверка Zabbix (Важных IT-сервисов)")
-        settings.setdefault("otrs_login_enabled", False)
-        settings.setdefault("otrs_auto_submit_login", False)
-        settings.setdefault("graph_ids", [])
-        settings.setdefault("otrs", {})
-        settings["otrs"].setdefault("create_url", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentNewTicketForm;NewTicketFormID=6")
-        settings["otrs"].setdefault("note_url_base", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=")
-        settings["otrs"].setdefault("note_url_template", "")
-        return settings
+        return ensure_duty_mode_defaults(self.config)
 
     def update_enable_button(self):
         enabled = self.get_settings().get("enabled", False)
@@ -2351,23 +4196,15 @@ class DutyModeWidget(QWidget):
         self.notify_now_button.setVisible(not enabled)
         self.update_dashboard_summary()
 
-    def _task_parts(self):
+    def _zabbix_task_number(self):
         settings = self.get_settings()
-        number = settings.get("current_ticket_number", "").strip()
-        ticket_id = settings.get("current_ticket_id", "").strip()
+        return (settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number") or "").strip()
 
-        parts = []
-        if number:
-            parts.append(f"№{number}")
-        if ticket_id:
-            parts.append(f"TicketID={ticket_id}")
-        return parts
+    def _service_checks_task_number(self):
+        return self.get_settings().get("duty_service_checks_task_number", "").strip()
 
-    def _task_summary(self):
-        parts = self._task_parts()
-        if not parts:
-            return "не привязана"
-        return "привязана, " + " / ".join(parts)
+    def _task_summary(self, number):
+        return f"№{number}" if number else "не привязана"
 
     def _graphs_count(self):
         self.load_check_graphs()
@@ -2377,8 +4214,26 @@ class DutyModeWidget(QWidget):
         settings = self.get_settings()
         enabled = settings.get("enabled", False)
 
+        service_enabled = bool(settings.get("duty_service_checks_enabled", False))
+        if not service_enabled and self.duty_service_checks_status not in {"выполняется", "выполнено", "ошибка", "требуется внимание"}:
+            self.duty_service_checks_status = "отключено"
+
         self.duty_state_value.setText("включено" if enabled else "выключено")
-        self.task_state_value.setText(self._task_summary())
+        self.zabbix_task_state_value.setText(self._task_summary(self._zabbix_task_number()))
+        self.service_task_state_value.setText(self._task_summary(self._service_checks_task_number()))
+        self.zabbix_status_value.setText(self.duty_zabbix_status)
+        self.service_duty_status_value.setText(self.duty_service_checks_status if service_enabled else "отключено")
+        if hasattr(self, "duty_stage_value"):
+            self.duty_stage_value.setText("Текущий этап: " + self.duty_current_stage)
+        if hasattr(self, "duty_service_checks_enabled_checkbox"):
+            self.duty_service_checks_enabled_checkbox.blockSignals(True)
+            self.duty_service_checks_enabled_checkbox.setChecked(service_enabled)
+            self.duty_service_checks_enabled_checkbox.blockSignals(False)
+        if hasattr(self, "service_task_hint_label"):
+            self.service_task_hint_label.setText(
+                f"Задача для проверки сервисов: {self._task_summary(self._service_checks_task_number())}. "
+                f"Автозапуск в дежурстве: {'включён' if service_enabled else 'отключён'}."
+            )
         self.last_check_value.setText(
             self.last_check_at.strftime("%H:%M:%S")
             if self.last_check_at
@@ -2388,6 +4243,18 @@ class DutyModeWidget(QWidget):
 
     def update_task_label(self):
         self.update_dashboard_summary()
+
+    def set_duty_service_checks_enabled(self, enabled):
+        settings = self.get_settings()
+        settings["duty_service_checks_enabled"] = bool(enabled)
+        save_config(self.config)
+        self.duty_service_checks_status = "отключено" if not enabled else "ожидает Zabbix"
+        self.update_dashboard_summary()
+
+    def open_tasks_dialog(self):
+        dialog = DutyTasksDialog(self.config, parent=self, on_changed=self.refresh_after_settings)
+        dialog.exec()
+        self.refresh_after_settings()
 
     def toggle_enabled(self):
         settings = self.get_settings()
@@ -2410,45 +4277,23 @@ class DutyModeWidget(QWidget):
         self.update_enable_button()
 
     def ask_duty_task_flow(self):
-        """
-        При заступлении на дежурство спрашиваем,
-        есть ли уже созданная задача.
-        """
-        has_task = QMessageBox.question(
-            self,
-            "Задача дежурства",
-            "Задача для этого дежурства уже есть?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
+        """При заступлении на дежурство открываем раздельную привязку задач."""
+        self.open_tasks_dialog()
 
-        if has_task == QMessageBox.Yes:
-            self.attach_existing_task()
-            return
-
-        create_task = QMessageBox.question(
-            self,
-            "Задача дежурства",
-            "Создать новую задачу дежурства?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-
-        if create_task == QMessageBox.Yes:
-            self.open_base_duty_task()
-
-    def attach_existing_task(self):
+    def attach_existing_task(self, task_type="zabbix"):
         dialog = AttachExistingTaskDialog(
             config=self.config,
-            parent=self
+            parent=self,
+            task_type=task_type,
         )
         dialog.exec()
         self.update_task_label()
 
-    def open_base_duty_task(self):
+    def open_base_duty_task(self, task_type="zabbix"):
         dialog = OtrsCreateTaskDialog(
             config=self.config,
-            parent=self
+            parent=self,
+            task_type=task_type,
         )
         dialog.exec()
         self.update_task_label()
@@ -2517,8 +4362,7 @@ class DutyModeWidget(QWidget):
             if self.skip_timer.isActive():
                 self.skip_timer.stop()
                 self.status_label.setText("Отложенный таймер отменён: проверка начата вручную.")
-            if self.start_check():
-                self.run_duty_triggers_check()
+            self.start_duty_check_flow()
         elif dialog.result_action == "skip":
             minutes = int(self.get_settings().get("skip_minutes", 5))
             self.status_label.setText(f"Проверка отложена на {minutes} минут.")
@@ -2768,7 +4612,30 @@ class DutyModeWidget(QWidget):
         primary = active_results[0] if active_results else (self.duty_trigger_results[0] if self.duty_trigger_results else {})
         primary_trigger = primary.get("trigger", {}) if isinstance(primary, dict) else {}
 
+        service_stats = summarize_service_results(self.service_check_results)
+        zabbix_summary = f"OK={stats.get('ok', 0)}, ALERT={stats.get('alert', 0)}, ошибки={stats.get('errors', 0)}"
+        service_summary = f"total={service_stats['total']}, OK={service_stats['ok']}, ошибки={service_stats['errors']}, таймауты={service_stats['timeouts']}"
+
         return {
+            "date": checked_at.strftime("%Y-%m-%d"),
+            "time": checked_at.strftime("%H:%M"),
+            "datetime": format_dt(checked_at),
+            "duty_mode": "дежурство",
+            "operator": "",
+            "zabbix_task_number": self._zabbix_task_number(),
+            "zabbix_status": self.duty_zabbix_status,
+            "zabbix_summary": zabbix_summary,
+            "zabbix_started_at": format_dt(self.last_check_at),
+            "zabbix_finished_at": format_dt(checked_at),
+            "service_checks_task_number": self._service_checks_task_number(),
+            "service_checks_status": self.duty_service_checks_status,
+            "service_checks_total": service_stats["total"],
+            "service_checks_ok": service_stats["ok"],
+            "service_checks_errors": service_stats["errors"],
+            "service_checks_timeouts": service_stats["timeouts"],
+            "service_checks_summary": service_summary,
+            "service_checks_started_at": format_dt(self.last_check_at),
+            "service_checks_finished_at": format_dt(checked_at),
             "checked_at": format_dt(checked_at),
             "from_time": format_dt(from_dt),
             "to_time": format_dt(checked_at),
@@ -2806,16 +4673,92 @@ class DutyModeWidget(QWidget):
         stats = self.duty_trigger_stats
         self._set_duty_trigger_check_running(False)
         self._last_duty_trigger_check_finished_at = datetime.now(MSK)
+        zabbix_status = "ошибка" if stats.get("errors", 0) else ("требуется внимание" if stats.get("alert", 0) else "выполнено")
+        self.duty_zabbix_status = zabbix_status
         self.status_label.setText(
             "Проверка триггеров завершена: "
             f"OK={stats['ok']}, ALERT={stats['alert']}, ошибки={stats['errors']}."
         )
+        self.logger.info("Duty Zabbix check finished: status=%s", zabbix_status)
         self.logger.info("Duty triggers check finished: stats=%s", stats)
+        self.update_dashboard_summary()
+        if self.duty_flow_running:
+            self.finish_duty_check_flow()
 
-    def run_duty_triggers_check(self):
+    def _maybe_run_duty_service_checks_after_zabbix(self, zabbix_status):
+        # Backward-compatible no-op: duty flow now runs service checks before Zabbix.
+        if self.duty_flow_running:
+            return
+        self.finish_duty_check_flow()
+
+    def start_duty_check_flow(self):
+        if self.duty_flow_running or self.service_check_running or self.duty_trigger_running:
+            self.logger.info("Duty check ignored: reason=already_running")
+            self.status_label.setText("Дежурная проверка уже выполняется.")
+            return
+        self.duty_flow_running = True
+        self.duty_flow_services_first = False
+        self.duty_zabbix_status = "ожидает"
+        self.duty_service_checks_status = "ожидает"
+        self.duty_current_stage = "проверка сервисов"
+        self.logger.info("Duty check started")
+        service_enabled = bool(self.get_settings().get("duty_service_checks_enabled", False))
+        self.logger.info("Duty service checks enabled: value=%s", str(service_enabled).lower())
+        self.mark_check_started()
+        if service_enabled:
+            self.duty_flow_services_first = True
+            self.service_checks_launched_from_duty = True
+            self.duty_service_checks_status = "выполняется"
+            self.status_label.setText("Текущий этап: проверка сервисов")
+            self.logger.info("Duty service checks started: task_number=%s", self._service_checks_task_number() or "not_set")
+            self.update_dashboard_summary()
+            self.run_service_checks(from_duty=True)
+            return
+        self.duty_service_checks_status = "отключено"
+        self.logger.info("Duty service checks skipped: reason=disabled")
+        self.start_duty_zabbix_stage()
+
+    def start_duty_zabbix_stage(self):
+        self.duty_current_stage = "проверка Zabbix / графиков"
+        self.duty_zabbix_status = "выполняется"
+        self.status_label.setText("Текущий этап: проверка Zabbix / графиков")
+        self.update_dashboard_summary()
+        if not self.start_check():
+            self.finish_duty_check_flow()
+            return
+        self.logger.info("Duty Zabbix check started: task_number=%s", self._zabbix_task_number() or "not_set")
+        self.run_duty_triggers_check(part_of_duty_flow=True)
+
+    def finish_duty_check_flow(self):
+        self.duty_current_stage = "ожидание отправки заметок"
+        self.logger.info("Duty check finished")
+        self.update_dashboard_summary()
+        self.open_duty_summary_dialog()
+
+    def open_duty_summary_dialog(self):
+        self.duty_current_stage = "ожидание отправки заметок"
+        self.update_dashboard_summary()
+        self.logger.info("Duty summary dialog opened")
+        dialog = DutyCheckSummaryDialog(self, parent=self)
+        self.duty_summary_dialog = dialog
+        dialog.finished.connect(lambda _result: self._finish_duty_summary_dialog())
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _finish_duty_summary_dialog(self):
+        self.duty_current_stage = "завершено"
+        self.duty_flow_running = False
+        self.duty_flow_services_first = False
+        self.duty_summary_dialog = None
+        self.update_dashboard_summary()
+
+    def run_duty_triggers_check(self, part_of_duty_flow=False):
         if self.duty_trigger_running or self._hidden_trigger_contexts or self.hidden_trigger_views:
             self.status_label.setText("Проверка уже выполняется")
             self.logger.info("Duty trigger manual check skipped: check already running")
+            if part_of_duty_flow:
+                self.finish_duty_check_flow()
             return
 
         cooldown_remaining = self._duty_trigger_cooldown_remaining()
@@ -2828,20 +4771,32 @@ class DutyModeWidget(QWidget):
                 "Duty trigger check skipped: cooldown active remaining_seconds=%.1f",
                 cooldown_remaining,
             )
+            if part_of_duty_flow:
+                self.finish_duty_check_flow()
             return
 
         trigger_settings = ensure_duty_triggers_defaults(self.config)
         if not trigger_settings.get("enabled", True):
             self.status_label.setText("Проверка триггеров отключена в настройках.")
             self.logger.info("Duty triggers check skipped: disabled")
+            if part_of_duty_flow:
+                self.finish_duty_check_flow()
             return
 
         enabled_triggers = [
             trigger for trigger in trigger_settings.get("items", [])
             if trigger.get("enabled", True)
         ]
+        if not part_of_duty_flow:
+            self.logger.info("Duty check started")
+            self.logger.info("Duty service checks enabled: value=false")
+            self.logger.info("Duty service checks skipped: reason=disabled")
+            self.logger.info("Duty Zabbix check started: task_number=%s", self._zabbix_task_number() or "not_set")
+            self.duty_flow_running = True
+            self.duty_current_stage = "проверка Zabbix / графиков"
+            self.mark_check_started()
         self.logger.info("Duty trigger manual check started: enabled_count=%s", len(enabled_triggers))
-        self.mark_check_started()
+        self.duty_zabbix_status = "выполняется"
         self.status_label.setText(f"Запущена проверка триггеров: {len(enabled_triggers)} шт.")
 
         if not self.cards:
@@ -3224,7 +5179,7 @@ class DutyModeWidget(QWidget):
 
     def _bound_task_details(self):
         settings = self.get_settings()
-        ticket_number = settings.get("current_ticket_number", "").strip()
+        ticket_number = (settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number", "")).strip()
         ticket_id = settings.get("current_ticket_id", "").strip()
         ticket_url = settings.get("current_ticket_url", "").strip()
 
