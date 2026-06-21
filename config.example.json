@@ -75,5 +75,48 @@
     "night_threshold_minutes": 180,
     "mode1_night_silence_start": "01:00",
     "mode1_night_silence_end": "05:30"
+  },
+  "music_widget": {
+    "enabled": true,
+    "visible": true,
+    "collapsed": false,
+    "active_provider": "yandex_music",
+    "width": 420,
+    "height": 220,
+    "show_in_header": true,
+    "visualizer_enabled": true,
+    "visualizer_mode": "auto",
+    "visualizer_bar_count": 24,
+    "visualizer_fps": 24,
+    "visualizer_decorative_when_idle": true,
+    "providers": [
+      {
+        "id": "yandex_music",
+        "name": "Яндекс Музыка",
+        "url": "https://music.yandex.ru/",
+        "enabled": true,
+        "profile_dir": "web_profiles/music/yandex_music",
+        "cache_dir": "web_profiles/music/yandex_music_cache",
+        "open_external_if_failed": true
+      },
+      {
+        "id": "spotify",
+        "name": "Spotify",
+        "url": "https://open.spotify.com/",
+        "enabled": true,
+        "profile_dir": "web_profiles/music/spotify",
+        "cache_dir": "web_profiles/music/spotify_cache",
+        "open_external_if_failed": true
+      },
+      {
+        "id": "custom",
+        "name": "Свой плеер",
+        "url": "",
+        "enabled": false,
+        "profile_dir": "web_profiles/music/custom",
+        "cache_dir": "web_profiles/music/custom_cache",
+        "open_external_if_failed": true
+      }
+    ]
   }
 }

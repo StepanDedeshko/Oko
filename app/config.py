@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.logger import get_logger
 from app.service_checks import default_service_checks_config
+from app.music_config import default_music_widget_config, ensure_music_widget_defaults
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 CONFIG_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "config.example.json"
@@ -177,6 +178,7 @@ def _default_config():
         },
         "duty_triggers": default_duty_triggers_config(),
         "service_checks": default_service_checks_config(),
+        "music_widget": default_music_widget_config(),
         "app": {"name": "Око"},
     }
 
@@ -209,6 +211,7 @@ EXPORTABLE_CONFIG_KEYS = (
     "duty_triggers",
     "service_checks",
     "templates",
+    "music_widget",
     "app",
 )
 
