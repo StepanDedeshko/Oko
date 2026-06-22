@@ -2,7 +2,7 @@ from datetime import datetime
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtCore import QRect, QTimer, Qt, QUrl
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QWidget,
     QVBoxLayout,
+    QSizePolicy,
 )
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -31,6 +32,7 @@ from app.theme import apply_theme
 from app.theme_logo import load_theme_logo
 from app.app_info import APP_NAME
 from app.logger import get_logger
+from app.screen_utils import clamp_rect_to_available, rect_fits_available, safe_window_size
 from app.webengine_lifecycle import current_rss_mb, register_web_view, safe_delete_web_view, tracked_web_view_count
 
 
@@ -81,6 +83,12 @@ class MainWindow(QMainWindow):
         self.logger = get_logger()
 
         self.setWindowTitle(APP_NAME)
+        self.setWindowFlags(
+            Qt.Window
+            | Qt.WindowMinimizeButtonHint
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowCloseButtonHint
+        )
 
         self.stack = QStackedWidget()
 
@@ -168,17 +176,17 @@ class MainWindow(QMainWindow):
         self.addToolBar(self.toolbar)
 
         self.product_combo = QComboBox()
-        self.product_combo.setMinimumWidth(180)
+        self.configure_toolbar_combo(self.product_combo, 120, 260)
         self.product_combo.currentIndexChanged.connect(self.on_product_changed)
         self.product_combo.activated.connect(self.on_product_changed)
 
         self.section_combo = QComboBox()
-        self.section_combo.setMinimumWidth(180)
+        self.configure_toolbar_combo(self.section_combo, 120, 260)
         self.section_combo.currentIndexChanged.connect(self.on_section_changed)
         self.section_combo.activated.connect(self.on_section_changed)
 
         self.time_combo = QComboBox()
-        self.time_combo.setMinimumWidth(130)
+        self.configure_toolbar_combo(self.time_combo, 100, 180)
         for item in self.config.get("time_ranges", []):
             self.time_combo.addItem(item.get("title", ""), item.get("value", ""))
 
@@ -223,6 +231,14 @@ class MainWindow(QMainWindow):
         self.time_label_action = self.toolbar.addWidget(QLabel("Период: "))
         self.time_combo_action = self.toolbar.addWidget(self.time_combo)
         self.toolbar.addSeparator()
+
+    def configure_toolbar_combo(self, combo, minimum_width, maximum_width):
+        combo.setMinimumWidth(minimum_width)
+        combo.setMaximumWidth(maximum_width)
+        combo.setMinimumContentsLength(12)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        combo.view().setTextElideMode(Qt.ElideRight)
 
 
     def create_shortcuts(self):
@@ -769,56 +785,72 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Не удалось запустить удаление: {error}")
 
     def apply_initial_window_mode(self):
-        mode = self.settings.get("window_mode", "maximized")
-
         startup_geometry = self.config.get("_startup_screen_geometry") or {}
 
+        available = None
         if startup_geometry:
-            class _RectLike:
-                def __init__(self, data):
-                    self._data = data
-
-                def x(self): return int(self._data.get("x", 0))
-                def y(self): return int(self._data.get("y", 0))
-                def width(self): return int(self._data.get("width", 1500))
-                def height(self): return int(self._data.get("height", 900))
-
-            available = _RectLike(startup_geometry)
-            width = int(available.width() * float(self.settings.get("window_width_percent", 0.98)))
-            height = int(available.height() * float(self.settings.get("window_height_percent", 0.95)))
-            self.resize(width, height)
-            self.move(
-                available.x() + int((available.width() - width) / 2),
-                available.y() + int((available.height() - height) / 2)
+            available = QRect(
+                int(startup_geometry.get("x", 0)),
+                int(startup_geometry.get("y", 0)),
+                int(startup_geometry.get("width", 1024)),
+                int(startup_geometry.get("height", 768)),
             )
         else:
             screen = QGuiApplication.primaryScreen()
             if screen:
                 available = screen.availableGeometry()
-                width = int(available.width() * float(self.settings.get("window_width_percent", 0.98)))
-                height = int(available.height() * float(self.settings.get("window_height_percent", 0.95)))
-                self.resize(width, height)
-                self.move(
-                    available.x() + int((available.width() - width) / 2),
-                    available.y() + int((available.height() - height) / 2)
-                )
-            else:
-                self.resize(1500, 900)
 
-        if mode == "fullscreen":
-            self.showFullScreen()
-        elif mode == "maximized":
-            self.showMaximized()
-        else:
-            self.showNormal()
+        if available is None:
+            available = QRect(0, 0, 1024, 768)
+
+        width_percent = float(self.settings.get("window_width_percent", 0.92))
+        height_percent = float(self.settings.get("window_height_percent", 0.88))
+        desired_width = int(available.width() * width_percent)
+        desired_height = int(available.height() * height_percent)
+        size, minimum = safe_window_size(
+            available,
+            desired_width=desired_width,
+            desired_height=desired_height,
+            margin=40,
+            min_width=640,
+            min_height=480,
+        )
+        self.setMinimumSize(minimum)
+        rect = QRect(
+            available.x() + int((available.width() - size.width()) / 2),
+            available.y() + int((available.height() - size.height()) / 2),
+            size.width(),
+            size.height(),
+        )
+        rect = clamp_rect_to_available(rect, available, margin=20)
+        if not rect_fits_available(rect, available):
+            self.logger.warning(
+                "Saved/startup window geometry does not fit current availableGeometry; resetting: rect=%s available=%s",
+                rect,
+                available,
+            )
+            rect = clamp_rect_to_available(rect, available, margin=20)
+        self.setGeometry(rect)
+        self.showNormal()
+
+        screen = self.windowHandle().screen() if self.windowHandle() else QGuiApplication.primaryScreen()
+        if screen:
+            self.logger.info(
+                "Main window startup geometry: screen=%s geometry=%s available=%s dpr=%s window=%s",
+                screen.name(),
+                screen.geometry(),
+                screen.availableGeometry(),
+                screen.devicePixelRatio(),
+                self.geometry(),
+            )
 
 
     def toggle_fullscreen(self):
         if self.isFullScreen():
-            self.showMaximized()
+            self.showNormal()
         else:
             self.showFullScreen()
 
     def exit_fullscreen(self):
         if self.isFullScreen():
-            self.showMaximized()
+            self.showNormal()

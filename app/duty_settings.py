@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -24,6 +26,7 @@ from PySide6.QtWidgets import (
 from app.config import default_trigger_item, ensure_duty_mode_defaults, ensure_duty_triggers_defaults, save_config
 from app.logger import get_logger
 from app.safe_widgets import NoWheelComboBox, NoWheelSpinBox
+from app.screen_utils import available_geometry_for_widget, center_widget_on_screen, safe_window_size
 
 
 TRIGGER_MODES = {
@@ -38,11 +41,18 @@ class DutyTriggerEditDialog(QDialog):
     def __init__(self, trigger=None, parent=None, config=None):
         super().__init__(parent)
         self.setWindowTitle("Триггер дежурства")
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
+        self.setSizeGripEnabled(True)
         self.trigger = deepcopy(trigger) if trigger else default_trigger_item()
         self.config = config or {}
 
         root = QVBoxLayout(self)
-        form = QFormLayout()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        form_widget = QWidget()
+        form = QFormLayout(form_widget)
+        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.id_input = QLineEdit(self.trigger.get("id", ""))
         self.enabled_checkbox = QCheckBox("Триггер включён")
@@ -82,7 +92,8 @@ class DutyTriggerEditDialog(QDialog):
         form.addRow("Режим:", self.mode_combo)
         form.addRow("Текст нормы:", self.ok_text_input)
         form.addRow("Шаблон тревоги:", self.alert_template_input)
-        root.addLayout(form)
+        scroll.setWidget(form_widget)
+        root.addWidget(scroll, stretch=1)
 
         hint = QLabel("Поля source/target можно оставить пустыми на этапе настройки. Триггер не будет готов к работе до полной привязки source → target.")
         hint.setWordWrap(True)
@@ -92,6 +103,7 @@ class DutyTriggerEditDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+        self.apply_safe_dialog_geometry()
 
     def create_combo_line(self, values, current):
         combo = NoWheelComboBox()
@@ -103,7 +115,28 @@ class DutyTriggerEditDialog(QDialog):
                 combo.addItem(value)
                 seen.add(value)
         combo.setCurrentText(str(current or ""))
+        combo.setMinimumContentsLength(12)
+        combo.setSizeAdjustPolicy(NoWheelComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumWidth(180)
+        combo.setMaximumWidth(520)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        combo.view().setTextElideMode(Qt.ElideRight)
         return combo
+
+
+    def apply_safe_dialog_geometry(self):
+        available = available_geometry_for_widget(self.parentWidget() or self)
+        size, minimum = safe_window_size(
+            available,
+            desired_width=760,
+            desired_height=620,
+            margin=80,
+            min_width=520,
+            min_height=420,
+        )
+        self.setMinimumSize(minimum)
+        self.resize(size)
+        center_widget_on_screen(self, screen=None, margin=40)
 
     def combo_text(self, combo):
         return combo.currentText().strip()
@@ -236,22 +269,30 @@ class DutyModeSettingsWidget(QWidget):
 
     def add_section_page(self, section_name, builder):
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setSpacing(10)
+        outer = QVBoxLayout(page)
+        outer.setSpacing(10)
 
         back = QPushButton("← Назад к настройкам дежурки")
         back.clicked.connect(self.open_menu)
-        layout.addWidget(back)
+        outer.addWidget(back)
 
         title = QLabel(section_name)
         title.setStyleSheet("font-size: 16px; font-weight: bold;")
-        layout.addWidget(title)
+        outer.addWidget(title)
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setSpacing(10)
         builder(layout)
 
         if section_name not in {"Графики", "Триггеры"}:
             layout.addStretch(1)
 
+        scroll.setWidget(body)
+        outer.addWidget(scroll, stretch=1)
         self.section_indexes[section_name] = self.stack.addWidget(page)
 
     def open_menu(self):

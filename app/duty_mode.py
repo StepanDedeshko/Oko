@@ -40,7 +40,7 @@ from app.autologin import make_zabbix_login_js
 from app.config import ensure_duty_mode_defaults, ensure_duty_triggers_defaults, save_config
 from app.credentials import load_otrs_credentials, load_service_credentials
 from app.duty_settings import DutyModeSettingsWidget
-from app.duty_triggers import evaluate_stagnation_trigger
+from app.duty_triggers import diagnose_metric_html, evaluate_stagnation_trigger
 from app.logger import get_logger
 from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
@@ -132,8 +132,8 @@ DUTY_TRIGGER_STATUS_MESSAGES = {
 }
 
 DUTY_TRIGGER_CHECK_COOLDOWN_SECONDS = 3
-DUTY_TRIGGER_HIDDEN_WEBVIEW_TIMEOUT_MS = 15000
-DUTY_TRIGGER_HTML_READ_DELAY_MS = 1500
+DUTY_TRIGGER_HIDDEN_WEBVIEW_TIMEOUT_MS = 30000
+DUTY_TRIGGER_HTML_READ_DELAY_MS = 8000
 
 
 def resolve_graph_surface_colors():
@@ -324,7 +324,7 @@ class GraphCheckOverlayDialog(QDialog):
         self.setWindowTitle("Проверка графиков")
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
-        self.setMinimumSize(900, 650)
+        # Minimum size is clamped in _resize_to_work_area() so the window manager can still resize on small work areas.
 
         app = QApplication.instance()
         self.theme_name = "mass_effect"
@@ -412,8 +412,11 @@ class GraphCheckOverlayDialog(QDialog):
             return
 
         geometry = screen.availableGeometry()
-        width = max(900, int(geometry.width() * 0.92))
-        height = max(650, int(geometry.height() * 0.92))
+        max_width = max(1, geometry.width() - 80)
+        max_height = max(1, geometry.height() - 80)
+        width = min(max_width, max(520, int(geometry.width() * 0.92)))
+        height = min(max_height, max(420, int(geometry.height() * 0.92)))
+        self.setMinimumSize(min(520, max_width), min(420, max_height))
         self.resize(width, height)
         self.move(
             geometry.x() + (geometry.width() - width) // 2,
@@ -4899,6 +4902,7 @@ class DutyModeWidget(QWidget):
             "view": view,
             "page": page,
             "trigger": trigger,
+            "source_url": source_url,
             "load_handler": None,
             "timeout_timer": QTimer(self),
             "read_timer": QTimer(self),
@@ -4915,7 +4919,13 @@ class DutyModeWidget(QWidget):
                 return
             ctx["completed"] = True
             t = ctx.get("trigger") or {}
-            self.logger.error("Duty trigger hidden WebView timeout: id=%s", t.get("id", ""))
+            self.logger.error(
+                "Duty trigger hidden WebView timeout: id=%s display_name=%s timeout_ms=%s source_url_present=%s",
+                t.get("id", ""),
+                t.get("display_name", ""),
+                DUTY_TRIGGER_HIDDEN_WEBVIEW_TIMEOUT_MS,
+                bool(ctx.get("source_url")),
+            )
             self.logger.error("Duty trigger finished with error: id=%s reason=timeout", t.get("id", ""))
             self._cleanup_hidden_view(ctx)
             self._finish_trigger_without_html(t, "ERROR", reason="timeout")
@@ -5047,7 +5057,8 @@ class DutyModeWidget(QWidget):
         if context.get("completed"):
             return
         context["completed"] = True
-        trigger = context.get("trigger") or {}
+        trigger = dict(context.get("trigger") or {})
+        trigger["_source_url"] = context.get("source_url", "")
         self._cleanup_hidden_view(context)
         try:
             self._after_duty_trigger_html(trigger, html)
@@ -5085,14 +5096,41 @@ class DutyModeWidget(QWidget):
 
     def _after_duty_trigger_html(self, trigger, html):
         html = html or ""
+        plain_text = re.sub(r"<[^>]+>", " ", html)
+        plain_text = " ".join(plain_text.split())
+        diagnostics = diagnose_metric_html(html, trigger.get("metric_title", ""))
+        has_login_form = diagnostics.get("has_login_form", False)
+        metric_title_present = diagnostics.get("metric_title_present", False)
         self.logger.info(
-            "Duty trigger HTML received: id=%s display_name=%s html_received=%s",
+            "Duty trigger source HTML diagnostics: id=%s display_name=%s source_product=%s source_section=%s source_url_present=%s target_product=%s target_section=%s target_graph_title=%s html_received=%s html_length=%s plain_text_length=%s has_login_form=%s metric_title_present=%s",
             trigger.get("id", ""),
             trigger.get("display_name", ""),
-            bool(html),
+            trigger.get("source_product", ""),
+            trigger.get("source_section", ""),
+            bool(trigger.get("_source_url", "") or html),
+            trigger.get("target_product", ""),
+            trigger.get("target_section", ""),
+            trigger.get("target_graph_title", ""),
+            bool(html.strip()),
+            len(html),
+            len(plain_text),
+            has_login_form,
+            metric_title_present,
+        )
+        self.logger.info(
+            "Duty trigger parse diagnostics: id=%s tables_count=%s matched_table=%s rows_count=%s parseable_rows_count=%s timestamp_parse_errors=%s value_cells_missing=%s",
+            trigger.get("id", ""),
+            diagnostics.get("tables_count"),
+            diagnostics.get("matched_table"),
+            diagnostics.get("rows_count"),
+            diagnostics.get("parseable_rows_count"),
+            diagnostics.get("timestamp_parse_errors"),
+            diagnostics.get("value_cells_missing"),
         )
         if not html.strip():
-            result = {"status": "NO_DATA", "message": DUTY_TRIGGER_STATUS_MESSAGES["NO_DATA"]}
+            result = {"status": "NO_DATA", "message": DUTY_TRIGGER_STATUS_MESSAGES["NO_DATA"], "no_data_reason": "html_empty"}
+        elif has_login_form:
+            result = {"status": "NO_DATA", "message": DUTY_TRIGGER_STATUS_MESSAGES["NO_DATA"], "no_data_reason": "login_page_detected"}
         else:
             trigger_settings = ensure_duty_triggers_defaults(self.config)
             result = evaluate_stagnation_trigger(
@@ -5111,6 +5149,14 @@ class DutyModeWidget(QWidget):
 
         status = str(result.get("status", "NO_DATA") or "NO_DATA").upper()
         if status == "NO_DATA":
+            if not result.get("no_data_reason"):
+                result["no_data_reason"] = diagnostics.get("no_data_reason", "unknown")
+            self.logger.warning(
+                "Duty trigger NO_DATA reason=%s id=%s display_name=%s",
+                result.get("no_data_reason"),
+                trigger.get("id", ""),
+                trigger.get("display_name", ""),
+            )
             result["message"] = DUTY_TRIGGER_STATUS_MESSAGES["NO_DATA"]
         elif status == "PARSE_ERROR":
             result["message"] = DUTY_TRIGGER_STATUS_MESSAGES["PARSE_ERROR"]
