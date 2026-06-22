@@ -271,6 +271,82 @@ def evaluate_stagnation(
     return series.duration_minutes > night_threshold_minutes
 
 
+def diagnose_metric_html(html_text: str, metric_title: str) -> dict[str, Any]:
+    """Return parser diagnostics for duty-trigger NO_DATA logging."""
+
+    html_text = html_text or ""
+    normalized_html = _normalize_text(html_text).lower()
+    target_title = _normalize_text(metric_title)
+    parser = _MetricTableParser()
+    parser.feed(html_text)
+    has_login_form = any(marker in normalized_html for marker in (
+        "name=\"password\"",
+        "type=\"password\"",
+        "zabbix",
+        "sign in",
+        "вход",
+        "логин",
+        "пароль",
+    )) and ("password" in normalized_html or "пароль" in normalized_html)
+    result: dict[str, Any] = {
+        "html_length": len(html_text),
+        "tables_count": len(parser.tables),
+        "matched_table": False,
+        "rows_count": 0,
+        "parseable_rows_count": 0,
+        "timestamp_parse_errors": 0,
+        "value_cells_missing": 0,
+        "has_login_form": has_login_form,
+        "metric_title_present": bool(target_title and target_title in _normalize_text(html_text)),
+        "no_data_reason": "unknown",
+    }
+    if not html_text.strip():
+        result["no_data_reason"] = "html_empty"
+        return result
+    if has_login_form:
+        result["no_data_reason"] = "login_page_detected"
+    if target_title and not result["metric_title_present"]:
+        result["no_data_reason"] = "metric_title_not_found"
+
+    for table in parser.tables:
+        header_titles: list[str] = []
+        for header in table["headers"]:
+            header_titles.extend(_normalize_text(title) for title in header["span_titles"])
+            if header["text"]:
+                header_titles.append(header["text"])
+        if target_title not in header_titles:
+            continue
+        result["matched_table"] = True
+        result["rows_count"] = len(table["rows"])
+        for row in table["rows"]:
+            timestamp_text = None
+            value_text = None
+            for cell in row["cells"]:
+                if timestamp_text is None and "nowrap" in cell["classes"] and cell["text"]:
+                    timestamp_text = cell["text"]
+                if value_text is None and cell["pre_text"]:
+                    value_text = cell["pre_text"]
+            if timestamp_text is None or value_text is None:
+                result["value_cells_missing"] += 1
+                continue
+            try:
+                datetime.strptime(timestamp_text, DATETIME_FORMAT)
+            except ValueError:
+                result["timestamp_parse_errors"] += 1
+                continue
+            result["parseable_rows_count"] += 1
+        if result["rows_count"] == 0:
+            result["no_data_reason"] = "table_rows_empty"
+        elif result["parseable_rows_count"] == 0:
+            result["no_data_reason"] = "timestamp_or_value_not_parsed"
+        else:
+            result["no_data_reason"] = "data_found"
+        return result
+
+    if result["no_data_reason"] == "unknown":
+        result["no_data_reason"] = "page_not_ready_or_metric_table_not_found"
+    return result
+
 def evaluate_stagnation_trigger(
     html_text: str,
     metric_title: str,
@@ -295,9 +371,13 @@ def evaluate_stagnation_trigger(
     except DutyTriggerParseError as exc:
         return _empty_result(STATUS_PARSE_ERROR, str(exc), metric_name, actual_check_time)
 
+    diagnostics = diagnose_metric_html(html_text, metric_name)
     series = find_stable_series(rows, actual_check_time, metric_name)
     if series is None:
-        return _empty_result(STATUS_NO_DATA, "Metric table or rows not found", metric_name, actual_check_time)
+        result = _empty_result(STATUS_NO_DATA, "Metric table or rows not found", metric_name, actual_check_time)
+        result["no_data_reason"] = diagnostics.get("no_data_reason", "unknown")
+        result["diagnostics"] = diagnostics
+        return result
 
     is_alert = evaluate_stagnation(
         series,
