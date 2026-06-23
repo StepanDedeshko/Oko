@@ -331,6 +331,7 @@ import csv
 import hashlib
 import io
 import json
+import re
 import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -352,12 +353,228 @@ class ZabbixProblem:
     handled: bool = False
     raw: dict = field(default_factory=dict)
     key: str = ""
+    matched_trigger_id: str | None = None
+    matched_trigger_name: str | None = None
+    matched_trigger_description: str | None = None
+    matched_trigger_category: str | None = None
+    matched_trigger_enabled: bool = False
+    trigger_known: bool = False
 
     def get(self, key, default=None):
         return getattr(self, key, default)
 
     def to_dict(self):
         return asdict(self)
+
+
+@dataclass
+class ZabbixTriggerCatalogEntry:
+    id: str
+    enabled: bool
+    name: str
+    description: str
+    category: str
+    source_sheets: list[str] = field(default_factory=list)
+    match_type: str = "zabbix_template"
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def to_dict(self):
+        return asdict(self)
+
+
+def zabbix_trigger_catalog_path(base_dir=None):
+    base = Path(base_dir) if base_dir is not None else Path(__file__).resolve().parent.parent
+    return base / "data" / "zabbix_trigger_catalog.json"
+
+
+def normalize_zabbix_trigger_name(value: str) -> str:
+    text = " ".join(str(value or "").replace("\ufeff", "").replace("\n", " ").replace("\r", " ").split()).strip()
+    text = text.strip('"“”«»')
+    return text.casefold()
+
+
+def _trigger_id_from_name(name):
+    normalized = normalize_zabbix_trigger_name(name)
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    slug = re.sub(r"[^a-z0-9а-яё]+", "_", normalized, flags=re.IGNORECASE).strip("_")[:48]
+    return f"{slug or 'trigger'}_{digest}"
+
+
+def _catalog_entry_from_dict(item):
+    if isinstance(item, ZabbixTriggerCatalogEntry):
+        return item
+    if not isinstance(item, dict):
+        return None
+    name = str(item.get("name", "") or "").strip()
+    if not name:
+        return None
+    return ZabbixTriggerCatalogEntry(
+        id=str(item.get("id") or _trigger_id_from_name(name)),
+        enabled=bool(item.get("enabled", True)),
+        name=name,
+        description=str(item.get("description", "") or ""),
+        category=str(item.get("category", "") or "Не указана"),
+        source_sheets=list(item.get("source_sheets", []) or []),
+        match_type=str(item.get("match_type", "zabbix_template") or "zabbix_template"),
+    )
+
+
+def zabbix_trigger_catalog_to_payload(entries):
+    normalized_entries = [_catalog_entry_from_dict(entry) for entry in entries or []]
+    normalized_entries = [entry for entry in normalized_entries if entry is not None]
+    return {"version": 1, "triggers": [entry.to_dict() for entry in normalized_entries]}
+
+
+def save_zabbix_trigger_catalog(entries, base_dir=None, config=None):
+    entries = [_catalog_entry_from_dict(entry) for entry in entries or []]
+    entries = [entry for entry in entries if entry is not None]
+    payload = {"version": 1, "triggers": [entry.to_dict() for entry in entries]}
+    path = zabbix_trigger_catalog_path(base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if isinstance(config, dict):
+        config["zabbix_trigger_catalog"] = payload
+    return path
+
+
+def load_zabbix_trigger_catalog(base_dir=None, config=None, logger=None):
+    payload = None
+    path = zabbix_trigger_catalog_path(base_dir)
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            if logger is not None:
+                logger.warning("Failed to read Zabbix trigger catalog: path=%s error=%s", path, exc)
+    if payload is None and isinstance(config, dict):
+        payload = config.get("zabbix_trigger_catalog")
+    triggers = (payload or {}).get("triggers", []) if isinstance(payload, dict) else []
+    entries = [_catalog_entry_from_dict(item) for item in triggers]
+    return [entry for entry in entries if entry is not None]
+
+
+def _norm_header(value):
+    return normalize_zabbix_trigger_name(value)
+
+
+def _cell_text(value):
+    return " ".join(str(value or "").replace("\n", " ").replace("\r", " ").split()).strip()
+
+
+def import_zabbix_trigger_catalog_from_xlsx(path: Path) -> list[ZabbixTriggerCatalogEntry]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError("Для импорта XLSX установите зависимость openpyxl.") from exc
+
+    workbook = load_workbook(Path(path), read_only=True, data_only=True)
+    sheet_specs = {
+        "Оборудование": {"name": "наименование", "description": "описание", "category": None, "default_category": "Оборудование"},
+        "Общий список": {"name": "фп", "description": "описание", "category": "категория (по/оборудование)", "default_category": "Не указана"},
+        "Лист1": {"name": "наименование", "description": "описание", "category": None, "default_category": "Общий"},
+    }
+    by_name = {}
+    for sheet_name, spec in sheet_specs.items():
+        if sheet_name not in workbook.sheetnames:
+            continue
+        sheet = workbook[sheet_name]
+        rows = sheet.iter_rows(values_only=True)
+        try:
+            headers = next(rows)
+        except StopIteration:
+            continue
+        header_map = {_norm_header(header): index for index, header in enumerate(headers or []) if _norm_header(header)}
+        name_index = header_map.get(spec["name"])
+        if name_index is None:
+            continue
+        desc_index = header_map.get(spec["description"])
+        cat_index = header_map.get(spec["category"]) if spec.get("category") else None
+        for row in rows:
+            row = list(row or [])
+            name = _cell_text(row[name_index] if name_index < len(row) else "")
+            if not name:
+                continue
+            description = _cell_text(row[desc_index] if desc_index is not None and desc_index < len(row) else "")
+            category = _cell_text(row[cat_index] if cat_index is not None and cat_index < len(row) else "") or spec["default_category"]
+            normalized = normalize_zabbix_trigger_name(name)
+            existing = by_name.get(normalized)
+            if existing is None:
+                by_name[normalized] = ZabbixTriggerCatalogEntry(
+                    id=_trigger_id_from_name(name),
+                    enabled=True,
+                    name=name,
+                    description=description,
+                    category=category or "Не указана",
+                    source_sheets=[sheet_name],
+                    match_type="zabbix_template",
+                )
+            else:
+                if sheet_name not in existing.source_sheets:
+                    existing.source_sheets.append(sheet_name)
+                if not existing.description and description:
+                    existing.description = description
+                if existing.category in {"", "Не указана"} and category:
+                    existing.category = category
+    return list(by_name.values())
+
+
+def match_zabbix_problem_to_trigger(problem_text: str, trigger_pattern: str, match_type: str = "zabbix_template") -> bool:
+    problem = normalize_zabbix_trigger_name(problem_text)
+    pattern = normalize_zabbix_trigger_name(trigger_pattern)
+    match_type = str(match_type or "zabbix_template").casefold()
+    if not problem or not pattern:
+        return False
+    if match_type == "exact":
+        return problem == pattern
+    if match_type == "contains":
+        return pattern in problem
+    if match_type == "regex":
+        try:
+            return re.search(trigger_pattern, problem_text or "", flags=re.IGNORECASE) is not None
+        except re.error:
+            return False
+    parts = re.split(r"(\{[^{}]+\})", pattern)
+    regex = "".join(".*?" if part.startswith("{") and part.endswith("}") else re.escape(part) for part in parts)
+    try:
+        return re.fullmatch(regex, problem, flags=re.IGNORECASE) is not None
+    except re.error:
+        return False
+
+
+def _set_problem_field(problem, key, value):
+    if isinstance(problem, ZabbixProblem):
+        setattr(problem, key, value)
+    elif isinstance(problem, dict):
+        problem[key] = value
+
+
+def annotate_zabbix_problems_with_trigger_catalog(problems, catalog_entries):
+    entries = [_catalog_entry_from_dict(entry) for entry in catalog_entries or []]
+    entries = [entry for entry in entries if entry is not None]
+    for problem in problems or []:
+        text = _problem_attr(problem, "problem") or _problem_attr(problem, "raw_text")
+        matches = [entry for entry in entries if match_zabbix_problem_to_trigger(text, entry.name, entry.match_type)]
+        enabled_match = next((entry for entry in matches if entry.enabled), None)
+        selected = enabled_match or (matches[0] if matches else None)
+        _set_problem_field(problem, "trigger_known", bool(selected))
+        _set_problem_field(problem, "matched_trigger_enabled", bool(selected.enabled) if selected else False)
+        _set_problem_field(problem, "matched_trigger_id", selected.id if selected else None)
+        _set_problem_field(problem, "matched_trigger_name", selected.name if selected else None)
+        _set_problem_field(problem, "matched_trigger_description", selected.description if selected else None)
+        _set_problem_field(problem, "matched_trigger_category", selected.category if selected else None)
+    return problems
+
+
+def zabbix_problem_visible_by_trigger_filters(problem, show_enabled=True, show_unknown=True, show_disabled=False):
+    known = bool(_problem_attr(problem, "trigger_known"))
+    enabled = bool(_problem_attr(problem, "matched_trigger_enabled"))
+    if known and enabled:
+        return bool(show_enabled)
+    if known and not enabled:
+        return bool(show_disabled)
+    return bool(show_unknown)
 
 
 CSV_HEADER_MAP = {

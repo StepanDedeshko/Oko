@@ -13,7 +13,15 @@ from app.duty_zabbix import (
     filter_problems_by_period,
     find_problems_page_url,
     format_zabbix_problems_note_block,
+    import_zabbix_trigger_catalog_from_xlsx,
     load_handled_zabbix_problems,
+    match_zabbix_problem_to_trigger,
+    normalize_zabbix_trigger_name,
+    save_zabbix_trigger_catalog,
+    load_zabbix_trigger_catalog,
+    annotate_zabbix_problems_with_trigger_catalog,
+    zabbix_problem_visible_by_trigger_filters,
+    ZabbixTriggerCatalogEntry,
     make_zabbix_problem_key,
     mark_zabbix_problems_handled,
     normalize_problem_row,
@@ -201,6 +209,84 @@ class DutyZabbixTests(unittest.TestCase):
         ])
         self.assertIn('1. Время не указано, Важность не указана, Узел не указан, Проблема не указана. - "Ссылка на задачу в Redmine"', block)
         self.assertIn("Примечание: проблема уже была добавлена в задачу ранее.", block)
+
+    def test_match_zabbix_problem_to_trigger_modes(self):
+        self.assertTrue(match_zabbix_problem_to_trigger("CPU high", "CPU high", "exact"))
+        self.assertTrue(match_zabbix_problem_to_trigger("CPU load is high", "load", "contains"))
+        self.assertTrue(match_zabbix_problem_to_trigger("db-01 down", r"db-\d+ down", "regex"))
+        self.assertTrue(match_zabbix_problem_to_trigger("unreachable for 5m", "unreachable for {$AGENT.TIMEOUT}"))
+        self.assertTrue(match_zabbix_problem_to_trigger("server-01 unavailable", "{HOST.NAME} unavailable"))
+        self.assertFalse(match_zabbix_problem_to_trigger("CPU high", "Memory high", "exact"))
+
+    def test_trigger_catalog_annotation_and_visibility_filters(self):
+        enabled = ZabbixTriggerCatalogEntry(
+            id="enabled", enabled=True, name="unreachable for {$AGENT.TIMEOUT}",
+            description="Agent", category="Оборудование", source_sheets=["Оборудование"],
+        )
+        disabled = ZabbixTriggerCatalogEntry(
+            id="disabled", enabled=False, name="CPU high",
+            description="CPU", category="ПО", source_sheets=["Общий список"],
+        )
+        problems = [
+            {"problem": "unreachable for 5m"},
+            {"problem": "CPU high"},
+            {"problem": "Unknown trigger"},
+        ]
+        annotate_zabbix_problems_with_trigger_catalog(problems, [enabled, disabled])
+        self.assertTrue(problems[0]["trigger_known"])
+        self.assertTrue(problems[0]["matched_trigger_enabled"])
+        self.assertTrue(problems[1]["trigger_known"])
+        self.assertFalse(problems[1]["matched_trigger_enabled"])
+        self.assertFalse(problems[2]["trigger_known"])
+        self.assertTrue(zabbix_problem_visible_by_trigger_filters(problems[0]))
+        self.assertFalse(zabbix_problem_visible_by_trigger_filters(problems[1]))
+        self.assertTrue(zabbix_problem_visible_by_trigger_filters(problems[1], show_disabled=True))
+        self.assertTrue(zabbix_problem_visible_by_trigger_filters(problems[2]))
+        self.assertFalse(zabbix_problem_visible_by_trigger_filters(problems[2], show_unknown=False))
+
+    def test_save_and_load_zabbix_trigger_catalog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = ZabbixTriggerCatalogEntry(
+                id="trigger1", enabled=False, name="CPU high", description="CPU",
+                category="ПО", source_sheets=["Общий список"],
+            )
+            config = {}
+            save_zabbix_trigger_catalog([entry], base_dir=tmp, config=config)
+            loaded = load_zabbix_trigger_catalog(base_dir=tmp)
+            self.assertEqual(len(loaded), 1)
+            self.assertFalse(loaded[0].enabled)
+            self.assertEqual(config["zabbix_trigger_catalog"]["triggers"][0]["enabled"], False)
+
+    def test_import_zabbix_trigger_catalog_from_xlsx_sheets(self):
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            self.skipTest("openpyxl is not installed in test environment")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "catalog.xlsx"
+            workbook = Workbook()
+            ws = workbook.active
+            ws.title = "Оборудование"
+            ws.append(["Наименование", "Описание"])
+            ws.append(["unreachable for {$AGENT.TIMEOUT}", "Agent unavailable"])
+            ws.append(["", "empty row skipped"])
+            common = workbook.create_sheet("Общий список")
+            common.append(["ФП", "Описание", "Категория (ПО/Оборудование)"])
+            common.append(["CPU high", "CPU alert", "ПО"])
+            common.append(["unreachable for {$AGENT.TIMEOUT}", "Duplicate", "Оборудование"])
+            sheet1 = workbook.create_sheet("Лист1")
+            sheet1.append(["Наименование", "Описание"])
+            sheet1.append(["Memory high", "Memory alert"])
+            workbook.save(path)
+
+            entries = import_zabbix_trigger_catalog_from_xlsx(path)
+            by_name = {normalize_zabbix_trigger_name(entry.name): entry for entry in entries}
+            self.assertEqual(len(entries), 3)
+            self.assertEqual(by_name[normalize_zabbix_trigger_name("CPU high")].category, "ПО")
+            self.assertEqual(by_name[normalize_zabbix_trigger_name("Memory high")].category, "Общий")
+            self.assertEqual(by_name[normalize_zabbix_trigger_name("unreachable for {$AGENT.TIMEOUT}")].category, "Оборудование")
+            self.assertIn("Общий список", by_name[normalize_zabbix_trigger_name("unreachable for {$AGENT.TIMEOUT}")].source_sheets)
+            self.assertTrue(all(entry.enabled for entry in entries))
 
 
 if __name__ == "__main__":

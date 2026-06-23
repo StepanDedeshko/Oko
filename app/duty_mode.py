@@ -96,6 +96,9 @@ from app.duty_zabbix import (
     format_zabbix_problems_note_block,
     load_compared_zabbix_problem_exports,
     load_handled_zabbix_problems,
+    load_zabbix_trigger_catalog,
+    annotate_zabbix_problems_with_trigger_catalog,
+    zabbix_problem_visible_by_trigger_filters,
     mark_zabbix_problems_handled,
     normalize_problem_row,
     problem_matches_keywords,
@@ -343,6 +346,9 @@ class ZabbixProblemsSelectionDialog(QDialog):
         self.export_dir = export_dir
         self.selected_problems = []
         self.period_days = 1
+        self.show_enabled_triggers_checkbox = None
+        self.show_unknown_triggers_checkbox = None
+        self.show_disabled_triggers_checkbox = None
         self.setWindowTitle("Замеченные проблемы Zabbix")
         self.resize(1180, 620)
 
@@ -365,13 +371,25 @@ class ZabbixProblemsSelectionDialog(QDialog):
         self.show_resolved_checkbox.toggled.connect(self.render_table)
         self.hide_handled_checkbox = QCheckBox("Скрыть уже обработанные")
         self.hide_handled_checkbox.toggled.connect(self.render_table)
+        self.show_enabled_triggers_checkbox = QCheckBox("Показывать включённые триггеры")
+        self.show_enabled_triggers_checkbox.setChecked(True)
+        self.show_enabled_triggers_checkbox.toggled.connect(self.render_table)
+        self.show_unknown_triggers_checkbox = QCheckBox("Показывать нераспознанные")
+        self.show_unknown_triggers_checkbox.setChecked(True)
+        self.show_unknown_triggers_checkbox.toggled.connect(self.render_table)
+        self.show_disabled_triggers_checkbox = QCheckBox("Показывать отключённые триггеры")
+        self.show_disabled_triggers_checkbox.setChecked(False)
+        self.show_disabled_triggers_checkbox.toggled.connect(self.render_table)
         period_row.addWidget(self.show_resolved_checkbox)
         period_row.addWidget(self.hide_handled_checkbox)
+        period_row.addWidget(self.show_enabled_triggers_checkbox)
+        period_row.addWidget(self.show_unknown_triggers_checkbox)
+        period_row.addWidget(self.show_disabled_triggers_checkbox)
         period_row.addStretch(1)
         root.addLayout(period_row)
 
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["Статус", "Время", "Важность", "Узел сети", "Проблема", "Теги", "Обработка"])
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["Статус", "Время", "Важность", "Узел сети", "Проблема", "Триггер", "Теги", "Обработка"])
         self.table.setWordWrap(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         root.addWidget(self.table, stretch=1)
@@ -398,9 +416,21 @@ class ZabbixProblemsSelectionDialog(QDialog):
     def _filtered_problems(self):
         visible = filter_problems_by_period(self.all_problems, self.period_days)
         if not self.show_resolved_checkbox.isChecked():
-            visible = [problem for problem in visible if str(problem.get("status", "ПРОБЛЕМА")) != "РЕШЕНО"]
+            visible = [
+                problem for problem in visible
+                if "реш" not in str(problem.get("status", "ПРОБЛЕМА")).casefold()
+            ]
         if self.hide_handled_checkbox.isChecked():
             visible = [problem for problem in visible if not problem.get("handled")]
+        visible = [
+            problem for problem in visible
+            if zabbix_problem_visible_by_trigger_filters(
+                problem,
+                show_enabled=self.show_enabled_triggers_checkbox.isChecked(),
+                show_unknown=self.show_unknown_triggers_checkbox.isChecked(),
+                show_disabled=self.show_disabled_triggers_checkbox.isChecked(),
+            )
+        ]
         return visible
 
     def render_table(self):
@@ -409,12 +439,21 @@ class ZabbixProblemsSelectionDialog(QDialog):
         for problem in self._visible_problems:
             row = self.table.rowCount()
             self.table.insertRow(row)
+            if problem.get("trigger_known"):
+                trigger_label = problem.get("matched_trigger_name") or "Отключён"
+                if not problem.get("matched_trigger_enabled"):
+                    trigger_label = f"Отключён: {trigger_label}"
+                elif problem.get("matched_trigger_description"):
+                    trigger_label = f"{trigger_label} — {problem.get('matched_trigger_description')}"
+            else:
+                trigger_label = "Не распознан"
             values = [
                 problem.get("status", "ПРОБЛЕМА"),
                 problem.get("time", ""),
                 problem.get("severity", ""),
                 problem.get("host", ""),
                 problem.get("problem", ""),
+                trigger_label,
                 problem.get("tags", ""),
                 "Уже обработана" if problem.get("handled") else "",
             ]
@@ -425,7 +464,9 @@ class ZabbixProblemsSelectionDialog(QDialog):
                     color = zabbix_problem_row_status_color(problem.get("status", ""))
                     if color:
                         item.setForeground(QColor(color))
-                elif col == 6 and problem.get("handled"):
+                elif col == 5 and problem.get("trigger_known") and not problem.get("matched_trigger_enabled"):
+                    item.setForeground(QColor("#8b949e"))
+                elif col == 7 and problem.get("handled"):
                     item.setForeground(QColor("#f6d365"))
                 self.table.setItem(row, col, item)
         self.table.resizeColumnsToContents()
@@ -602,6 +643,8 @@ class ZabbixProblemsDialog(QDialog):
                 problem for problem in problems
                 if problem_matches_keywords(problem, keywords=keywords, exclude_keywords=excludes)
             ]
+            catalog = load_zabbix_trigger_catalog(config=self.config, logger=self.logger)
+            annotate_zabbix_problems_with_trigger_catalog(problems, catalog)
             cleanup_zabbix_problem_csv_files(self.problem_export_dir, logger=self.logger)
             self.status_label.setText("CSV со списком проблем Zabbix обработан.")
             self.update_problem_counter(problems)
@@ -653,6 +696,8 @@ class ZabbixProblemsDialog(QDialog):
             self.page.runJavaScript(zabbix_problems_next_page_js())
             QTimer.singleShot(900, self._collect_current_problem_page)
             return
+        catalog = load_zabbix_trigger_catalog(config=self.config, logger=self.logger)
+        annotate_zabbix_problems_with_trigger_catalog(self._problem_collect_rows, catalog)
         self.update_problem_counter(self._problem_collect_rows, read_failed=read_failed)
 
     def _problem_counts(self, problems):

@@ -195,6 +195,7 @@ def _default_config():
         },
         "duty_triggers": default_duty_triggers_config(),
         "service_checks": default_service_checks_config(),
+        "zabbix_trigger_catalog": {"version": 1, "triggers": []},
         "app": {"name": "Око"},
     }
 
@@ -227,6 +228,7 @@ EXPORTABLE_CONFIG_KEYS = (
     "duty_triggers",
     "service_checks",
     "templates",
+    "zabbix_trigger_catalog",
     "app",
 )
 
@@ -340,6 +342,18 @@ def import_settings_file(source_path, config_path=None):
     safe_settings = sanitize_export_data(imported_settings)
     with config_path.open("w", encoding="utf-8") as file:
         json.dump(safe_settings, file, ensure_ascii=False, indent=2)
+
+    catalog = safe_settings.get("zabbix_trigger_catalog")
+    if isinstance(catalog, dict):
+        try:
+            data_dir = config_path.parent / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "zabbix_trigger_catalog.json").write_text(
+                json.dumps(catalog, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            get_logger().exception("Не удалось восстановить zabbix_trigger_catalog.json из экспорта настроек")
     return backup_path
 
 

@@ -19,11 +19,18 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QScrollArea,
     QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from app.config import default_trigger_item, ensure_duty_mode_defaults, ensure_duty_triggers_defaults, save_config
+from app.duty_zabbix import (
+    import_zabbix_trigger_catalog_from_xlsx,
+    load_zabbix_trigger_catalog,
+    save_zabbix_trigger_catalog,
+)
 from app.logger import get_logger
 from app.safe_widgets import NoWheelComboBox, NoWheelSpinBox
 from app.screen_utils import available_geometry_for_widget, center_widget_on_screen, safe_window_size
@@ -217,6 +224,7 @@ class DutyModeSettingsWidget(QWidget):
         self.config = config
         self.on_saved_callback = on_saved_callback
         self.trigger_items = deepcopy(self.duty_triggers_settings().get("items", []))
+        self.zabbix_trigger_catalog_entries = load_zabbix_trigger_catalog(config=self.config, logger=self.logger)
         self.section_indexes = {}
 
         root = QVBoxLayout(self)
@@ -235,6 +243,7 @@ class DutyModeSettingsWidget(QWidget):
         self.add_section_page("ОТРС", self.build_otrs_section)
         self.add_section_page("Графики", self.build_graphs_section)
         self.add_section_page("Триггеры", self.build_triggers_ui)
+        self.add_section_page("Триггеры Zabbix", self.build_zabbix_trigger_catalog_ui)
         self.add_section_page("Пороги", self.build_thresholds_ui)
 
         buttons = QHBoxLayout()
@@ -258,7 +267,7 @@ class DutyModeSettingsWidget(QWidget):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        for section_name in ["Основное", "ОТРС", "Графики", "Триггеры", "Пороги"]:
+        for section_name in ["Основное", "ОТРС", "Графики", "Триггеры", "Триггеры Zabbix", "Пороги"]:
             button = QPushButton(section_name)
             button.setMinimumHeight(56)
             button.clicked.connect(lambda checked=False, name=section_name: self.open_section(name))
@@ -288,7 +297,7 @@ class DutyModeSettingsWidget(QWidget):
         layout.setSpacing(10)
         builder(layout)
 
-        if section_name not in {"Графики", "Триггеры"}:
+        if section_name not in {"Графики", "Триггеры", "Триггеры Zabbix"}:
             layout.addStretch(1)
 
         scroll.setWidget(body)
@@ -438,6 +447,128 @@ class DutyModeSettingsWidget(QWidget):
         trigger_buttons.addWidget(delete_button)
         trigger_buttons.addStretch()
         root.addLayout(trigger_buttons)
+
+    def build_zabbix_trigger_catalog_ui(self, root):
+        hint = QLabel("Импортируйте XLSX-каталог триггеров Zabbix и включайте только те шаблоны, которые должны участвовать в фильтрации проблем.")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        actions = QHBoxLayout()
+        import_button = QPushButton("Загрузить XLSX со списком триггеров")
+        import_button.clicked.connect(self.import_zabbix_trigger_catalog)
+        clear_button = QPushButton("Очистить каталог")
+        clear_button.clicked.connect(self.clear_zabbix_trigger_catalog)
+        enable_all = QPushButton("Включить все")
+        enable_all.clicked.connect(lambda: self.set_all_zabbix_catalog_enabled(True))
+        disable_all = QPushButton("Отключить все")
+        disable_all.clicked.connect(lambda: self.set_all_zabbix_catalog_enabled(False))
+        actions.addWidget(import_button)
+        actions.addWidget(clear_button)
+        actions.addWidget(enable_all)
+        actions.addWidget(disable_all)
+        actions.addStretch(1)
+        root.addLayout(actions)
+
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Поиск:"))
+        self.zabbix_catalog_search = QLineEdit()
+        self.zabbix_catalog_search.setPlaceholderText("Триггер, описание или категория")
+        self.zabbix_catalog_search.textChanged.connect(self.reload_zabbix_trigger_catalog_table)
+        search_row.addWidget(self.zabbix_catalog_search, stretch=1)
+        root.addLayout(search_row)
+
+        self.zabbix_catalog_empty_label = QLabel("Каталог триггеров не загружен.")
+        self.zabbix_catalog_empty_label.setWordWrap(True)
+        root.addWidget(self.zabbix_catalog_empty_label)
+
+        self.zabbix_catalog_table = QTableWidget(0, 5)
+        self.zabbix_catalog_table.setHorizontalHeaderLabels(["Включён", "Категория", "Триггер", "Описание", "Листы"])
+        self.zabbix_catalog_table.setWordWrap(True)
+        self.zabbix_catalog_table.itemChanged.connect(self.on_zabbix_catalog_item_changed)
+        root.addWidget(self.zabbix_catalog_table, stretch=1)
+        self.reload_zabbix_trigger_catalog_table()
+
+    def import_zabbix_trigger_catalog(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Загрузить XLSX со списком триггеров",
+            "",
+            "Excel (*.xlsx);;Все файлы (*)",
+        )
+        if not file_path:
+            return
+        try:
+            imported = import_zabbix_trigger_catalog_from_xlsx(file_path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Триггеры Zabbix", f"Не удалось импортировать XLSX:\n{exc}")
+            return
+        self.zabbix_trigger_catalog_entries = imported
+        self.persist_zabbix_trigger_catalog()
+        self.reload_zabbix_trigger_catalog_table()
+        QMessageBox.information(self, "Триггеры Zabbix", f"Импортировано триггеров: {len(imported)}")
+
+    def persist_zabbix_trigger_catalog(self):
+        save_zabbix_trigger_catalog(self.zabbix_trigger_catalog_entries, config=self.config)
+        save_config(self.config)
+
+    def clear_zabbix_trigger_catalog(self):
+        if not self.zabbix_trigger_catalog_entries:
+            return
+        reply = QMessageBox.question(self, "Триггеры Zabbix", "Очистить каталог триггеров Zabbix?", QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        self.zabbix_trigger_catalog_entries = []
+        self.persist_zabbix_trigger_catalog()
+        self.reload_zabbix_trigger_catalog_table()
+
+    def set_all_zabbix_catalog_enabled(self, enabled):
+        for entry in self.zabbix_trigger_catalog_entries:
+            entry.enabled = bool(enabled)
+        self.persist_zabbix_trigger_catalog()
+        self.reload_zabbix_trigger_catalog_table()
+
+    def _filtered_zabbix_catalog_entries(self):
+        query = " ".join((self.zabbix_catalog_search.text() if hasattr(self, "zabbix_catalog_search") else "").casefold().split())
+        if not query:
+            return list(self.zabbix_trigger_catalog_entries)
+        result = []
+        for entry in self.zabbix_trigger_catalog_entries:
+            haystack = " ".join([entry.name, entry.description, entry.category]).casefold()
+            if query in haystack:
+                result.append(entry)
+        return result
+
+    def reload_zabbix_trigger_catalog_table(self):
+        if not hasattr(self, "zabbix_catalog_table"):
+            return
+        entries = self._filtered_zabbix_catalog_entries()
+        self.zabbix_catalog_table.blockSignals(True)
+        self.zabbix_catalog_table.setRowCount(0)
+        for entry in entries:
+            row = self.zabbix_catalog_table.rowCount()
+            self.zabbix_catalog_table.insertRow(row)
+            enabled_item = QTableWidgetItem("")
+            enabled_item.setFlags(enabled_item.flags() | Qt.ItemIsUserCheckable)
+            enabled_item.setCheckState(Qt.Checked if entry.enabled else Qt.Unchecked)
+            enabled_item.setData(Qt.UserRole, entry.id)
+            self.zabbix_catalog_table.setItem(row, 0, enabled_item)
+            for col, value in enumerate([entry.category, entry.name, entry.description, ", ".join(entry.source_sheets)], start=1):
+                item = QTableWidgetItem(str(value or ""))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.zabbix_catalog_table.setItem(row, col, item)
+        self.zabbix_catalog_table.resizeColumnsToContents()
+        self.zabbix_catalog_table.blockSignals(False)
+        self.zabbix_catalog_empty_label.setVisible(not self.zabbix_trigger_catalog_entries)
+
+    def on_zabbix_catalog_item_changed(self, item):
+        if item.column() != 0:
+            return
+        entry_id = item.data(Qt.UserRole)
+        for entry in self.zabbix_trigger_catalog_entries:
+            if entry.id == entry_id:
+                entry.enabled = item.checkState() == Qt.Checked
+                self.persist_zabbix_trigger_catalog()
+                break
 
     def build_thresholds_ui(self, root):
         thresholds = QFormLayout()
@@ -659,6 +790,7 @@ class DutyModeSettingsWidget(QWidget):
         trigger_settings["mode1_night_silence_start"] = self.mode1_silence_start_input.text().strip()
         trigger_settings["mode1_night_silence_end"] = self.mode1_silence_end_input.text().strip()
         trigger_settings["items"] = deepcopy(self.trigger_items)
+        save_zabbix_trigger_catalog(self.zabbix_trigger_catalog_entries, config=self.config)
 
         save_config(self.config)
         self.logger.info("Сохранены настройки триггеров дежурства")
