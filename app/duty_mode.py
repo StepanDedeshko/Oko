@@ -84,6 +84,7 @@ from app.templates import (
 
 
 from app.note_links import plain_text_to_safe_html_with_links
+from app.duty_zabbix import find_problems_page_url, zabbix_status_html
 
 def open_external_url(url):
     QDesktopServices.openUrl(QUrl(str(url or "")))
@@ -311,6 +312,77 @@ class DutyNotificationDialog(QDialog):
     def choose_skip(self):
         self._finish("skip")
 
+
+
+
+class ZabbixProblemsDialog(QDialog):
+    confirmed = Signal()
+
+    def __init__(self, url, profile=None, credentials=None, parent=None):
+        super().__init__(parent)
+        self.url = str(url or "").strip()
+        self.profile = profile
+        self.credentials = credentials or {}
+        self.logger = get_logger()
+        self.view = None
+        self.page = None
+        self.setWindowTitle("Проверка проблем Zabbix")
+        self.resize(1180, 820)
+
+        root = QVBoxLayout(self)
+        title = QLabel("Проблемы Zabbix")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        self.status_label = QLabel("Открываю страницу проблем Zabbix...")
+        self.status_label.setWordWrap(True)
+        root.addWidget(self.status_label)
+
+        self.view = register_web_view(QWebEngineView(self))
+        self.page = QWebEnginePage(self.profile, self.view) if self.profile is not None else QWebEnginePage(self.view)
+        self.view.setPage(self.page)
+        self.view.loadFinished.connect(self.on_loaded)
+        root.addWidget(self.view, stretch=1)
+
+        row = QHBoxLayout()
+        confirm = QPushButton("Проверено, перейти к графикам")
+        confirm.setObjectName("PrimaryAction")
+        confirm.clicked.connect(self.confirm)
+        close = QPushButton("Закрыть")
+        close.clicked.connect(self.close)
+        row.addStretch(1)
+        row.addWidget(confirm)
+        row.addWidget(close)
+        root.addLayout(row)
+
+        if self.url:
+            self.view.load(QUrl(self.url))
+
+    def on_loaded(self, ok):
+        if not ok:
+            self.status_label.setText("Не удалось открыть страницу проблем Zabbix.")
+            return
+        self.status_label.setText("Страница проблем Zabbix открыта. Проверьте проблемы и нажмите кнопку перехода к графикам.")
+        login = str(self.credentials.get("login", "") or "")
+        password = str(self.credentials.get("password", "") or "")
+        js = make_zabbix_login_js(login, password)
+        if js and self.page is not None:
+            self.page.runJavaScript(js)
+
+    def confirm(self):
+        self.confirmed.emit()
+        self.accept()
+
+    def cleanup(self):
+        view = self.view
+        self.view = None
+        self.page = None
+        if view is not None:
+            safe_delete_web_view(view, logger=self.logger, context="ZabbixProblemsDialog", load_handler=self.on_loaded)
+
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
 
 
 class GraphCheckOverlayDialog(QDialog):
@@ -3384,7 +3456,7 @@ class DutyNoteDialog(QDialog):
 
 
 class DutyModeWidget(QWidget):
-    def __init__(self, config, profiles, credentials=None, graph_card_finder=None, source_view_finder=None, parent=None):
+    def __init__(self, config, profiles, credentials=None, graph_card_finder=None, source_view_finder=None, active_product_getter=None, parent=None):
         super().__init__(parent)
 
         self.config = config
@@ -3392,6 +3464,7 @@ class DutyModeWidget(QWidget):
         self.credentials = credentials or {}
         self.graph_card_finder = graph_card_finder
         self.source_view_finder = source_view_finder
+        self.active_product_getter = active_product_getter
         self.logger = get_logger()
         self.hidden_trigger_views = []
         self._hidden_trigger_contexts = []
@@ -3416,6 +3489,7 @@ class DutyModeWidget(QWidget):
         self.duty_flow_running = False
         self.duty_flow_services_first = False
         self.duty_summary_dialog = None
+        self.zabbix_problems_dialog = None
         self.duty_flow_queue = []
         self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
@@ -4358,18 +4432,7 @@ class DutyModeWidget(QWidget):
         return f'<a href="{escaped_url}">{escaped_summary}</a>'
 
     def _zabbix_status_html(self, status):
-        status = str(status or "Ожидает проверки")
-        lowered = status.casefold()
-        color = "#e8eef7"
-        if "проверено" in lowered or lowered == "ок" or lowered == "ok" or "выполнено" in lowered:
-            color = "#7CFC98"
-        elif "ошиб" in lowered or "нет данных" in lowered:
-            color = "#ff5c5c"
-        elif "таймаут" in lowered or "вним" in lowered or "пропущ" in lowered:
-            color = "#f6d365"
-        elif "открыто" in lowered:
-            color = "#58a6ff"
-        return f'<span style="color:{color}">{status}</span>'
+        return zabbix_status_html(status)
 
     def _graphs_count(self):
         self.load_check_graphs()
@@ -4859,7 +4922,8 @@ class DutyModeWidget(QWidget):
         self.logger.info("Duty triggers check finished: stats=%s", stats)
         self.update_dashboard_summary()
         if self.duty_flow_running:
-            self.duty_zabbix_problems_status = "Проверено" if not stats.get("errors", 0) else "Ошибка"
+            if self.duty_zabbix_problems_status != "Ошибка: URL не найден":
+                self.duty_zabbix_problems_status = "Проверено"
             self.duty_zabbix_graphs_status = "Открыто для проверки"
             self.duty_zabbix_graph_statuses = {item.get("id"): "Открыто для проверки" for item in self.check_graphs}
             self.update_dashboard_summary()
@@ -4923,15 +4987,89 @@ class DutyModeWidget(QWidget):
         self.update_dashboard_summary()
         return result["ok"]
 
+
+    def _active_duty_product_name(self):
+        if callable(self.active_product_getter):
+            try:
+                product = str(self.active_product_getter() or "").strip()
+                if product and product != "Дежурство":
+                    return product
+            except Exception:
+                self.logger.exception("Duty active product getter failed")
+        for item in self.check_graphs:
+            product = str(item.get("product", "") or "").strip()
+            if product:
+                return product
+        return ""
+
+    def _preferred_duty_zabbix_profile(self):
+        for item in self.check_graphs:
+            zabbix_id = str(item.get("zabbix_id", "") or "").strip()
+            if zabbix_id:
+                return zabbix_id
+        return ""
+
+    def _open_zabbix_problems_stage(self):
+        self.load_check_graphs()
+        product_name = self._active_duty_product_name()
+        zabbix_profile = self._preferred_duty_zabbix_profile()
+        url, page, _product = find_problems_page_url(self.config, product_name=product_name, zabbix_profile=zabbix_profile)
+        if not url:
+            self.duty_zabbix_problems_status = "Ошибка: URL не найден"
+            self.duty_zabbix_status = "ошибка"
+            self.status_label.setText("Не найден URL страницы проблем Zabbix для текущего продукта.")
+            self.update_dashboard_summary()
+            QMessageBox.warning(
+                self,
+                "Проблемы Zabbix",
+                "Не найден URL страницы проблем Zabbix для текущего продукта.\n"
+                "Проверьте настройки продукта: должна быть включённая страница типа problems_page.",
+            )
+            self.finish_duty_check_flow()
+            return
+        zabbix_id = str((page or {}).get("zabbix_id") or (page or {}).get("zabbix_profile") or (page or {}).get("zabbix_profile_id") or zabbix_profile or "").strip()
+        profile = self.profiles.get(zabbix_id)
+        credentials = self.credentials.get(zabbix_id, {}) if zabbix_id else {}
+        self.duty_zabbix_problems_status = "Открыто для проверки"
+        self.update_dashboard_summary()
+        dialog = ZabbixProblemsDialog(url, profile=profile, credentials=credentials, parent=self)
+        self.zabbix_problems_dialog = dialog
+        dialog.confirmed.connect(self._finish_zabbix_problems_stage)
+        dialog.finished.connect(lambda _result: setattr(self, "zabbix_problems_dialog", None))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _finish_zabbix_problems_stage(self):
+        self.duty_zabbix_problems_status = "Проверено"
+        self.load_check_graphs()
+        if not self.check_graphs:
+            self.duty_zabbix_graphs_status = "Ошибка: графики не выбраны"
+            self.duty_zabbix_status = "ошибка"
+            self.update_dashboard_summary()
+            QMessageBox.warning(
+                self,
+                "Zabbix / графики",
+                "Графики дежурства не выбраны. Настройте их в разделе «Настройки дежурки».",
+            )
+            self.finish_duty_check_flow()
+            return
+        self.duty_zabbix_graphs_status = "Открыто для проверки"
+        self.duty_zabbix_graph_statuses = {item.get("id"): "Открыто для проверки" for item in self.check_graphs}
+        self.update_dashboard_summary()
+        self.open_graph_check_overlay()
+
     def start_duty_zabbix_stage(self):
         self.duty_current_stage = "zabbix_problems"
         self.duty_zabbix_status = "выполняется"
-        self.duty_zabbix_problems_status = "Открыто для проверки"
+        self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
+        self.duty_trigger_stats = {"total": 0, "ok": 0, "alert": 0, "errors": 0}
+        self.duty_trigger_results = []
         self.status_label.setText("Текущий этап: Zabbix / проблемы")
         self.update_dashboard_summary()
         self.logger.info("Duty Zabbix check started: task_number=%s", self._zabbix_task_number() or "not_set")
-        self.run_duty_triggers_check(part_of_duty_flow=True)
+        self._open_zabbix_problems_stage()
 
     def finish_duty_check_flow(self):
         self.duty_current_stage = "zabbix_note"
@@ -4947,6 +5085,7 @@ class DutyModeWidget(QWidget):
         self.duty_flow_running = False
         self.duty_flow_services_first = False
         self.duty_summary_dialog = None
+        self.zabbix_problems_dialog = None
         self.duty_flow_queue = []
         self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
