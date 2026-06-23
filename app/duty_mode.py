@@ -92,6 +92,8 @@ from app.duty_zabbix import (
     format_zabbix_problems_note_block,
     normalize_problem_row,
     problem_matches_keywords,
+    zabbix_problems_collect_js,
+    zabbix_problems_next_page_js,
     zabbix_status_html,
 )
 
@@ -414,6 +416,9 @@ class ZabbixProblemsDialog(QDialog):
         self.config = config or {}
         self.detected_problems = []
         self.selected_problems = []
+        self._problem_collect_rows = []
+        self._problem_collect_seen = set()
+        self._problem_collect_page = 0
         self.logger = get_logger()
         self.view = None
         self.page = None
@@ -466,52 +471,49 @@ class ZabbixProblemsDialog(QDialog):
         QTimer.singleShot(1800, self.collect_problems_from_page)
 
     def collect_problems_from_page(self):
+        self._problem_collect_rows = []
+        self._problem_collect_seen = set()
+        self._problem_collect_page = 0
+        self._collect_current_problem_page()
+
+    def _collect_current_problem_page(self):
         if self.page is None:
             self.update_problem_counter([], read_failed=True)
             return
-        js = r"""
-        (function() {
-            function clean(text) { return String(text || '').replace(/\s+/g, ' ').trim(); }
-            const rows = [];
-            const tableRows = Array.from(document.querySelectorAll('table tr'));
-            for (const tr of tableRows) {
-                const cells = Array.from(tr.querySelectorAll('td'));
-                if (!cells.length) { continue; }
-                const values = cells.map((td) => {
-                    const bits = [td.innerText, td.textContent, td.getAttribute('title'), td.getAttribute('aria-label')]
-                        .map(clean).filter(Boolean);
-                    return bits[0] || '';
-                }).filter(Boolean);
-                const raw = clean(tr.innerText || tr.textContent || '');
-                if (values.length || raw) { rows.push({cells: values, rawText: raw}); }
-            }
-            if (!rows.length) {
-                for (const node of Array.from(document.querySelectorAll('[class*=problem], [class*=trigger], [data-eventid], [data-triggerid]'))) {
-                    const raw = clean(node.innerText || node.textContent || node.getAttribute('title') || node.getAttribute('aria-label') || '');
-                    if (raw) { rows.push({cells: [raw], rawText: raw}); }
-                }
-            }
-            return rows.slice(0, 500);
-        })();
-        """
-        self.page.runJavaScript(js, self.after_collect_problems)
+        self.page.runJavaScript(zabbix_problems_collect_js(), self.after_collect_problems)
 
     def after_collect_problems(self, result):
         settings = self.config.get("duty_mode", {}) if isinstance(self.config, dict) else {}
         keywords = settings.get("zabbix_problem_keywords", [])
         excludes = settings.get("zabbix_problem_exclude_keywords", [])
-        problems = []
-        if isinstance(result, list):
-            for row in result[:500]:
-                cells = row.get("cells", []) if isinstance(row, dict) else row
-                problem = normalize_problem_row(cells)
-                if problem is None:
-                    continue
-                if isinstance(row, dict) and row.get("rawText"):
-                    problem["raw_text"] = row.get("rawText")
-                if problem_matches_keywords(problem, keywords=keywords, exclude_keywords=excludes):
-                    problems.append(problem)
-        self.update_problem_counter(problems, read_failed=not isinstance(result, list))
+        read_failed = not isinstance(result, (list, dict))
+        rows = result.get("rows", []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
+        has_next = bool(result.get("hasNext")) if isinstance(result, dict) else False
+        for row in rows[:500]:
+            problem = normalize_problem_row(row)
+            if problem is None:
+                continue
+            if not problem_matches_keywords(problem, keywords=keywords, exclude_keywords=excludes):
+                continue
+            key = problem.get("raw_text") or "|".join(str(problem.get(k, "")) for k in ("time", "severity", "host", "problem", "tags"))
+            if key in self._problem_collect_seen:
+                continue
+            self._problem_collect_seen.add(key)
+            self._problem_collect_rows.append(problem)
+            if len(self._problem_collect_rows) >= 500:
+                break
+
+        self._problem_collect_page += 1
+        if (
+            has_next
+            and self._problem_collect_page < 10
+            and len(self._problem_collect_rows) < 500
+            and self.page is not None
+        ):
+            self.page.runJavaScript(zabbix_problems_next_page_js())
+            QTimer.singleShot(900, self._collect_current_problem_page)
+            return
+        self.update_problem_counter(self._problem_collect_rows, read_failed=read_failed)
 
     def update_problem_counter(self, problems, read_failed=False):
         self.detected_problems = list(problems or [])
@@ -3656,6 +3658,7 @@ class DutyModeWidget(QWidget):
         self.zabbix_problems_dialog = None
         self.detected_zabbix_problems = []
         self.selected_zabbix_problems_for_note = []
+        self.graph_trigger_check_started_for_overlay = False
         self.duty_flow_queue = []
         self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
@@ -4948,6 +4951,43 @@ class DutyModeWidget(QWidget):
         )
         return False
 
+    def _set_zabbix_graph_status_for_trigger(self, trigger, status):
+        target_title = normalize_lookup_text((trigger or {}).get("target_graph_title", ""))
+        if not target_title:
+            return
+        status_text = str(status or "").upper()
+        if status_text == "OK":
+            panel_status = "Проверено"
+        elif status_text == "ALERT":
+            panel_status = "Требуется внимание"
+        elif status_text == "NO_DATA":
+            panel_status = "Нет данных"
+        elif status_text in {"SOURCE_NOT_FOUND", "TARGET_NOT_FOUND"}:
+            panel_status = "Ошибка"
+        else:
+            panel_status = "Ошибка"
+        for item in self.check_graphs:
+            graph_title = normalize_lookup_text(item.get("title") or item.get("graph", {}).get("title", ""))
+            if graph_title == target_title:
+                self.duty_zabbix_graph_statuses[item.get("id")] = panel_status
+                return
+
+    def _finalize_zabbix_graph_statuses_from_trigger_stats(self):
+        stats = self.duty_trigger_stats or {}
+        if stats.get("errors", 0):
+            self.duty_zabbix_graphs_status = "Ошибка"
+        elif stats.get("alert", 0):
+            self.duty_zabbix_graphs_status = "Требуется внимание"
+        else:
+            self.duty_zabbix_graphs_status = "Проверено"
+        keep_status_fragments = ("ошиб", "нет данных", "таймаут", "вним")
+        for item in self.check_graphs:
+            graph_id = item.get("id")
+            current_status = str(self.duty_zabbix_graph_statuses.get(graph_id, "") or "")
+            if any(fragment in current_status.casefold() for fragment in keep_status_fragments):
+                continue
+            self.duty_zabbix_graph_statuses[graph_id] = "Проверено"
+
     def _build_trigger_result_log(self, trigger, result, status):
         return {
             **self._trigger_log_context(trigger),
@@ -5085,20 +5125,19 @@ class DutyModeWidget(QWidget):
         self._last_duty_trigger_check_finished_at = datetime.now(MSK)
         zabbix_status = "ошибка" if stats.get("errors", 0) else ("требуется внимание" if stats.get("alert", 0) else "выполнено")
         self.duty_zabbix_status = zabbix_status
-        self.status_label.setText(
-            "Проверка триггеров завершена: "
-            f"OK={stats['ok']}, ALERT={stats['alert']}, ошибки={stats['errors']}."
-        )
+        if stats.get("alert", 0):
+            self.status_label.setText(f"Замечены триггеры: {stats['alert']}. OK={stats['ok']}, ошибки={stats['errors']}.")
+        elif stats.get("errors", 0):
+            self.status_label.setText(f"Проверка триггеров завершена с ошибками: {stats['errors']}. OK={stats['ok']}.")
+        else:
+            self.status_label.setText(f"Всё в порядке. Проверка триггеров завершена: OK={stats['ok']}.")
+        if self.duty_flow_running and self.duty_current_stage == "zabbix_graphs":
+            self._finalize_zabbix_graph_statuses_from_trigger_stats()
+        elif self.duty_flow_running:
+            self.open_graph_check_overlay()
         self.logger.info("Duty Zabbix check finished: status=%s", zabbix_status)
         self.logger.info("Duty triggers check finished: stats=%s", stats)
         self.update_dashboard_summary()
-        if self.duty_flow_running:
-            if self.duty_zabbix_problems_status != "Ошибка: URL не найден":
-                self.duty_zabbix_problems_status = "Проверено"
-            self.duty_zabbix_graphs_status = "Открыто для проверки"
-            self.duty_zabbix_graph_statuses = {item.get("id"): "Открыто для проверки" for item in self.check_graphs}
-            self.update_dashboard_summary()
-            self.open_graph_check_overlay()
 
     def _maybe_run_duty_service_checks_after_zabbix(self, zabbix_status):
         # Backward-compatible no-op: duty flow now runs service checks before Zabbix.
@@ -5244,7 +5283,7 @@ class DutyModeWidget(QWidget):
         self.duty_zabbix_graphs_status = "Открыто для проверки"
         self.duty_zabbix_graph_statuses = {item.get("id"): "Открыто для проверки" for item in self.check_graphs}
         self.update_dashboard_summary()
-        self.open_graph_check_overlay()
+        self.open_graph_check_overlay(run_triggers_after_open=True)
 
     def start_duty_zabbix_stage(self):
         self.duty_current_stage = "zabbix_problems"
@@ -5255,6 +5294,7 @@ class DutyModeWidget(QWidget):
         self.duty_trigger_results = []
         self.detected_zabbix_problems = []
         self.selected_zabbix_problems_for_note = []
+        self.graph_trigger_check_started_for_overlay = False
         self.status_label.setText("Текущий этап: Zabbix / проблемы")
         self.update_dashboard_summary()
         self.logger.info("Duty Zabbix check started: task_number=%s", self._zabbix_task_number() or "not_set")
@@ -5286,12 +5326,10 @@ class DutyModeWidget(QWidget):
         if self.duty_trigger_running or self._hidden_trigger_contexts or self.hidden_trigger_views:
             self.status_label.setText("Проверка уже выполняется")
             self.logger.info("Duty trigger manual check skipped: check already running")
-            if part_of_duty_flow:
-                self.finish_duty_check_flow()
             return
 
         cooldown_remaining = self._duty_trigger_cooldown_remaining()
-        if cooldown_remaining > 0:
+        if cooldown_remaining > 0 and not part_of_duty_flow:
             self.status_label.setText(
                 "Проверка триггеров недавно завершилась. "
                 f"Повторите через {cooldown_remaining:.0f} сек."
@@ -5301,7 +5339,8 @@ class DutyModeWidget(QWidget):
                 cooldown_remaining,
             )
             if part_of_duty_flow:
-                self.finish_duty_check_flow()
+                self._finalize_zabbix_graph_statuses_from_trigger_stats()
+                self.update_dashboard_summary()
             return
 
         trigger_settings = ensure_duty_triggers_defaults(self.config)
@@ -5309,7 +5348,8 @@ class DutyModeWidget(QWidget):
             self.status_label.setText("Проверка триггеров отключена в настройках.")
             self.logger.info("Duty triggers check skipped: disabled")
             if part_of_duty_flow:
-                self.finish_duty_check_flow()
+                self._finalize_zabbix_graph_statuses_from_trigger_stats()
+                self.update_dashboard_summary()
             return
 
         enabled_triggers = [
@@ -5326,8 +5366,9 @@ class DutyModeWidget(QWidget):
             self.mark_check_started()
         self.logger.info("Duty trigger manual check started: enabled_count=%s", len(enabled_triggers))
         self.duty_zabbix_status = "выполняется"
-        if self.duty_flow_running:
-            self.duty_zabbix_problems_status = "Открыто для проверки"
+        if self.duty_flow_running and part_of_duty_flow:
+            self.duty_current_stage = "zabbix_graphs"
+            self.duty_zabbix_graphs_status = "Открыто для проверки"
         self.status_label.setText(f"Запущена проверка триггеров: {len(enabled_triggers)} шт.")
 
         if not self.cards:
@@ -5601,6 +5642,7 @@ class DutyModeWidget(QWidget):
     def _finish_trigger_without_html(self, trigger, status, reason=None):
         message = self._status_message(status, trigger=trigger)
         target_found = self._set_target_status(trigger, status, message)
+        self._set_zabbix_graph_status_for_trigger(trigger, status if target_found else "TARGET_NOT_FOUND")
         if status == "TARGET_NOT_FOUND" or not target_found:
             final_status = "TARGET_NOT_FOUND"
         else:
@@ -5690,6 +5732,7 @@ class DutyModeWidget(QWidget):
             result["message"] = DUTY_TRIGGER_STATUS_MESSAGES["PARSE_ERROR"]
         message = self._status_message(status, result=result, trigger=trigger)
         target_found = self._set_target_status(trigger, status, message)
+        self._set_zabbix_graph_status_for_trigger(trigger, status if target_found else "TARGET_NOT_FOUND")
 
         if status == "OK":
             self.duty_trigger_stats["ok"] += 1
@@ -5728,7 +5771,7 @@ class DutyModeWidget(QWidget):
         self.status_label.setText("Идёт проверка графиков в overlay-панели.")
         return True
 
-    def open_graph_check_overlay(self):
+    def open_graph_check_overlay(self, run_triggers_after_open=False):
         if self.graph_check_overlay is not None:
             try:
                 self.graph_check_overlay.close()
@@ -5749,11 +5792,20 @@ class DutyModeWidget(QWidget):
         self.graph_check_overlay.show()
         self.graph_check_overlay.raise_()
         self.graph_check_overlay.activateWindow()
+        if run_triggers_after_open:
+            self.graph_trigger_check_started_for_overlay = True
+            QTimer.singleShot(1500, lambda: self.run_duty_triggers_check(part_of_duty_flow=True))
 
 
 
     def _finish_zabbix_graphs_from_overlay(self):
-        self.duty_zabbix_graphs_status = "Проверено"
+        if self.duty_trigger_running or self._hidden_trigger_contexts or self.hidden_trigger_views:
+            QMessageBox.warning(self, "Проверка графиков", "Проверка триггеров графиков ещё выполняется.")
+            return
+        if self.duty_trigger_results:
+            self._finalize_zabbix_graph_statuses_from_trigger_stats()
+        else:
+            self.duty_zabbix_graphs_status = "Проверено"
         final_statuses = {}
         keep_status_fragments = ("ошиб", "нет данных", "таймаут", "вним")
         for item in self.check_graphs:
@@ -5764,7 +5816,7 @@ class DutyModeWidget(QWidget):
             else:
                 final_statuses[graph_id] = "Проверено"
         self.duty_zabbix_graph_statuses = final_statuses
-        self.duty_zabbix_status = "выполнено"
+        self.duty_zabbix_status = "требуется внимание" if self.duty_zabbix_graphs_status == "Требуется внимание" else ("ошибка" if "ошиб" in self.duty_zabbix_graphs_status.casefold() else "выполнено")
         self.update_dashboard_summary()
         if self.graph_check_overlay is not None:
             self.graph_check_overlay.close()

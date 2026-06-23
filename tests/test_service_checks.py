@@ -722,6 +722,10 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("start_duty_zabbix_stage", duty_source)
         self.assertIn("build_graph_check_note_text", duty_source)
         self.assertIn("build_service_check_note_text", duty_source)
+        self.assertIn("run_triggers_after_open", duty_source)
+        self.assertIn("run_duty_triggers_check(part_of_duty_flow=True)", duty_source)
+        self.assertIn("Проверка триггеров графиков ещё выполняется", duty_source)
+        self.assertIn("_finalize_zabbix_graph_statuses_from_trigger_stats", duty_source)
 
     def test_duty_template_context_variables_are_present(self):
         duty_source = (Path(__file__).resolve().parents[1] / "app" / "duty_mode.py").read_text(encoding="utf-8")

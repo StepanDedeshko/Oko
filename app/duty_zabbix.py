@@ -83,6 +83,98 @@ def zabbix_status_html(status):
     return f'<span style="color:{zabbix_status_color(status_text)}">{html.escape(status_text)}</span>'
 
 
+def zabbix_problems_collect_js(max_pages=10, max_problems=500, page_delay_ms=900):
+    return rf"""
+    (function() {{
+        const MAX_PAGES = {int(max_pages)};
+        const MAX_PROBLEMS = {int(max_problems)};
+        const PAGE_DELAY_MS = {int(page_delay_ms)};
+        const TARGET_TBODY_SELECTOR = '#t6a3a4bcc6c78d563014208 > tbody';
+        function clean(text) {{ return String(text || '').replace(/\s+/g, ' ').trim(); }}
+        function cellText(td) {{
+            const bits = [td.innerText, td.textContent, td.getAttribute('title'), td.getAttribute('aria-label')]
+                .map(clean).filter(Boolean);
+            return bits[0] || '';
+        }}
+        function rowObjectFromCells(cells, raw) {{
+            const values = cells.map(cellText).filter(Boolean);
+            if (!values.length && raw) {{
+                return {{time: '', severity: '', host: '', problem: raw, tags: '', raw_text: raw, cells: [raw]}};
+            }}
+            return {{cells: values, rawText: raw, raw_text: raw}};
+        }}
+        function tbodyCandidates() {{
+            const result = [];
+            const exact = document.querySelector(TARGET_TBODY_SELECTOR);
+            if (exact) {{ result.push(exact); }}
+            for (const selector of ['#problem_form table tbody', '#problem_form tbody']) {{
+                for (const node of Array.from(document.querySelectorAll(selector))) {{
+                    if (node && !result.includes(node)) {{ result.push(node); }}
+                }}
+            }}
+            for (const node of Array.from(document.querySelectorAll('table tbody'))) {{
+                if (node && !result.includes(node)) {{ result.push(node); }}
+            }}
+            return result;
+        }}
+        function collectCurrentPage() {{
+            const rows = [];
+            for (const tbody of tbodyCandidates()) {{
+                for (const tr of Array.from(tbody.querySelectorAll('tr'))) {{
+                    const cells = Array.from(tr.querySelectorAll('td'));
+                    const raw = clean(tr.innerText || tr.textContent || '');
+                    if (!cells.length && !raw) {{ continue; }}
+                    const object = rowObjectFromCells(cells, raw);
+                    if ((object.cells && object.cells.length) || object.problem || object.raw_text || object.rawText) {{
+                        rows.push(object);
+                    }}
+                    if (rows.length >= MAX_PROBLEMS) {{ return rows; }}
+                }}
+                if (rows.length) {{ return rows; }}
+            }}
+            for (const node of Array.from(document.querySelectorAll('[class*=problem], [class*=trigger], [data-eventid], [data-triggerid]'))) {{
+                const raw = clean(node.innerText || node.textContent || node.getAttribute('title') || node.getAttribute('aria-label') || '');
+                if (raw) {{ rows.push({{time: '', severity: '', host: '', problem: raw, tags: '', raw_text: raw, cells: [raw]}}); }}
+                if (rows.length >= MAX_PROBLEMS) {{ break; }}
+            }}
+            return rows;
+        }}
+        function nextPageButton() {{
+            const nav = document.querySelector('#problem_form > div.table-paging > nav') || document.querySelector('#problem_form .table-paging nav');
+            if (!nav) {{ return null; }}
+            const candidates = Array.from(nav.querySelectorAll('a, button'));
+            return candidates.find((node) => {{
+                const text = clean(node.innerText || node.textContent || node.getAttribute('title') || node.getAttribute('aria-label') || '');
+                const disabled = node.disabled || node.classList.contains('disabled') || node.getAttribute('aria-disabled') === 'true';
+                return !disabled && (/next|след|›|»/i.test(text) || node.classList.contains('next'));
+            }}) || null;
+        }}
+        const rows = collectCurrentPage().slice(0, MAX_PROBLEMS);
+        const next = nextPageButton();
+        return {{rows: rows, hasNext: Boolean(next), clickedNext: false, maxPages: MAX_PAGES, maxProblems: MAX_PROBLEMS, pageDelayMs: PAGE_DELAY_MS}};
+    }})();
+    """
+
+
+def zabbix_problems_next_page_js():
+    return r"""
+    (function() {
+        function clean(text) { return String(text || '').replace(/\s+/g, ' ').trim(); }
+        const nav = document.querySelector('#problem_form > div.table-paging > nav') || document.querySelector('#problem_form .table-paging nav');
+        if (!nav) { return false; }
+        const candidates = Array.from(nav.querySelectorAll('a, button'));
+        const next = candidates.find((node) => {
+            const text = clean(node.innerText || node.textContent || node.getAttribute('title') || node.getAttribute('aria-label') || '');
+            const disabled = node.disabled || node.classList.contains('disabled') || node.getAttribute('aria-disabled') === 'true';
+            return !disabled && (/next|след|›|»/i.test(text) || node.classList.contains('next'));
+        }) || null;
+        if (!next) { return false; }
+        next.click();
+        return true;
+    })();
+    """
+
+
 def parse_zabbix_problem_time(value, now=None):
     text = str(value or "").strip()
     if not text:
@@ -140,32 +232,71 @@ def filter_problems_by_period(problems, days, now=None):
 
 
 def normalize_problem_row(cells):
-    cells = [str(cell or "").strip() for cell in (cells or [])]
-    if not any(cells):
+    if isinstance(cells, dict):
+        direct = {
+            "time": str(cells.get("time", "") or "").strip(),
+            "severity": str(cells.get("severity", "") or "").strip(),
+            "host": str(cells.get("host", "") or "").strip(),
+            "problem": str(cells.get("problem", "") or "").strip(),
+            "tags": str(cells.get("tags", "") or "").strip(),
+            "raw_text": str(cells.get("raw_text", cells.get("rawText", "")) or "").strip(),
+        }
+        if any(direct.values()):
+            if not direct["problem"]:
+                direct["problem"] = direct["raw_text"]
+            return direct
+        cells = cells.get("cells", [])
+
+    values = [str(cell or "").strip() for cell in (cells or [])]
+    values = [value for value in values if value]
+    if not values:
         return None
-    if len(cells) >= 5:
-        time, severity, host, problem = cells[0], cells[1], cells[2], cells[3]
-        tags = "; ".join(cell for cell in cells[4:] if cell)
-    elif len(cells) == 4:
-        time, severity, host, problem = cells
-        tags = ""
-    elif len(cells) == 3:
-        time, severity, problem = cells
-        host = ""
-        tags = ""
-    else:
-        time = ""
-        severity = ""
-        host = ""
-        problem = " | ".join(cells)
-        tags = ""
+
+    severity_words = (
+        "disaster", "high", "average", "warning", "information", "not classified",
+        "чрезвычай", "высок", "средн", "предупреж", "информац", "не классиф",
+    )
+    if len(values) >= 5 and parse_zabbix_problem_time(values[0]) is not None and any(word in values[1].casefold() for word in severity_words):
+        return {
+            "time": values[0],
+            "severity": values[1],
+            "host": values[2],
+            "problem": values[3],
+            "tags": "; ".join(cell for cell in values[4:] if cell),
+            "raw_text": " | ".join(values),
+        }
+
+    time = ""
+    severity = ""
+    tags = ""
+    for value in values:
+        lowered = value.casefold()
+        if not time and parse_zabbix_problem_time(value) is not None:
+            time = value
+            continue
+        if not severity and any(word in lowered for word in severity_words):
+            severity = value
+            continue
+        if not tags and ("=" in value or ":" in value) and (";" in value or "," in value or "=" in value):
+            tags = value
+
+    candidates = [value for value in values if value not in {time, severity, tags}]
+    problem = max(candidates, key=len) if candidates else " | ".join(values)
+    host_candidates = [value for value in candidates if value != problem]
+    host = host_candidates[0] if host_candidates else ""
+
+    if len(values) >= 5 and not any([time, severity, host, tags]):
+        time, severity, host, problem = values[0], values[1], values[2], values[3]
+        tags = "; ".join(cell for cell in values[4:] if cell)
+
+    raw_text = " | ".join(values)
     return {
         "time": time,
         "severity": severity,
         "host": host,
-        "problem": problem,
+        "problem": problem or raw_text,
         "tags": tags,
-        "raw_text": " | ".join(cells),
+        "raw_text": raw_text,
     }
 
 

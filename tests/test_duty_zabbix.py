@@ -7,6 +7,7 @@ from app.duty_zabbix import (
     format_zabbix_problems_note_block,
     normalize_problem_row,
     problem_matches_keywords,
+    zabbix_problems_collect_js,
     zabbix_status_color,
     zabbix_status_html,
 )
@@ -46,6 +47,22 @@ class DutyZabbixTests(unittest.TestCase):
         self.assertIn("#ff5c5c", html)
         self.assertIn("Ошибка &lt;script&gt;", html)
         self.assertNotIn("<script>", html)
+
+
+    def test_collect_js_contains_problem_table_selectors_and_paging(self):
+        js = zabbix_problems_collect_js(max_pages=10, max_problems=500)
+        self.assertIn("#t6a3a4bcc6c78d563014208 > tbody", js)
+        self.assertIn("#problem_form table tbody", js)
+        self.assertIn("#problem_form tbody", js)
+        self.assertIn("table tbody", js)
+        self.assertIn("#problem_form > div.table-paging > nav", js)
+        self.assertIn("MAX_PAGES = 10", js)
+        self.assertIn("MAX_PROBLEMS = 500", js)
+
+    def test_normalize_problem_row_keeps_raw_text_when_columns_unknown(self):
+        problem = normalize_problem_row(["server-01 CPU load is high without columns"])
+        self.assertEqual(problem["problem"], "server-01 CPU load is high without columns")
+        self.assertEqual(problem["raw_text"], "server-01 CPU load is high without columns")
 
     def test_normalize_problem_row_extracts_columns(self):
         problem = normalize_problem_row(["23.06.2026 10:12", "High", "server-01", "CPU load is high", "service=cpu", "team=infra"])
