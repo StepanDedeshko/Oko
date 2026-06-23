@@ -1,12 +1,25 @@
+import json
+import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 
 from app.duty_zabbix import (
+    adopt_latest_zabbix_problem_csv,
+    apply_handled_zabbix_problems,
+    cleanup_zabbix_problem_csv_files,
+    compare_zabbix_problem_exports,
+    ensure_zabbix_problem_export_dir,
     filter_problems_by_period,
     find_problems_page_url,
     format_zabbix_problems_note_block,
+    load_handled_zabbix_problems,
+    make_zabbix_problem_key,
+    mark_zabbix_problems_handled,
     normalize_problem_row,
+    parse_zabbix_problems_csv,
     problem_matches_keywords,
+    rotate_zabbix_problem_csv_files,
     zabbix_problems_collect_js,
     zabbix_status_color,
     zabbix_status_html,
@@ -14,6 +27,85 @@ from app.duty_zabbix import (
 
 
 class DutyZabbixTests(unittest.TestCase):
+
+    def _write_csv(self, path, rows, encoding="utf-8"):
+        header = "Важность,Время,Время восстановления,Состояние,Узел сети,Проблема,Длительность,Подтверждено,Действия,Теги\n"
+        Path(path).write_text(header + "\n".join(rows) + "\n", encoding=encoding)
+
+    def test_parse_zabbix_problems_csv_russian_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "current.csv"
+            self._write_csv(path, ["Высокая,23.06.2026 12:06:15,,ПРОБЛЕМА,server-01,CPU high,1ч 46м,Нет,,service=cpu"])
+            problems = parse_zabbix_problems_csv(path)
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(problems[0].severity, "Высокая")
+        self.assertEqual(problems[0].time, "23.06.2026 12:06:15")
+        self.assertEqual(problems[0].status, "ПРОБЛЕМА")
+        self.assertTrue(problems[0].key)
+
+    def test_parse_zabbix_problems_csv_utf8_sig_and_partial_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "current.csv"
+            self._write_csv(path, ["Warning,23.06.2026 12:06:15,,,db-primary,Too many connections,,,,service=db", ",,,,,Only problem text,,, ,"], encoding="utf-8-sig")
+            problems = parse_zabbix_problems_csv(path)
+        self.assertEqual(len(problems), 2)
+        self.assertEqual(problems[0].host, "db-primary")
+        self.assertEqual(problems[1].problem, "Only problem text")
+
+    def test_make_zabbix_problem_key_is_stable_after_whitespace_normalization(self):
+        first = {"severity": "High", "time": "23.06.2026 12:06", "host": "server-01", "problem": "CPU   high", "tags": "service=cpu"}
+        second = {"severity": " high ", "time": "23.06.2026 12:06", "host": "SERVER-01", "problem": "CPU high", "tags": "service=cpu"}
+        self.assertEqual(make_zabbix_problem_key(first), make_zabbix_problem_key(second))
+
+    def test_compare_zabbix_problem_exports_marks_missing_previous_as_resolved(self):
+        previous = [parse_zabbix_problems_csv(self._csv_file(["High,23.06.2026 10:00,,ПРОБЛЕМА,old-host,Old problem,1ч,Нет,,service=old"]))[0]]
+        current = [parse_zabbix_problems_csv(self._csv_file(["High,23.06.2026 11:00,,ПРОБЛЕМА,new-host,New problem,1ч,Нет,,service=new"]))[0]]
+        compared = compare_zabbix_problem_exports(current, previous)
+        statuses = {problem.problem: problem.status for problem in compared}
+        self.assertEqual(statuses["Old problem"], "РЕШЕНО")
+        self.assertEqual(statuses["New problem"], "ПРОБЛЕМА")
+
+    def _csv_file(self, rows):
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", encoding="utf-8")
+        tmp.write("Важность,Время,Время восстановления,Состояние,Узел сети,Проблема,Длительность,Подтверждено,Действия,Теги\n")
+        tmp.write("\n".join(rows))
+        tmp.write("\n")
+        tmp.close()
+        self.addCleanup(lambda: Path(tmp.name).unlink(missing_ok=True))
+        return Path(tmp.name)
+
+    def test_handled_problem_storage_and_marking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            export_dir = ensure_zabbix_problem_export_dir(tmp)
+            problem = parse_zabbix_problems_csv(self._csv_file(["High,23.06.2026 12:00,,ПРОБЛЕМА,server-01,CPU high,1ч,Нет,,service=cpu"]))[0]
+            mark_zabbix_problems_handled(export_dir, [problem], handled_at="2026-06-23T12:30:00")
+            handled = load_handled_zabbix_problems(export_dir)
+            self.assertIn(problem.key, handled)
+            apply_handled_zabbix_problems([problem], handled)
+            self.assertTrue(problem.handled)
+
+    def test_adopt_latest_export_handles_numbered_csv_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            export_dir = ensure_zabbix_problem_export_dir(tmp)
+            numbered = export_dir / "zbx_problems_export(2).csv"
+            numbered.write_text("csv", encoding="utf-8")
+            current = adopt_latest_zabbix_problem_csv(export_dir)
+            self.assertEqual(current.name, "current.csv")
+            self.assertTrue(current.exists())
+            self.assertFalse(numbered.exists())
+
+    def test_csv_rotation_and_cleanup_keep_only_current_previous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            export_dir = ensure_zabbix_problem_export_dir(tmp)
+            (export_dir / "current.csv").write_text("old", encoding="utf-8")
+            (export_dir / "zbx_problems_export(1).csv").write_text("extra", encoding="utf-8")
+            current, previous = rotate_zabbix_problem_csv_files(export_dir)
+            self.assertEqual(current.name, "current.csv")
+            self.assertTrue(previous.exists())
+            current.write_text("new", encoding="utf-8")
+            cleanup_zabbix_problem_csv_files(export_dir)
+            self.assertEqual(sorted(path.name for path in export_dir.glob("*.csv")), ["current.csv", "previous.csv"])
+
     def test_find_problems_page_prefers_named_page_profile_and_product(self):
         config = {
             "products": [

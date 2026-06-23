@@ -87,11 +87,19 @@ from app.templates import (
 
 from app.note_links import plain_text_to_safe_html_with_links
 from app.duty_zabbix import (
+    adopt_latest_zabbix_problem_csv,
+    apply_handled_zabbix_problems,
+    cleanup_zabbix_problem_csv_files,
+    ensure_zabbix_problem_export_dir,
     find_problems_page_url,
     filter_problems_by_period,
     format_zabbix_problems_note_block,
+    load_compared_zabbix_problem_exports,
+    load_handled_zabbix_problems,
+    mark_zabbix_problems_handled,
     normalize_problem_row,
     problem_matches_keywords,
+    rotate_zabbix_problem_csv_files,
     zabbix_problems_collect_js,
     zabbix_problems_next_page_js,
     zabbix_status_html,
@@ -328,13 +336,14 @@ class DutyNotificationDialog(QDialog):
 
 
 class ZabbixProblemsSelectionDialog(QDialog):
-    def __init__(self, problems, parent=None):
+    def __init__(self, problems, export_dir=None, parent=None):
         super().__init__(parent)
         self.all_problems = list(problems or [])
+        self.export_dir = export_dir
         self.selected_problems = []
         self.period_days = 1
         self.setWindowTitle("Замеченные проблемы Zabbix")
-        self.resize(980, 560)
+        self.resize(1180, 620)
 
         root = QVBoxLayout(self)
         title = QLabel("Замеченные проблемы Zabbix")
@@ -351,11 +360,17 @@ class ZabbixProblemsSelectionDialog(QDialog):
             button.clicked.connect(lambda _checked=False, value=days: self.set_period(value))
             self.period_buttons[days] = button
             period_row.addWidget(button)
+        self.show_resolved_checkbox = QCheckBox("Показать решённые")
+        self.show_resolved_checkbox.toggled.connect(self.render_table)
+        self.hide_handled_checkbox = QCheckBox("Скрыть уже обработанные")
+        self.hide_handled_checkbox.toggled.connect(self.render_table)
+        period_row.addWidget(self.show_resolved_checkbox)
+        period_row.addWidget(self.hide_handled_checkbox)
         period_row.addStretch(1)
         root.addLayout(period_row)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Время", "Важность", "Узел сети", "Проблема", "Теги"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Статус", "Время", "Важность", "Узел сети", "Проблема", "Теги", "Обработка"])
         self.table.setWordWrap(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         root.addWidget(self.table, stretch=1)
@@ -370,6 +385,7 @@ class ZabbixProblemsSelectionDialog(QDialog):
         row.addWidget(cancel)
         row.addWidget(add)
         root.addLayout(row)
+        self._visible_problems = []
         self.render_table()
 
     def set_period(self, days):
@@ -378,28 +394,49 @@ class ZabbixProblemsSelectionDialog(QDialog):
             button.setChecked(value == self.period_days)
         self.render_table()
 
-    def render_table(self):
+    def _filtered_problems(self):
         visible = filter_problems_by_period(self.all_problems, self.period_days)
+        if not self.show_resolved_checkbox.isChecked():
+            visible = [problem for problem in visible if str(problem.get("status", "ПРОБЛЕМА")) != "РЕШЕНО"]
+        if self.hide_handled_checkbox.isChecked():
+            visible = [problem for problem in visible if not problem.get("handled")]
+        return visible
+
+    def render_table(self):
+        self._visible_problems = self._filtered_problems()
         self.table.setRowCount(0)
-        for problem in visible:
+        for problem in self._visible_problems:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            values = [problem.get("time", ""), problem.get("severity", ""), problem.get("host", ""), problem.get("problem", ""), problem.get("tags", "")]
+            values = [
+                problem.get("status", "ПРОБЛЕМА"),
+                problem.get("time", ""),
+                problem.get("severity", ""),
+                problem.get("host", ""),
+                problem.get("problem", ""),
+                problem.get("tags", ""),
+                "Уже обработана" if problem.get("handled") else "",
+            ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(str(value or ""))
                 if col == 0:
                     item.setCheckState(Qt.Unchecked)
+                if str(problem.get("status", "")).upper() == "РЕШЕНО":
+                    item.setForeground(QColor("#9aa4b2"))
+                elif problem.get("handled"):
+                    item.setForeground(QColor("#f6d365"))
                 self.table.setItem(row, col, item)
         self.table.resizeColumnsToContents()
 
     def accept_selected(self):
         selected = []
-        visible = filter_problems_by_period(self.all_problems, self.period_days)
-        for row, problem in enumerate(visible):
+        for row, problem in enumerate(self._visible_problems):
             item = self.table.item(row, 0)
             if item is not None and item.checkState() == Qt.Checked:
                 selected.append(problem)
         self.selected_problems = selected
+        if self.export_dir and selected:
+            mark_zabbix_problems_handled(self.export_dir, selected)
         self.accept()
 
 
@@ -419,6 +456,11 @@ class ZabbixProblemsDialog(QDialog):
         self._problem_collect_rows = []
         self._problem_collect_seen = set()
         self._problem_collect_page = 0
+        self.problem_export_dir = ensure_zabbix_problem_export_dir()
+        self.csv_current_path = self.problem_export_dir / "current.csv"
+        self.csv_previous_path = self.problem_export_dir / "previous.csv"
+        self._csv_download_requested = False
+        self._csv_download_finished = False
         self.logger = get_logger()
         self.view = None
         self.page = None
@@ -437,6 +479,7 @@ class ZabbixProblemsDialog(QDialog):
         self.view = register_web_view(QWebEngineView(self))
         self.page = QWebEnginePage(self.profile, self.view) if self.profile is not None else QWebEnginePage(self.view)
         self.view.setPage(self.page)
+        self._connect_csv_download_handler()
         self.view.loadFinished.connect(self.on_loaded)
         root.addWidget(self.view, stretch=1)
 
@@ -468,7 +511,102 @@ class ZabbixProblemsDialog(QDialog):
         js = make_zabbix_login_js(login, password)
         if js and self.page is not None:
             self.page.runJavaScript(js)
-        QTimer.singleShot(1800, self.collect_problems_from_page)
+        QTimer.singleShot(1800, self.start_csv_problem_export)
+
+    def _connect_csv_download_handler(self):
+        try:
+            profile = self.page.profile() if self.page is not None else None
+            if profile is not None and hasattr(profile, "downloadRequested"):
+                profile.downloadRequested.connect(self._handle_csv_download)
+        except Exception:
+            self.logger.exception("Failed to connect Zabbix CSV download handler")
+
+    def start_csv_problem_export(self):
+        if self.page is None:
+            self.collect_problems_from_page()
+            return
+        self._csv_download_requested = False
+        self._csv_download_finished = False
+        self.status_label.setText("Пытаюсь скачать CSV со списком проблем Zabbix...")
+        self.page.runJavaScript(
+            """
+            (function() {
+                const button = document.querySelector('#export_csv');
+                if (!button) { return false; }
+                button.click();
+                return true;
+            })();
+            """,
+            self._after_export_csv_click,
+        )
+
+    def _after_export_csv_click(self, clicked):
+        if clicked:
+            QTimer.singleShot(9000, self._csv_download_timeout_fallback)
+            return
+        self.problems_button.setText("Не найдена кнопка экспорта CSV на странице проблем Zabbix")
+        self.status_label.setText("Не найдена кнопка экспорта CSV на странице проблем Zabbix. Использую DOM fallback.")
+        self.collect_problems_from_page()
+
+    def _handle_csv_download(self, download):
+        try:
+            self._csv_download_requested = True
+            self.csv_current_path, self.csv_previous_path = rotate_zabbix_problem_csv_files(self.problem_export_dir)
+            if hasattr(download, "setDownloadDirectory"):
+                download.setDownloadDirectory(str(self.problem_export_dir))
+            if hasattr(download, "setDownloadFileName"):
+                download.setDownloadFileName("current.csv")
+            if hasattr(download, "isFinishedChanged"):
+                download.isFinishedChanged.connect(lambda: self._finish_csv_download_if_ready())
+            elif hasattr(download, "finished"):
+                download.finished.connect(self._process_downloaded_csv)
+            if hasattr(download, "accept"):
+                download.accept()
+            QTimer.singleShot(12000, self._finish_csv_download_if_ready)
+        except Exception:
+            self.logger.exception("Не удалось скачать CSV со списком проблем Zabbix")
+            self.status_label.setText("Не удалось скачать CSV со списком проблем Zabbix. Использую DOM fallback.")
+            self.collect_problems_from_page()
+
+    def _finish_csv_download_if_ready(self):
+        if self._csv_download_finished:
+            return
+        adopt_latest_zabbix_problem_csv(self.problem_export_dir)
+        if self.csv_current_path.exists() and self.csv_current_path.stat().st_size > 0:
+            self._process_downloaded_csv()
+
+    def _csv_download_timeout_fallback(self):
+        if self._csv_download_finished:
+            return
+        adopt_latest_zabbix_problem_csv(self.problem_export_dir)
+        if self.csv_current_path.exists() and self.csv_current_path.stat().st_size > 0:
+            self._process_downloaded_csv()
+            return
+        if not self._csv_download_requested:
+            self.problems_button.setText("Не удалось скачать CSV со списком проблем Zabbix")
+        self.status_label.setText("Не удалось скачать CSV со списком проблем Zabbix. Использую DOM fallback.")
+        self.collect_problems_from_page()
+
+    def _process_downloaded_csv(self):
+        if self._csv_download_finished:
+            return
+        self._csv_download_finished = True
+        try:
+            problems = load_compared_zabbix_problem_exports(self.problem_export_dir, logger=self.logger)
+            settings = self.config.get("duty_mode", {}) if isinstance(self.config, dict) else {}
+            keywords = settings.get("zabbix_problem_keywords", [])
+            excludes = settings.get("zabbix_problem_exclude_keywords", [])
+            problems = [
+                problem for problem in problems
+                if problem_matches_keywords(problem, keywords=keywords, exclude_keywords=excludes)
+            ]
+            cleanup_zabbix_problem_csv_files(self.problem_export_dir, logger=self.logger)
+            self.status_label.setText("CSV со списком проблем Zabbix обработан.")
+            self.update_problem_counter(problems)
+        except Exception:
+            self.logger.exception("Не удалось обработать CSV со списком проблем Zabbix")
+            self.status_label.setText("Не удалось обработать CSV со списком проблем Zabbix. Использую DOM fallback.")
+            self.collect_problems_from_page()
 
     def collect_problems_from_page(self):
         self._problem_collect_rows = []
@@ -515,25 +653,49 @@ class ZabbixProblemsDialog(QDialog):
             return
         self.update_problem_counter(self._problem_collect_rows, read_failed=read_failed)
 
+    def _problem_counts(self, problems):
+        problems = list(problems or [])
+        active = [problem for problem in problems if str(problem.get("status", "ПРОБЛЕМА")) != "РЕШЕНО"]
+        resolved = [problem for problem in problems if str(problem.get("status", "")) == "РЕШЕНО"]
+        handled = [problem for problem in active if problem.get("handled")]
+        return len(active), len(handled), len(resolved)
+
     def update_problem_counter(self, problems, read_failed=False):
         self.detected_problems = list(problems or [])
         self.problemsDetected.emit(self.detected_problems)
         if read_failed:
             self.problems_button.setText("Проблемы не найдены или не удалось прочитать список проблем")
             self.problems_button.setEnabled(False)
-        elif self.detected_problems:
-            self.problems_button.setText(f"Замечены проблемы: {len(self.detected_problems)}")
+            return
+        active_count, handled_count, resolved_count = self._problem_counts(self.detected_problems)
+        if active_count:
+            parts = [f"Замечены проблемы: {active_count}"]
+            if handled_count:
+                parts.append(f"уже обработаны: {handled_count}")
+            if resolved_count:
+                parts.append(f"решено с прошлой проверки: {resolved_count}")
+            self.problems_button.setText(", ".join(parts))
+            self.problems_button.setEnabled(True)
+        elif resolved_count:
+            self.problems_button.setText(f"Проблемы не найдены, решено с прошлой проверки: {resolved_count}")
             self.problems_button.setEnabled(True)
         else:
             self.problems_button.setText("Проблемы не найдены")
             self.problems_button.setEnabled(False)
 
     def open_problems_selection(self):
-        dialog = ZabbixProblemsSelectionDialog(self.detected_problems, parent=self)
+        dialog = ZabbixProblemsSelectionDialog(self.detected_problems, export_dir=self.problem_export_dir, parent=self)
         if dialog.exec() == QDialog.Accepted:
             self.selected_problems = list(dialog.selected_problems or [])
             self.problemsSelected.emit(self.selected_problems)
-            self.problems_button.setText(f"Замечены проблемы: {len(self.detected_problems)}; добавлено в заметку: {len(self.selected_problems)}")
+            active_count, handled_count, resolved_count = self._problem_counts(self.detected_problems)
+            parts = [f"Замечены проблемы: {active_count}"] if active_count else ["Проблемы не найдены"]
+            if handled_count:
+                parts.append(f"уже обработаны: {handled_count}")
+            if resolved_count:
+                parts.append(f"решено с прошлой проверки: {resolved_count}")
+            parts.append(f"добавлено в заметку: {len(self.selected_problems)}")
+            self.problems_button.setText(", ".join(parts))
 
     def confirm(self):
         self.confirmed.emit()
@@ -807,6 +969,7 @@ class AttachExistingTaskDialog(QDialog):
             pass
 
         self.view.setPage(self.page)
+        self._connect_csv_download_handler()
         self.view.loadFinished.connect(self.on_loaded)
 
         root.addWidget(self.view, stretch=1)
@@ -1389,6 +1552,7 @@ class OtrsCreateTaskDialog(QDialog):
             pass
 
         self.view.setPage(self.page)
+        self._connect_csv_download_handler()
         self.view.loadFinished.connect(self.on_loaded)
         self.view.urlChanged.connect(self.on_url_changed)
 
@@ -1745,6 +1909,7 @@ class OtrsNoteDialog(QDialog):
             pass
 
         self.view.setPage(self.page)
+        self._connect_csv_download_handler()
         self.view.loadFinished.connect(self.on_loaded)
         self.view.urlChanged.connect(self.on_url_changed)
 
@@ -2336,6 +2501,7 @@ class DutyGraphCard(QFrame):
 
         self.page = QWebEnginePage(profile, self.view)
         self.view.setPage(self.page)
+        self._connect_csv_download_handler()
         self.view.loadFinished.connect(self.on_loaded)
 
         self.duty_trigger_status_label = QLabel("")
@@ -3972,6 +4138,13 @@ class DutyModeWidget(QWidget):
         elif item == "zabbix":
             self.start_duty_zabbix_stage()
 
+    def _zabbix_problem_counts(self):
+        problems = list(self.detected_zabbix_problems or [])
+        active = [problem for problem in problems if str(problem.get("status", "ПРОБЛЕМА")) != "РЕШЕНО"]
+        resolved = [problem for problem in problems if str(problem.get("status", "")) == "РЕШЕНО"]
+        handled = [problem for problem in active if problem.get("handled")]
+        return len(active), len(handled), len(resolved)
+
     def _render_status_panels(self):
         if not hasattr(self, "service_status_panel"):
             return
@@ -4004,8 +4177,13 @@ class DutyModeWidget(QWidget):
         else:
             zabbix_task = self._task_summary_html("zabbix", self._zabbix_task_number())
             lines = [f"<b>Задача Zabbix / графики:</b> {zabbix_task}", f"Проблемы Zabbix — {self._zabbix_status_html(self.duty_zabbix_problems_status)}", f"Графики дежурства — {self._zabbix_status_html(self.duty_zabbix_graphs_status)}"]
-            if self.detected_zabbix_problems:
-                lines.append(f"Замечены проблемы: {len(self.detected_zabbix_problems)}")
+            active_count, handled_count, resolved_count = self._zabbix_problem_counts()
+            if active_count:
+                lines.append(f"Замечены проблемы: {active_count}")
+            if handled_count:
+                lines.append(f"Уже обработаны: {handled_count}")
+            if resolved_count:
+                lines.append(f"Решено с прошлой проверки: {resolved_count}")
             if self.selected_zabbix_problems_for_note:
                 lines.append(f"Добавлено в заметку: {len(self.selected_zabbix_problems_for_note)}")
             lines.append("<br><b>Графики:</b>")
@@ -5256,7 +5434,8 @@ class DutyModeWidget(QWidget):
 
     def _remember_detected_zabbix_problems(self, problems):
         self.detected_zabbix_problems = list(problems or [])
-        if self.detected_zabbix_problems:
+        active_count, _handled_count, _resolved_count = self._zabbix_problem_counts()
+        if active_count:
             self.duty_zabbix_problems_status = "Требуется внимание"
         self.update_dashboard_summary()
 
@@ -5267,7 +5446,8 @@ class DutyModeWidget(QWidget):
         self.update_dashboard_summary()
 
     def _finish_zabbix_problems_stage(self):
-        self.duty_zabbix_problems_status = "Требуется внимание" if self.detected_zabbix_problems else "Проверено"
+        active_count, _handled_count, _resolved_count = self._zabbix_problem_counts()
+        self.duty_zabbix_problems_status = "Требуется внимание" if active_count else "Проверено"
         self.load_check_graphs()
         if not self.check_graphs:
             self.duty_zabbix_graphs_status = "Ошибка: графики не выбраны"

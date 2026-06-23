@@ -312,6 +312,281 @@ def format_zabbix_problems_note_block(problems):
         lines.append(f"{index}. [{severity}] {host} — {text}")
         if problem.get("time"):
             lines.append(f"   Время: {problem.get('time')}")
+        if problem.get("status"):
+            lines.append(f"   Состояние: {problem.get('status')}")
+        if problem.get("acknowledged"):
+            lines.append(f"   Подтверждено: {problem.get('acknowledged')}")
+        if problem.get("duration"):
+            lines.append(f"   Длительность: {problem.get('duration')}")
         if problem.get("tags"):
             lines.append(f"   Теги: {problem.get('tags')}")
+        if problem.get("handled"):
+            lines.append("   Примечание: проблема уже была добавлена в задачу ранее.")
     return "\n".join(lines)
+
+
+# --- CSV-based Zabbix problems export -------------------------------------------------
+import csv
+import hashlib
+import io
+import json
+import shutil
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+
+@dataclass
+class ZabbixProblem:
+    severity: str = ""
+    time: str = ""
+    recovery_time: str = ""
+    state: str = ""
+    host: str = ""
+    problem: str = ""
+    duration: str = ""
+    acknowledged: str = ""
+    actions: str = ""
+    tags: str = ""
+    status: str = "ПРОБЛЕМА"
+    handled: bool = False
+    raw: dict = field(default_factory=dict)
+    key: str = ""
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def to_dict(self):
+        return asdict(self)
+
+
+CSV_HEADER_MAP = {
+    "важность": "severity",
+    "severity": "severity",
+    "время": "time",
+    "time": "time",
+    "время восстановления": "recovery_time",
+    "recovery time": "recovery_time",
+    "состояние": "state",
+    "state": "state",
+    "узел сети": "host",
+    "host": "host",
+    "проблема": "problem",
+    "problem": "problem",
+    "длительность": "duration",
+    "duration": "duration",
+    "подтверждено": "acknowledged",
+    "acknowledged": "acknowledged",
+    "действия": "actions",
+    "actions": "actions",
+    "теги": "tags",
+    "tags": "tags",
+}
+
+
+def normalize_problem_text(value):
+    return " ".join(str(value or "").replace("\ufeff", "").split()).strip()
+
+
+def _problem_attr(problem, key):
+    if isinstance(problem, ZabbixProblem):
+        return getattr(problem, key, "")
+    if isinstance(problem, dict):
+        return problem.get(key, "")
+    return ""
+
+
+def make_zabbix_problem_key(problem):
+    parts = [
+        normalize_problem_text(_problem_attr(problem, "severity")).casefold(),
+        normalize_problem_text(_problem_attr(problem, "time")).casefold(),
+        normalize_problem_text(_problem_attr(problem, "host")).casefold(),
+        normalize_problem_text(_problem_attr(problem, "problem")).casefold(),
+        normalize_problem_text(_problem_attr(problem, "tags")).casefold(),
+    ]
+    source = "|".join(parts)
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _status_from_csv_fields(state, recovery_time):
+    state_text = normalize_problem_text(state).casefold()
+    if normalize_problem_text(recovery_time) or "реш" in state_text or "resolved" in state_text:
+        return "РЕШЕНО"
+    return "ПРОБЛЕМА"
+
+
+def _read_csv_text(path):
+    path = Path(path)
+    for encoding in ("utf-8-sig", "utf-8"):
+        try:
+            return path.read_text(encoding=encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return path.read_text(encoding="utf-8", errors="replace"), "utf-8"
+
+
+def parse_zabbix_problems_csv(path):
+    text, _encoding = _read_csv_text(path)
+    rows = csv.DictReader(io.StringIO(text))
+    problems = []
+    for row in rows:
+        if not row or not any(normalize_problem_text(value) for value in row.values()):
+            continue
+        normalized = {}
+        raw = {}
+        for header, value in row.items():
+            header_text = normalize_problem_text(header).casefold()
+            raw[normalize_problem_text(header)] = normalize_problem_text(value)
+            target = CSV_HEADER_MAP.get(header_text)
+            if target:
+                normalized[target] = normalize_problem_text(value)
+        problem = ZabbixProblem(
+            severity=normalized.get("severity", ""),
+            time=normalized.get("time", ""),
+            recovery_time=normalized.get("recovery_time", ""),
+            state=normalized.get("state", ""),
+            host=normalized.get("host", ""),
+            problem=normalized.get("problem", ""),
+            duration=normalized.get("duration", ""),
+            acknowledged=normalized.get("acknowledged", ""),
+            actions=normalized.get("actions", ""),
+            tags=normalized.get("tags", ""),
+            raw=raw,
+        )
+        problem.status = _status_from_csv_fields(problem.state, problem.recovery_time)
+        problem.key = make_zabbix_problem_key(problem)
+        problems.append(problem)
+    return problems
+
+
+def compare_zabbix_problem_exports(current_problems, previous_problems=None):
+    current = list(current_problems or [])
+    previous = list(previous_problems or [])
+    current_keys = {problem.key for problem in current if problem.key}
+    result = []
+    for problem in current:
+        problem.status = _status_from_csv_fields(problem.state, problem.recovery_time)
+        result.append(problem)
+    for old in previous:
+        if old.key and old.key not in current_keys:
+            resolved = ZabbixProblem(**old.to_dict()) if isinstance(old, ZabbixProblem) else ZabbixProblem(**old)
+            resolved.status = "РЕШЕНО"
+            result.append(resolved)
+    return result
+
+
+def zabbix_problem_export_dir(base_dir=None):
+    base = Path(base_dir) if base_dir is not None else Path(__file__).resolve().parent.parent
+    return base / "data" / "zabbix_problem_exports"
+
+
+def ensure_zabbix_problem_export_dir(base_dir=None):
+    path = zabbix_problem_export_dir(base_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    handled = path / "handled_problems.json"
+    if not handled.exists():
+        handled.write_text(json.dumps({"handled": {}}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def rotate_zabbix_problem_csv_files(export_dir):
+    export_dir = Path(export_dir)
+    export_dir.mkdir(parents=True, exist_ok=True)
+    current = export_dir / "current.csv"
+    previous = export_dir / "previous.csv"
+    if previous.exists():
+        previous.unlink()
+    if current.exists():
+        current.replace(previous)
+    return current, previous
+
+
+def cleanup_zabbix_problem_csv_files(export_dir, logger=None):
+    export_dir = Path(export_dir)
+    for csv_path in export_dir.glob("*.csv"):
+        if csv_path.name in {"current.csv", "previous.csv"}:
+            continue
+        try:
+            csv_path.unlink()
+        except Exception as exc:
+            if logger is not None:
+                logger.warning("Failed to delete old Zabbix problems CSV: path=%s error=%s", csv_path, exc)
+
+
+def load_handled_zabbix_problems(export_dir, logger=None):
+    path = Path(export_dir) / "handled_problems.json"
+    try:
+        if not path.exists():
+            path.write_text(json.dumps({"handled": {}}, ensure_ascii=False, indent=2), encoding="utf-8")
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        handled = data.get("handled", {}) if isinstance(data, dict) else {}
+        return handled if isinstance(handled, dict) else {}
+    except Exception as exc:
+        if logger is not None:
+            logger.warning("Failed to read handled Zabbix problems, recreating file: path=%s error=%s", path, exc)
+        path.write_text(json.dumps({"handled": {}}, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {}
+
+
+def save_handled_zabbix_problems(export_dir, handled):
+    path = Path(export_dir) / "handled_problems.json"
+    payload = {"handled": handled or {}}
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def mark_zabbix_problems_handled(export_dir, problems, handled_at=None):
+    handled = load_handled_zabbix_problems(export_dir)
+    handled_at = handled_at or datetime.now().isoformat(timespec="seconds")
+    for problem in problems or []:
+        key = _problem_attr(problem, "key") or make_zabbix_problem_key(problem)
+        handled[key] = {
+            "handled_at": handled_at,
+            "severity": _problem_attr(problem, "severity"),
+            "time": _problem_attr(problem, "time"),
+            "host": _problem_attr(problem, "host"),
+            "problem": _problem_attr(problem, "problem"),
+            "tags": _problem_attr(problem, "tags"),
+        }
+    save_handled_zabbix_problems(export_dir, handled)
+    return handled
+
+
+def apply_handled_zabbix_problems(problems, handled):
+    handled = handled or {}
+    for problem in problems or []:
+        key = _problem_attr(problem, "key") or make_zabbix_problem_key(problem)
+        if isinstance(problem, ZabbixProblem):
+            problem.key = key
+            problem.handled = key in handled
+        elif isinstance(problem, dict):
+            problem["key"] = key
+            problem["handled"] = key in handled
+    return problems
+
+
+def load_compared_zabbix_problem_exports(export_dir, logger=None):
+    export_dir = Path(export_dir)
+    current_path = export_dir / "current.csv"
+    previous_path = export_dir / "previous.csv"
+    current = parse_zabbix_problems_csv(current_path) if current_path.exists() else []
+    previous = parse_zabbix_problems_csv(previous_path) if previous_path.exists() else []
+    compared = compare_zabbix_problem_exports(current, previous)
+    handled = load_handled_zabbix_problems(export_dir, logger=logger)
+    apply_handled_zabbix_problems(compared, handled)
+    return compared
+
+
+def adopt_latest_zabbix_problem_csv(export_dir):
+    export_dir = Path(export_dir)
+    current = export_dir / "current.csv"
+    candidates = [
+        path for path in export_dir.glob("*.csv")
+        if path.name not in {"current.csv", "previous.csv"}
+    ]
+    if current.exists():
+        return current
+    if not candidates:
+        return current
+    latest = max(candidates, key=lambda path: path.stat().st_mtime)
+    latest.replace(current)
+    return current
