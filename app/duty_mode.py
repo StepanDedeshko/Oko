@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QTextEdit,
     QTextBrowser,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
     QSizePolicy,
@@ -84,7 +86,14 @@ from app.templates import (
 
 
 from app.note_links import plain_text_to_safe_html_with_links
-from app.duty_zabbix import find_problems_page_url, zabbix_status_html
+from app.duty_zabbix import (
+    find_problems_page_url,
+    filter_problems_by_period,
+    format_zabbix_problems_note_block,
+    normalize_problem_row,
+    problem_matches_keywords,
+    zabbix_status_html,
+)
 
 def open_external_url(url):
     QDesktopServices.openUrl(QUrl(str(url or "")))
@@ -315,14 +324,96 @@ class DutyNotificationDialog(QDialog):
 
 
 
+
+class ZabbixProblemsSelectionDialog(QDialog):
+    def __init__(self, problems, parent=None):
+        super().__init__(parent)
+        self.all_problems = list(problems or [])
+        self.selected_problems = []
+        self.period_days = 1
+        self.setWindowTitle("Замеченные проблемы Zabbix")
+        self.resize(980, 560)
+
+        root = QVBoxLayout(self)
+        title = QLabel("Замеченные проблемы Zabbix")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        period_row = QHBoxLayout()
+        period_row.addWidget(QLabel("Период:"))
+        self.period_buttons = {}
+        for days, label in ((1, "1 день"), (3, "3 дня"), (7, "7 дней"), (14, "14 дней"), (30, "30 дней")):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setChecked(days == self.period_days)
+            button.clicked.connect(lambda _checked=False, value=days: self.set_period(value))
+            self.period_buttons[days] = button
+            period_row.addWidget(button)
+        period_row.addStretch(1)
+        root.addLayout(period_row)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Время", "Важность", "Узел сети", "Проблема", "Теги"])
+        self.table.setWordWrap(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        root.addWidget(self.table, stretch=1)
+
+        row = QHBoxLayout()
+        cancel = QPushButton("Отмена")
+        cancel.clicked.connect(self.reject)
+        add = QPushButton("Добавить в задачу")
+        add.setObjectName("PrimaryAction")
+        add.clicked.connect(self.accept_selected)
+        row.addStretch(1)
+        row.addWidget(cancel)
+        row.addWidget(add)
+        root.addLayout(row)
+        self.render_table()
+
+    def set_period(self, days):
+        self.period_days = int(days)
+        for value, button in self.period_buttons.items():
+            button.setChecked(value == self.period_days)
+        self.render_table()
+
+    def render_table(self):
+        visible = filter_problems_by_period(self.all_problems, self.period_days)
+        self.table.setRowCount(0)
+        for problem in visible:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            values = [problem.get("time", ""), problem.get("severity", ""), problem.get("host", ""), problem.get("problem", ""), problem.get("tags", "")]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(str(value or ""))
+                if col == 0:
+                    item.setCheckState(Qt.Unchecked)
+                self.table.setItem(row, col, item)
+        self.table.resizeColumnsToContents()
+
+    def accept_selected(self):
+        selected = []
+        visible = filter_problems_by_period(self.all_problems, self.period_days)
+        for row, problem in enumerate(visible):
+            item = self.table.item(row, 0)
+            if item is not None and item.checkState() == Qt.Checked:
+                selected.append(problem)
+        self.selected_problems = selected
+        self.accept()
+
+
 class ZabbixProblemsDialog(QDialog):
     confirmed = Signal()
+    problemsSelected = Signal(object)
+    problemsDetected = Signal(object)
 
-    def __init__(self, url, profile=None, credentials=None, parent=None):
+    def __init__(self, url, profile=None, credentials=None, config=None, parent=None):
         super().__init__(parent)
         self.url = str(url or "").strip()
         self.profile = profile
         self.credentials = credentials or {}
+        self.config = config or {}
+        self.detected_problems = []
+        self.selected_problems = []
         self.logger = get_logger()
         self.view = None
         self.page = None
@@ -345,6 +436,10 @@ class ZabbixProblemsDialog(QDialog):
         root.addWidget(self.view, stretch=1)
 
         row = QHBoxLayout()
+        self.problems_button = QPushButton("Проблемы не найдены")
+        self.problems_button.setEnabled(False)
+        self.problems_button.clicked.connect(self.open_problems_selection)
+        row.addWidget(self.problems_button)
         confirm = QPushButton("Проверено, перейти к графикам")
         confirm.setObjectName("PrimaryAction")
         confirm.clicked.connect(self.confirm)
@@ -368,6 +463,75 @@ class ZabbixProblemsDialog(QDialog):
         js = make_zabbix_login_js(login, password)
         if js and self.page is not None:
             self.page.runJavaScript(js)
+        QTimer.singleShot(1800, self.collect_problems_from_page)
+
+    def collect_problems_from_page(self):
+        if self.page is None:
+            self.update_problem_counter([], read_failed=True)
+            return
+        js = r"""
+        (function() {
+            function clean(text) { return String(text || '').replace(/\s+/g, ' ').trim(); }
+            const rows = [];
+            const tableRows = Array.from(document.querySelectorAll('table tr'));
+            for (const tr of tableRows) {
+                const cells = Array.from(tr.querySelectorAll('td'));
+                if (!cells.length) { continue; }
+                const values = cells.map((td) => {
+                    const bits = [td.innerText, td.textContent, td.getAttribute('title'), td.getAttribute('aria-label')]
+                        .map(clean).filter(Boolean);
+                    return bits[0] || '';
+                }).filter(Boolean);
+                const raw = clean(tr.innerText || tr.textContent || '');
+                if (values.length || raw) { rows.push({cells: values, rawText: raw}); }
+            }
+            if (!rows.length) {
+                for (const node of Array.from(document.querySelectorAll('[class*=problem], [class*=trigger], [data-eventid], [data-triggerid]'))) {
+                    const raw = clean(node.innerText || node.textContent || node.getAttribute('title') || node.getAttribute('aria-label') || '');
+                    if (raw) { rows.push({cells: [raw], rawText: raw}); }
+                }
+            }
+            return rows.slice(0, 500);
+        })();
+        """
+        self.page.runJavaScript(js, self.after_collect_problems)
+
+    def after_collect_problems(self, result):
+        settings = self.config.get("duty_mode", {}) if isinstance(self.config, dict) else {}
+        keywords = settings.get("zabbix_problem_keywords", [])
+        excludes = settings.get("zabbix_problem_exclude_keywords", [])
+        problems = []
+        if isinstance(result, list):
+            for row in result[:500]:
+                cells = row.get("cells", []) if isinstance(row, dict) else row
+                problem = normalize_problem_row(cells)
+                if problem is None:
+                    continue
+                if isinstance(row, dict) and row.get("rawText"):
+                    problem["raw_text"] = row.get("rawText")
+                if problem_matches_keywords(problem, keywords=keywords, exclude_keywords=excludes):
+                    problems.append(problem)
+        self.update_problem_counter(problems, read_failed=not isinstance(result, list))
+
+    def update_problem_counter(self, problems, read_failed=False):
+        self.detected_problems = list(problems or [])
+        self.problemsDetected.emit(self.detected_problems)
+        if read_failed:
+            self.problems_button.setText("Проблемы не найдены или не удалось прочитать список проблем")
+            self.problems_button.setEnabled(False)
+        elif self.detected_problems:
+            self.problems_button.setText(f"Замечены проблемы: {len(self.detected_problems)}")
+            self.problems_button.setEnabled(True)
+        else:
+            self.problems_button.setText("Проблемы не найдены")
+            self.problems_button.setEnabled(False)
+
+    def open_problems_selection(self):
+        dialog = ZabbixProblemsSelectionDialog(self.detected_problems, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            self.selected_problems = list(dialog.selected_problems or [])
+            self.problemsSelected.emit(self.selected_problems)
+            self.problems_button.setText(f"Замечены проблемы: {len(self.detected_problems)}; добавлено в заметку: {len(self.selected_problems)}")
 
     def confirm(self):
         self.confirmed.emit()
@@ -3490,6 +3654,8 @@ class DutyModeWidget(QWidget):
         self.duty_flow_services_first = False
         self.duty_summary_dialog = None
         self.zabbix_problems_dialog = None
+        self.detected_zabbix_problems = []
+        self.selected_zabbix_problems_for_note = []
         self.duty_flow_queue = []
         self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
@@ -3834,7 +4000,12 @@ class DutyModeWidget(QWidget):
             z_html = "<b>Проверка Zabbix не выбрана</b>"
         else:
             zabbix_task = self._task_summary_html("zabbix", self._zabbix_task_number())
-            lines = [f"<b>Задача Zabbix / графики:</b> {zabbix_task}", f"Проблемы Zabbix — {self._zabbix_status_html(self.duty_zabbix_problems_status)}", f"Графики дежурства — {self._zabbix_status_html(self.duty_zabbix_graphs_status)}", "<br><b>Графики:</b>"]
+            lines = [f"<b>Задача Zabbix / графики:</b> {zabbix_task}", f"Проблемы Zabbix — {self._zabbix_status_html(self.duty_zabbix_problems_status)}", f"Графики дежурства — {self._zabbix_status_html(self.duty_zabbix_graphs_status)}"]
+            if self.detected_zabbix_problems:
+                lines.append(f"Замечены проблемы: {len(self.detected_zabbix_problems)}")
+            if self.selected_zabbix_problems_for_note:
+                lines.append(f"Добавлено в заметку: {len(self.selected_zabbix_problems_for_note)}")
+            lines.append("<br><b>Графики:</b>")
             for i, item in enumerate(self.check_graphs, 1):
                 graph_status = self.duty_zabbix_graph_statuses.get(item.get("id"), self.duty_zabbix_graphs_status)
                 lines.append(f"{i}. {self._graph_note_title(item)} — {self._zabbix_status_html(graph_status)}")
@@ -4954,6 +5125,8 @@ class DutyModeWidget(QWidget):
         self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
         self.duty_zabbix_graph_statuses = {item.get("id"): "Ожидает проверки" for item in self.check_graphs}
+        self.detected_zabbix_problems = []
+        self.selected_zabbix_problems_for_note = []
         self.logger.info("Duty check started")
         self.mark_check_started()
         self._run_next_duty_queue_item()
@@ -5032,16 +5205,30 @@ class DutyModeWidget(QWidget):
         credentials = self.credentials.get(zabbix_id, {}) if zabbix_id else {}
         self.duty_zabbix_problems_status = "Открыто для проверки"
         self.update_dashboard_summary()
-        dialog = ZabbixProblemsDialog(url, profile=profile, credentials=credentials, parent=self)
+        dialog = ZabbixProblemsDialog(url, profile=profile, credentials=credentials, config=self.config, parent=self)
         self.zabbix_problems_dialog = dialog
+        dialog.problemsDetected.connect(self._remember_detected_zabbix_problems)
+        dialog.problemsSelected.connect(self._remember_selected_zabbix_problems)
         dialog.confirmed.connect(self._finish_zabbix_problems_stage)
         dialog.finished.connect(lambda _result: setattr(self, "zabbix_problems_dialog", None))
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
 
+    def _remember_detected_zabbix_problems(self, problems):
+        self.detected_zabbix_problems = list(problems or [])
+        if self.detected_zabbix_problems:
+            self.duty_zabbix_problems_status = "Требуется внимание"
+        self.update_dashboard_summary()
+
+    def _remember_selected_zabbix_problems(self, problems):
+        self.selected_zabbix_problems_for_note = list(problems or [])
+        if self.detected_zabbix_problems or self.selected_zabbix_problems_for_note:
+            self.duty_zabbix_problems_status = "Требуется внимание"
+        self.update_dashboard_summary()
+
     def _finish_zabbix_problems_stage(self):
-        self.duty_zabbix_problems_status = "Проверено"
+        self.duty_zabbix_problems_status = "Требуется внимание" if self.detected_zabbix_problems else "Проверено"
         self.load_check_graphs()
         if not self.check_graphs:
             self.duty_zabbix_graphs_status = "Ошибка: графики не выбраны"
@@ -5066,6 +5253,8 @@ class DutyModeWidget(QWidget):
         self.duty_zabbix_graphs_status = "Ожидает проверки"
         self.duty_trigger_stats = {"total": 0, "ok": 0, "alert": 0, "errors": 0}
         self.duty_trigger_results = []
+        self.detected_zabbix_problems = []
+        self.selected_zabbix_problems_for_note = []
         self.status_label.setText("Текущий этап: Zabbix / проблемы")
         self.update_dashboard_summary()
         self.logger.info("Duty Zabbix check started: task_number=%s", self._zabbix_task_number() or "not_set")
@@ -5086,6 +5275,8 @@ class DutyModeWidget(QWidget):
         self.duty_flow_services_first = False
         self.duty_summary_dialog = None
         self.zabbix_problems_dialog = None
+        self.detected_zabbix_problems = []
+        self.selected_zabbix_problems_for_note = []
         self.duty_flow_queue = []
         self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
@@ -5563,7 +5754,16 @@ class DutyModeWidget(QWidget):
 
     def _finish_zabbix_graphs_from_overlay(self):
         self.duty_zabbix_graphs_status = "Проверено"
-        self.duty_zabbix_graph_statuses = {item.get("id"): "Проверено" for item in self.check_graphs}
+        final_statuses = {}
+        keep_status_fragments = ("ошиб", "нет данных", "таймаут", "вним")
+        for item in self.check_graphs:
+            graph_id = item.get("id")
+            current_status = str(self.duty_zabbix_graph_statuses.get(graph_id, "") or "")
+            if any(fragment in current_status.casefold() for fragment in keep_status_fragments):
+                final_statuses[graph_id] = current_status
+            else:
+                final_statuses[graph_id] = "Проверено"
+        self.duty_zabbix_graph_statuses = final_statuses
         self.duty_zabbix_status = "выполнено"
         self.update_dashboard_summary()
         if self.graph_check_overlay is not None:
@@ -5591,7 +5791,11 @@ class DutyModeWidget(QWidget):
     def build_graph_check_note_text(self):
         template = get_otrs_graph_check_template(self.config)
         context = self._build_template_context()
-        return render_template(template.get("text", ""), context)
+        note_text = render_template(template.get("text", ""), context)
+        problems_block = format_zabbix_problems_note_block(self.selected_zabbix_problems_for_note)
+        if problems_block:
+            note_text = (note_text.rstrip() + "\n\n" + problems_block).strip()
+        return note_text
 
     def open_graph_check_note(self):
         self.logger.info("Duty graph check note requested")

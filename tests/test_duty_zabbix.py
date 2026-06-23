@@ -1,6 +1,15 @@
 import unittest
+from datetime import datetime
 
-from app.duty_zabbix import find_problems_page_url, zabbix_status_color, zabbix_status_html
+from app.duty_zabbix import (
+    filter_problems_by_period,
+    find_problems_page_url,
+    format_zabbix_problems_note_block,
+    normalize_problem_row,
+    problem_matches_keywords,
+    zabbix_status_color,
+    zabbix_status_html,
+)
 
 
 class DutyZabbixTests(unittest.TestCase):
@@ -37,6 +46,40 @@ class DutyZabbixTests(unittest.TestCase):
         self.assertIn("#ff5c5c", html)
         self.assertIn("Ошибка &lt;script&gt;", html)
         self.assertNotIn("<script>", html)
+
+    def test_normalize_problem_row_extracts_columns(self):
+        problem = normalize_problem_row(["23.06.2026 10:12", "High", "server-01", "CPU load is high", "service=cpu", "team=infra"])
+        self.assertEqual(problem["time"], "23.06.2026 10:12")
+        self.assertEqual(problem["severity"], "High")
+        self.assertEqual(problem["host"], "server-01")
+        self.assertEqual(problem["problem"], "CPU load is high")
+        self.assertEqual(problem["tags"], "service=cpu; team=infra")
+
+    def test_filter_problems_by_period_keeps_recent_and_undated(self):
+        now = datetime(2026, 6, 23, 12, 0)
+        problems = [
+            {"time": "23.06.2026 10:12", "problem": "recent"},
+            {"time": "20.06.2026 10:12", "problem": "old"},
+            {"time": "без даты", "problem": "undated"},
+        ]
+        filtered = filter_problems_by_period(problems, 1, now=now)
+        self.assertEqual([item["problem"] for item in filtered], ["recent", "undated"])
+
+    def test_problem_keywords_include_and_exclude_case_insensitive(self):
+        problem = {"severity": "High", "host": "DB-Primary", "problem": "Too many connections", "tags": "service=db"}
+        self.assertTrue(problem_matches_keywords(problem, keywords=["db-primary"]))
+        self.assertTrue(problem_matches_keywords(problem, keywords=["CONNECTIONS"]))
+        self.assertFalse(problem_matches_keywords(problem, keywords=["cpu"]))
+        self.assertFalse(problem_matches_keywords(problem, keywords=["db"], exclude_keywords=["many connections"]))
+
+    def test_format_zabbix_problems_note_block(self):
+        block = format_zabbix_problems_note_block([
+            {"time": "23.06.2026 10:12", "severity": "High", "host": "server-01", "problem": "CPU load is high", "tags": "service=cpu"}
+        ])
+        self.assertIn("Замеченные проблемы Zabbix:", block)
+        self.assertIn("1. [High] server-01 — CPU load is high", block)
+        self.assertIn("Время: 23.06.2026 10:12", block)
+        self.assertIn("Теги: service=cpu", block)
 
 
 if __name__ == "__main__":

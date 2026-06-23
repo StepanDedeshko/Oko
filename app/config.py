@@ -118,6 +118,8 @@ def ensure_duty_mode_defaults(config):
     settings.setdefault("last_service_check_time", "")
     settings.setdefault("last_zabbix_check_time", "")
     settings.setdefault("manual_duty_note", "")
+    settings.setdefault("zabbix_problem_keywords", [])
+    settings.setdefault("zabbix_problem_exclude_keywords", [])
     legacy_expected_title = (
         settings.get("duty_zabbix_expected_task_title")
         or settings.get("expected_task_title")
@@ -181,6 +183,8 @@ def _default_config():
             "last_service_check_time": "",
             "last_zabbix_check_time": "",
             "manual_duty_note": "",
+            "zabbix_problem_keywords": [],
+            "zabbix_problem_exclude_keywords": [],
             "duty_zabbix_task_number": "",
             "duty_zabbix_task_id": "",
             "duty_zabbix_task_url": "",
