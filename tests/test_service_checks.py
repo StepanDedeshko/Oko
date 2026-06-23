@@ -513,6 +513,14 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertTrue(all(item["manual"] for item in results))
         self.assertEqual(service_result_display_label(results[0]), "ОК — подтверждено вручную")
 
+    def test_skipped_status_is_warning_not_error(self):
+        result = make_service_result({"id": "c", "name": "Шар"}, status="skipped", manual=True, details="Проверка пропущена вручную.")
+        stats = summarize_service_results([result])
+        self.assertEqual(service_result_display_label(result), "Пропущено вручную")
+        self.assertEqual(service_status_label("skipped"), "Пропущено вручную")
+        self.assertEqual(stats["errors"], 0)
+        self.assertEqual(stats["unknown"], 1)
+
 
     def test_visible_queue_opens_next_only_after_cleanup(self):
         self.assertFalse(can_open_next_visible_service_after_cleanup(False, current_dialog_active=False))
@@ -697,6 +705,10 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("Проверка сервисов завершена", duty_source)
         self.assertIn("Проверка Zabbix / графиков завершена", duty_source)
         self.assertIn("DutyNoteDialog", duty_source)
+        self.assertIn("manual_duty_note_view", duty_source)
+        self.assertIn("duty_zabbix_graph_statuses", duty_source)
+        self.assertIn("Сначала выберите, что проверять в дежурстве", duty_source)
+        self.assertNotIn("Проверить заголовок ещё раз", duty_source)
         self.assertIn("Duty check ignored: reason=already_running", duty_source)
         self.assertIn("start_duty_check_flow", duty_source)
         self.assertIn("start_duty_zabbix_stage", duty_source)

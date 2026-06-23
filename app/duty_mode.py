@@ -533,30 +533,18 @@ class AttachExistingTaskDialog(QDialog):
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
-        hint = QLabel(self._task_description())
-        hint.setWordWrap(True)
-        root.addWidget(hint)
+        root.addWidget(QLabel(self._task_link_label()))
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("https://itsm.stdpr.ru/itsm/index.pl?...TicketID=... или номер задачи")
+        self.url_input.setMinimumWidth(680)
+        root.addWidget(self.url_input)
 
         row = QHBoxLayout()
-
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("https://itsm.stdpr.ru/itsm/index.pl?...TicketID=...")
-
-        open_button = QPushButton("Открыть")
-        open_button.clicked.connect(self.open_task_url)
-
-        attach_button = QPushButton("Прикрепить")
-        attach_button.clicked.connect(self.attach_task)
-
-        manual_check_button = QPushButton("Проверить заголовок ещё раз")
-        manual_check_button.clicked.connect(self.start_delayed_detect)
-
-        row.addWidget(QLabel(self._task_link_label()))
-        row.addWidget(self.url_input, stretch=1)
-        row.addWidget(open_button)
+        attach_button = QPushButton("Привязать")
+        attach_button.setObjectName("PrimaryAction")
+        attach_button.clicked.connect(self.bind_task_from_input)
         row.addWidget(attach_button)
-        row.addWidget(manual_check_button)
-
+        row.addStretch(1)
         root.addLayout(row)
 
         self.status_label = QLabel("Ожидание ссылки.")
@@ -687,60 +675,29 @@ class AttachExistingTaskDialog(QDialog):
         return ""
 
     def open_task_url(self):
-        url = self.url_input.text().strip()
-
-        if not url:
-            QMessageBox.warning(self, "Открыть задачу", "Вставь ссылку на задачу.")
-            return
-
-        ticket_id = self.extract_ticket_id_from_url(url)
-        if ticket_id:
-            self.pending_ticket_id = ticket_id
-            self.pending_ticket_url = url
-
-        self.status_label.setText("Открываю страницу задачи. После загрузки нажми «Прикрепить».")
-        self.view.load(QUrl(url))
+        self.bind_task_from_input()
 
     def attach_task(self):
-        """
-        Привязка теперь НЕ перезагружает страницу.
-        Она проверяет текущую активную страницу во встроенном браузере.
-        """
+        self.bind_task_from_input()
 
-        current_url = self.view.url().toString().strip()
-        input_url = self.url_input.text().strip()
-
-        # Приоритет — текущая открытая страница. Если она пустая, берём поле ссылки.
-        url = current_url if current_url and current_url != "about:blank" else input_url
-
-        if not url:
-            QMessageBox.warning(
-                self,
-                "Привязка задачи",
-                "Сначала вставь ссылку и нажми «Открыть», затем нажми «Прикрепить»."
-            )
+    def bind_task_from_input(self):
+        value = self.url_input.text().strip()
+        if not value:
+            QMessageBox.warning(self, "Привязка задачи", "Введите ссылку или номер задачи.")
             return
-
-        ticket_id = self.extract_ticket_id_from_url(url)
-
+        if value.isdigit():
+            self.status_label.setText("Для проверки заголовка нужна ссылка на задачу. Вставьте полную ссылку ОТРС.")
+            QMessageBox.warning(self, "Привязка задачи", "Для проверки заголовка задачи введите полную ссылку, а не только номер.")
+            return
+        ticket_id = self.extract_ticket_id_from_url(value)
         if not ticket_id:
-            QMessageBox.warning(
-                self,
-                "Привязка задачи",
-                "В текущей открытой странице не найден TicketID=...\n\n"
-                "Сначала открой ссылку на задачу кнопкой «Открыть»."
-            )
+            self.status_label.setText("Не удалось открыть задачу. Проверьте ссылку или доступ.")
+            QMessageBox.warning(self, "Привязка задачи", "Не удалось открыть задачу. Проверьте ссылку или доступ.")
             return
-
         self.pending_ticket_id = ticket_id
-        self.pending_ticket_url = url
-        self.url_input.setText(url)
-
-        self.status_label.setText(
-            f"Проверяю активную страницу. TicketID={ticket_id}. Страница НЕ перезагружается..."
-        )
-
-        self.start_delayed_detect()
+        self.pending_ticket_url = value
+        self.status_label.setText("Открываю задачу и проверяю заголовок...")
+        self.view.load(QUrl(value))
 
     def on_loaded(self, ok):
         self.inject_otrs_login_if_needed()
@@ -756,9 +713,8 @@ class AttachExistingTaskDialog(QDialog):
             self.pending_ticket_id = ticket_id
             self.pending_ticket_url = current_url
             self.url_input.setText(current_url)
-            self.status_label.setText(
-                f"Страница открыта. TicketID={ticket_id}. Нажми «Прикрепить», чтобы проверить заголовок и привязать задачу."
-            )
+            self.status_label.setText(f"Страница открыта. TicketID={ticket_id}. Проверяю заголовок...")
+            self.start_delayed_detect()
         else:
             self.status_label.setText(
                 "Страница открыта. Если это страница авторизации — войди. "
@@ -772,8 +728,7 @@ class AttachExistingTaskDialog(QDialog):
 
         if not ticket_id:
             self.status_label.setText(
-                "Не могу начать проверку: на активной странице не найден TicketID. "
-                "Сначала открой задачу кнопкой «Открыть»."
+                "Не удалось открыть задачу. Проверьте ссылку или доступ."
             )
             return
 
@@ -1058,7 +1013,7 @@ class AttachExistingTaskDialog(QDialog):
         if not self.subject_matches(subject):
             expected = self._expected_subject()
             self.status_label.setText(
-                "Номер заявки прочитан, но тема не совпадает с ожидаемой.\n\n"
+                "Заголовок задачи не соответствует ожидаемому типу проверки.\n\n"
                 f"Найдена задача: Заявка#{number}\n"
                 f"Тема: {subject}\n"
                 f"Ожидалось: {expected}\n"
@@ -1068,7 +1023,7 @@ class AttachExistingTaskDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Проверь задачу",
-                "Похоже, открыта не та задача.\n\n"
+                "Заголовок задачи не соответствует ожидаемому типу проверки.\n\n"
                 f"Найдена: Заявка#{number}\n"
                 f"Тема: {subject}\n\n"
                 f"Ожидалось: {expected}\n\n"
@@ -1083,8 +1038,9 @@ class AttachExistingTaskDialog(QDialog):
             self.logger.info("Duty Zabbix task title check finished")
 
         self.status_label.setText(
-            f"{self._task_title()} привязана: Заявка#{number}, TicketID={ticket_id}. Закрываю окно..."
+            f"Задача успешно привязана. {self._task_title()}: Заявка#{number}, TicketID={ticket_id}."
         )
+        QMessageBox.information(self, "Привязка задачи", "Задача успешно привязана.")
         self.accept()
 
 
@@ -3167,7 +3123,7 @@ class ServiceCheckVisibleDialog(QDialog):
         self.finish_manual("error", "Ошибка подтверждена вручную дежурным.")
 
     def skip_check(self):
-        self.finish_manual("unknown", "Проверка пропущена вручную.")
+        self.finish_manual("skipped", "Проверка пропущена вручную.")
 
     def close_and_continue(self):
         self.finish_manual("manual_required", "Окно проверки закрыто вручную без подтверждения результата.")
@@ -3274,7 +3230,7 @@ class ExternalBrowserServiceCheckDialog(QDialog):
 
     def finish_group(self, status):
         self.logger.info("Service check external browser group manual result: group=%s status=%s", self.group, status)
-        result_status = "ok" if status == "ok" else ("unknown" if status == "skipped" else "manual_required")
+        result_status = "ok" if status == "ok" else ("skipped" if status == "skipped" else "manual_required")
         details = {
             "ok": "Проверено вручную во внешнем браузере.",
             "error": "Ошибка подтверждена вручную во внешнем браузере.",
@@ -3295,27 +3251,35 @@ class DutyTasksDialog(QDialog):
         self.config = config
         self.on_changed = on_changed
         self.setWindowTitle("Задачи дежурства")
-        self.resize(760, 360)
+        self.resize(820, 360)
 
         root = QVBoxLayout(self)
         title = QLabel("Задачи дежурства")
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
-        root.addWidget(self._build_task_group(
-            task_type="zabbix",
-            title="Задача для проверки Zabbix / графиков",
-            description="Используется для дежурной проверки графиков/Zabbix и уведомлений по графикам.",
-            link_label="Ссылка на задачу Zabbix / графиков",
-            create_label="Создать задачу Zabbix / графиков",
-        ))
-        root.addWidget(self._build_task_group(
-            task_type="service_checks",
-            title="Задача для проверки сервисов",
-            description="Используется для отдельной проверки сервисов в режиме дежурства.",
-            link_label="Ссылка на задачу проверки сервисов",
-            create_label="Создать задачу проверки сервисов",
-        ))
+        settings = ensure_duty_mode_defaults(self.config)
+        zabbix_enabled = bool(settings.get("check_zabbix_enabled", True))
+        services_enabled = bool(settings.get("check_services_enabled", settings.get("duty_service_checks_enabled", False)))
+
+        if zabbix_enabled:
+            root.addWidget(self._build_task_group(
+                task_type="zabbix",
+                title="Задача для проверки Zabbix / графиков",
+                link_label="Ссылка на задачу Zabbix / графиков",
+                create_label="Создать задачу Zabbix / графиков",
+            ))
+        if services_enabled:
+            root.addWidget(self._build_task_group(
+                task_type="service_checks",
+                title="Задача для проверки сервисов",
+                link_label="Ссылка на задачу проверки сервисов",
+                create_label="Создать задачу проверки сервисов",
+            ))
+        if not zabbix_enabled and not services_enabled:
+            hint = QLabel("Сначала выберите, что проверять в дежурстве: Zabbix / проблемы и графики, Сервисы или оба варианта.")
+            hint.setWordWrap(True)
+            root.addWidget(hint)
         root.addStretch(1)
 
         close_row = QHBoxLayout()
@@ -3325,41 +3289,36 @@ class DutyTasksDialog(QDialog):
         close_row.addWidget(close_button)
         root.addLayout(close_row)
 
-    def _build_task_group(self, task_type, title, description, link_label, create_label):
+    def _build_task_group(self, task_type, title, link_label, create_label):
         group = QGroupBox(title)
         layout = QVBoxLayout(group)
-        hint = QLabel(description)
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-
         settings = ensure_duty_mode_defaults(self.config)
         stored_url = settings.get("duty_service_checks_task_url" if task_type == "service_checks" else "duty_zabbix_task_url", "")
-        row = QHBoxLayout()
         input_widget = QLineEdit()
-        input_widget.setPlaceholderText("internal task URL")
+        input_widget.setPlaceholderText("https://itsm.stdpr.ru/itsm/index.pl?...TicketID=... или номер задачи")
         input_widget.setText(stored_url)
-        row.addWidget(QLabel(link_label + ":"))
-        row.addWidget(input_widget, stretch=1)
-
-        open_button = QPushButton("Открыть")
-        open_button.clicked.connect(lambda _checked=False, field=input_widget: QDesktopServices.openUrl(QUrl(field.text().strip())) if field.text().strip() else None)
-        attach_button = QPushButton("Прикрепить")
+        input_widget.setMinimumWidth(620)
+        input_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        layout.addWidget(QLabel(link_label + ":"))
+        layout.addWidget(input_widget)
+        row = QHBoxLayout()
+        attach_button = QPushButton("Привязать")
         attach_button.clicked.connect(lambda _checked=False, tt=task_type, field=input_widget: self._open_attach(tt, field.text().strip()))
-        check_button = QPushButton("Проверить заголовок ещё раз")
-        check_button.clicked.connect(lambda _checked=False, tt=task_type, field=input_widget: self._open_attach(tt, field.text().strip()))
         create_button = QPushButton(create_label)
         create_button.clicked.connect(lambda _checked=False, tt=task_type: self._open_create(tt))
-        row.addWidget(open_button)
         row.addWidget(attach_button)
-        row.addWidget(check_button)
         row.addWidget(create_button)
+        row.addStretch(1)
         layout.addLayout(row)
         return group
 
     def _open_attach(self, task_type, url):
+        if not str(url or "").strip():
+            QMessageBox.warning(self, "Привязка задачи", "Введите ссылку или номер задачи.")
+            return
         dialog = AttachExistingTaskDialog(self.config, parent=self, task_type=task_type)
-        if url:
-            dialog.url_input.setText(url)
+        dialog.url_input.setText(url)
+        QTimer.singleShot(0, dialog.bind_task_from_input)
         dialog.exec()
         if self.on_changed:
             self.on_changed()
@@ -3460,6 +3419,7 @@ class DutyModeWidget(QWidget):
         self.duty_flow_queue = []
         self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
+        self.duty_zabbix_graph_statuses = {}
 
         self.audio_player = None
         self.audio_output = None
@@ -3594,6 +3554,23 @@ class DutyModeWidget(QWidget):
         checks_layout.addStretch(1)
         root.addWidget(checks_group)
 
+        manual_group = QGroupBox("Заметка дежурного")
+        manual_layout = QVBoxLayout(manual_group)
+        self.manual_duty_note_text = str(self.get_settings().get("manual_duty_note", "") or "")
+        self.manual_duty_note_view = QTextBrowser()
+        self.manual_duty_note_view.setOpenExternalLinks(False)
+        self.manual_duty_note_view.anchorClicked.connect(lambda url: open_external_url(url.toString()))
+        self.manual_duty_note_view.setMinimumHeight(110)
+        self.manual_duty_note_view.setToolTip("Дважды щёлкните, чтобы редактировать заметку. Ссылки открываются во внешнем браузере.")
+        self.manual_duty_note_view.mouseDoubleClickEvent = lambda event: self.open_manual_duty_note_editor()
+        manual_buttons = QHBoxLayout()
+        save_manual = QPushButton("Сохранить"); save_manual.clicked.connect(self.save_manual_duty_note)
+        copy_manual = QPushButton("Скопировать заметку"); copy_manual.clicked.connect(lambda: QApplication.clipboard().setText(self.manual_duty_note_text))
+        clear_manual = QPushButton("Очистить"); clear_manual.clicked.connect(self.clear_manual_duty_note)
+        manual_buttons.addWidget(save_manual); manual_buttons.addWidget(copy_manual); manual_buttons.addWidget(clear_manual); manual_buttons.addStretch(1)
+        manual_layout.addWidget(self.manual_duty_note_view); manual_layout.addLayout(manual_buttons)
+        root.addWidget(manual_group)
+
         panels = QHBoxLayout()
         services_group = QGroupBox("Проверка сервисов")
         services_layout = QVBoxLayout(services_group)
@@ -3604,28 +3581,16 @@ class DutyModeWidget(QWidget):
         services_actions = QHBoxLayout(); services_actions.addWidget(self.check_services_button); services_actions.addWidget(self.service_note_button); services_actions.addStretch(1)
         services_layout.addLayout(services_actions)
         self.service_task_hint_label = QLabel("")
-        self.service_summary_label = QLabel("Проверка сервисов ещё не выполнялась.")
-        self.service_results_list = QListWidget(); self.service_results_list.setMinimumHeight(120)
-        self.service_status_panel = QTextBrowser(); self.service_status_panel.setOpenExternalLinks(False); self.service_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.service_status_panel.setMinimumHeight(260)
-        services_layout.addWidget(self.service_summary_label); services_layout.addWidget(self.service_results_list); services_layout.addWidget(self.service_status_panel)
+        self.service_summary_label = QLabel("Проверка сервисов ещё не выполнялась."); self.service_summary_label.hide()
+        self.service_results_list = QListWidget(); self.service_results_list.hide()
+        self.service_status_panel = QTextBrowser(); self.service_status_panel.setOpenExternalLinks(False); self.service_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.service_status_panel.setMinimumHeight(320)
+        services_layout.addWidget(self.service_status_panel)
         zabbix_group = QGroupBox("Zabbix / проблемы и графики")
         zabbix_layout = QVBoxLayout(zabbix_group)
-        self.zabbix_status_panel = QTextBrowser(); self.zabbix_status_panel.setOpenExternalLinks(False); self.zabbix_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.zabbix_status_panel.setMinimumHeight(260)
+        self.zabbix_status_panel = QTextBrowser(); self.zabbix_status_panel.setOpenExternalLinks(False); self.zabbix_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.zabbix_status_panel.setMinimumHeight(320)
         zabbix_layout.addWidget(self.zabbix_status_panel)
         panels.addWidget(services_group, 1); panels.addWidget(zabbix_group, 1)
         root.addLayout(panels)
-
-        manual_group = QGroupBox("Заметка дежурного")
-        manual_layout = QVBoxLayout(manual_group)
-        self.manual_duty_note_edit = QTextEdit(); self.manual_duty_note_edit.setPlainText(self.get_settings().get("manual_duty_note", "")); self.manual_duty_note_edit.textChanged.connect(self.update_manual_duty_note_preview)
-        self.manual_duty_note_preview = QTextBrowser(); self.manual_duty_note_preview.setOpenExternalLinks(False); self.manual_duty_note_preview.anchorClicked.connect(lambda url: open_external_url(url.toString()))
-        manual_buttons = QHBoxLayout()
-        save_manual = QPushButton("Сохранить"); save_manual.clicked.connect(self.save_manual_duty_note)
-        copy_manual = QPushButton("Скопировать заметку"); copy_manual.clicked.connect(lambda: QApplication.clipboard().setText(self.manual_duty_note_edit.toPlainText()))
-        clear_manual = QPushButton("Очистить"); clear_manual.clicked.connect(self.clear_manual_duty_note)
-        manual_buttons.addWidget(save_manual); manual_buttons.addWidget(copy_manual); manual_buttons.addWidget(clear_manual); manual_buttons.addStretch(1)
-        manual_layout.addWidget(self.manual_duty_note_edit); manual_layout.addWidget(QLabel("Предпросмотр")); manual_layout.addWidget(self.manual_duty_note_preview); manual_layout.addLayout(manual_buttons)
-        root.addWidget(manual_group)
 
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
@@ -3656,6 +3621,7 @@ class DutyModeWidget(QWidget):
         self.load_check_graphs()
         self.render_empty_hint()
         self.render_service_results()
+        self.update_manual_duty_note_preview()
 
 
 
@@ -3675,18 +3641,38 @@ class DutyModeWidget(QWidget):
         self.update_dashboard_summary()
 
     def save_manual_duty_note(self):
-        self.get_settings()["manual_duty_note"] = self.manual_duty_note_edit.toPlainText()
+        self.get_settings()["manual_duty_note"] = self.manual_duty_note_text
         save_config(self.config)
         self.update_manual_duty_note_preview()
 
     def clear_manual_duty_note(self):
         if QMessageBox.question(self, "Заметка дежурного", "Очистить заметку дежурного?") == QMessageBox.Yes:
-            self.manual_duty_note_edit.clear()
+            self.manual_duty_note_text = ""
+            self.save_manual_duty_note()
+
+    def open_manual_duty_note_editor(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Редактировать заметку дежурного")
+        layout = QVBoxLayout(dialog)
+        editor = QTextEdit()
+        editor.setPlainText(self.manual_duty_note_text)
+        editor.setMinimumSize(680, 260)
+        layout.addWidget(editor)
+        row = QHBoxLayout()
+        save = QPushButton("Сохранить")
+        cancel = QPushButton("Отмена")
+        row.addStretch(1); row.addWidget(save); row.addWidget(cancel)
+        layout.addLayout(row)
+        save.clicked.connect(dialog.accept)
+        cancel.clicked.connect(dialog.reject)
+        if dialog.exec() == QDialog.Accepted:
+            self.manual_duty_note_text = editor.toPlainText()
             self.save_manual_duty_note()
 
     def update_manual_duty_note_preview(self):
-        if hasattr(self, "manual_duty_note_preview"):
-            self.manual_duty_note_preview.setHtml(plain_text_to_safe_html_with_links(self.manual_duty_note_edit.toPlainText()))
+        if hasattr(self, "manual_duty_note_view"):
+            text = self.manual_duty_note_text or "Дважды щёлкните здесь, чтобы добавить заметку дежурного."
+            self.manual_duty_note_view.setHtml(plain_text_to_safe_html_with_links(text))
 
     def _current_note_text(self, note_kind):
         if note_kind == "services":
@@ -3755,9 +3741,10 @@ class DutyModeWidget(QWidget):
                 result = result_by_id.get(service.get("id")) or make_service_result(service, status="not_checked")
                 label = service_result_display_label(result) + (" (SSL-сертификат принят)" if result.get("warning") else "")
                 color = "#e8eef7"
-                if result.get("status") in {"auth_error","load_error","timeout","error","ssl_error","autofill_error"}: color = "#ff5c5c"
+                if result.get("status") in {"auth_error","load_error","error","ssl_error","autofill_error"}: color = "#ff5c5c"
                 elif result.get("status") == "ok": color = "#7CFC98"
-                elif result.get("status") == "manual_required" or (result.get("manual") and result.get("status") == "unknown"): color = "#f6d365"
+                elif result.get("status") in {"timeout", "manual_required", "skipped"} or (result.get("manual") and result.get("status") == "unknown"): color = "#f6d365"
+                elif result.get("status") == "checking": color = "#58a6ff"
                 lines.append(f'<span style="color:{color}">{service.get("name") or service.get("id")} — {label}</span>')
             note = settings.get("last_service_check_note", "")
             if note:
@@ -3770,7 +3757,8 @@ class DutyModeWidget(QWidget):
         else:
             lines = [f"<b>Задача Zabbix / графики:</b> {self._task_summary(self._zabbix_task_number())}", f"Проблемы Zabbix — {self.duty_zabbix_problems_status}", f"Графики дежурства — {self.duty_zabbix_graphs_status}", "<br><b>Графики:</b>"]
             for i, item in enumerate(self.check_graphs, 1):
-                lines.append(f"{i}. {self._graph_note_title(item)} — {self.duty_zabbix_graphs_status if self.duty_zabbix_graphs_status != 'Открыто для проверки' else 'Открыто для проверки'}")
+                graph_status = self.duty_zabbix_graph_statuses.get(item.get("id"), self.duty_zabbix_graphs_status)
+                lines.append(f"{i}. {self._graph_note_title(item)} — {graph_status}")
             note = settings.get("last_zabbix_check_note", "")
             if note:
                 lines.append("<br><b>Последняя заметка:</b><br>" + plain_text_to_safe_html_with_links(f"Заметка в {settings.get('last_zabbix_check_time','')}:\n{note}"))
@@ -3797,12 +3785,14 @@ class DutyModeWidget(QWidget):
             if not service.get("enabled", True):
                 label += " (выключен)"
             list_item = QListWidgetItem(label)
-            if result.get("status") in {"auth_error", "load_error", "timeout", "error", "ssl_error", "autofill_error"}:
+            if result.get("status") in {"auth_error", "load_error", "error", "ssl_error", "autofill_error"}:
                 list_item.setForeground(QColor("#ff5c5c"))
             elif result.get("status") == "ok":
                 list_item.setForeground(QColor("#7CFC98"))
-            elif result.get("status") == "manual_required" or (result.get("manual") and result.get("status") == "unknown"):
+            elif result.get("status") in {"timeout", "manual_required", "skipped"} or (result.get("manual") and result.get("status") == "unknown"):
                 list_item.setForeground(QColor("#f6d365"))
+            elif result.get("status") == "checking":
+                list_item.setForeground(QColor("#58a6ff"))
             if result.get("error") or result.get("warning") or result.get("details"):
                 list_item.setToolTip("\n".join(part for part in [result.get("details", ""), result.get("error", ""), result.get("warning", "")] if part))
             self.service_results_list.addItem(list_item)
@@ -4824,6 +4814,9 @@ class DutyModeWidget(QWidget):
         self.update_dashboard_summary()
         if self.duty_flow_running:
             self.duty_zabbix_problems_status = "Проверено" if not stats.get("errors", 0) else "Ошибка"
+            self.duty_zabbix_graphs_status = "Открыто для проверки"
+            self.duty_zabbix_graph_statuses = {item.get("id"): "Открыто для проверки" for item in self.check_graphs}
+            self.update_dashboard_summary()
             self.open_graph_check_overlay()
 
     def _maybe_run_duty_service_checks_after_zabbix(self, zabbix_status):
@@ -4850,6 +4843,7 @@ class DutyModeWidget(QWidget):
         self.duty_service_checks_status = "ожидает" if "services" in queue else "отключено"
         self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
+        self.duty_zabbix_graph_statuses = {item.get("id"): "Ожидает проверки" for item in self.check_graphs}
         self.logger.info("Duty check started")
         self.mark_check_started()
         self._run_next_duty_queue_item()
@@ -4956,6 +4950,8 @@ class DutyModeWidget(QWidget):
             self.mark_check_started()
         self.logger.info("Duty trigger manual check started: enabled_count=%s", len(enabled_triggers))
         self.duty_zabbix_status = "выполняется"
+        if self.duty_flow_running:
+            self.duty_zabbix_problems_status = "Открыто для проверки"
         self.status_label.setText(f"Запущена проверка триггеров: {len(enabled_triggers)} шт.")
 
         if not self.cards:
@@ -5382,7 +5378,9 @@ class DutyModeWidget(QWidget):
 
     def _finish_zabbix_graphs_from_overlay(self):
         self.duty_zabbix_graphs_status = "Проверено"
+        self.duty_zabbix_graph_statuses = {item.get("id"): "Проверено" for item in self.check_graphs}
         self.duty_zabbix_status = "выполнено"
+        self.update_dashboard_summary()
         if self.graph_check_overlay is not None:
             self.graph_check_overlay.close()
         if self.duty_flow_running:
