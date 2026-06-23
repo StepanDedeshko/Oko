@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QGraphicsOpacityEffect,
     QTextEdit,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
     QSizePolicy,
@@ -80,6 +81,12 @@ from app.templates import (
     get_otrs_graph_check_template,
     render_template,
 )
+
+
+from app.note_links import plain_text_to_safe_html_with_links
+
+def open_external_url(url):
+    QDesktopServices.openUrl(QUrl(str(url or "")))
 
 
 MSK = timezone(timedelta(hours=3))
@@ -380,7 +387,7 @@ class GraphCheckOverlayDialog(QDialog):
         refresh_button.setToolTip("Перезагрузить графики в текущем окне проверки")
         refresh_button.clicked.connect(self.refresh_graphs)
 
-        confirm_button = QPushButton("Проверено")
+        confirm_button = QPushButton("Проверено, завершить проверку Zabbix")
         confirm_button.setObjectName("PrimaryAction")
         confirm_button.setMinimumHeight(38)
         confirm_button.setMinimumWidth(160)
@@ -3364,79 +3371,57 @@ class DutyTasksDialog(QDialog):
             self.on_changed()
 
 
-class DutyCheckSummaryDialog(QDialog):
-    def __init__(self, duty_widget, parent=None):
+class DutyNoteDialog(QDialog):
+    def __init__(self, duty_widget, note_kind, parent=None):
         super().__init__(parent)
         self.duty_widget = duty_widget
-        self.setWindowTitle("Проверка дежурства завершена")
-        self.resize(900, 640)
+        self.note_kind = note_kind
+        is_service = note_kind == "services"
+        self.setWindowTitle("Проверка сервисов завершена" if is_service else "Проверка Zabbix / графиков завершена")
+        self.resize(820, 560)
+        note = duty_widget._current_note_text(note_kind)
 
         root = QVBoxLayout(self)
-        title = QLabel("Проверка дежурства завершена")
+        title = QLabel(self.windowTitle())
         title.setObjectName("PageTitle")
         root.addWidget(title)
-
-        stats = summarize_service_results(duty_widget.service_check_results)
-        zabbix_task = duty_widget._task_summary(duty_widget._zabbix_task_number())
-        service_task = duty_widget._task_summary(duty_widget._service_checks_task_number())
-        summary = QLabel(
-            f"Сервисы: {duty_widget.duty_service_checks_status}; total={stats['total']}, OK={stats['ok']}, ошибки={stats['errors']}, таймауты={stats['timeouts']}\n"
-            f"Zabbix / графики: {duty_widget.duty_zabbix_status}\n"
-            f"Задача Zabbix / графики: {zabbix_task}\n"
-            f"Задача проверки сервисов: {service_task}"
-        )
+        summary = QLabel(duty_widget._current_note_summary(note_kind))
         summary.setWordWrap(True)
         root.addWidget(summary)
-
-        zabbix_preview = QTextEdit()
-        zabbix_preview.setReadOnly(True)
-        zabbix_preview.setPlainText(duty_widget.build_graph_check_note_text())
-        zabbix_preview.setMinimumHeight(140)
-        root.addWidget(QLabel("Предпросмотр заметки Zabbix / графиков"))
-        root.addWidget(zabbix_preview)
-
-        service_preview = QTextEdit()
-        service_preview.setReadOnly(True)
-        service_preview.setPlainText(build_service_check_note_text(duty_widget.config, duty_widget.service_check_results))
-        service_preview.setMinimumHeight(140)
-        root.addWidget(QLabel("Предпросмотр заметки проверки сервисов"))
-        root.addWidget(service_preview)
-
+        root.addWidget(QLabel("Предпросмотр заметки"))
+        preview = QTextBrowser()
+        preview.setOpenExternalLinks(False)
+        preview.anchorClicked.connect(lambda url: open_external_url(url.toString()))
+        preview.setHtml(plain_text_to_safe_html_with_links(note))
+        preview.setMinimumHeight(300)
+        root.addWidget(preview)
         row = QHBoxLayout()
-        self.zabbix_button = QPushButton("Отправить заметку в задачу Zabbix / графиков")
-        self.zabbix_button.setEnabled(bool(duty_widget._zabbix_task_number()))
-        self.zabbix_button.clicked.connect(self.send_zabbix_note)
-        self.service_button = QPushButton("Отправить заметку в задачу проверки сервисов")
-        self.service_button.setEnabled(bool(duty_widget._service_checks_task_number()))
-        self.service_button.clicked.connect(self.send_service_note)
-        self.both_button = QPushButton("Отправить обе заметки")
-        self.both_button.setEnabled(self.zabbix_button.isEnabled() and self.service_button.isEnabled())
-        self.both_button.clicked.connect(self.send_both_notes)
-        close_button = QPushButton("Не отправлять")
-        close_button.clicked.connect(self.accept)
-        row.addWidget(self.zabbix_button)
-        row.addWidget(self.service_button)
-        row.addWidget(self.both_button)
-        row.addWidget(close_button)
+        send = QPushButton("Отправить заметку в задачу проверки сервисов" if is_service else "Отправить заметку в задачу Zabbix / графиков")
+        send.setEnabled(bool(duty_widget._service_checks_task_number() if is_service else duty_widget._zabbix_task_number()))
+        send.clicked.connect(self.send_note)
+        copy = QPushButton("Скопировать заметку")
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(note))
+        skip = QPushButton("Не отправлять")
+        skip.clicked.connect(self.accept)
+        row.addWidget(send)
+        row.addWidget(copy)
+        row.addWidget(skip)
         root.addLayout(row)
 
-    def send_zabbix_note(self):
-        try:
-            self.duty_widget.open_graph_check_note()
-            self.duty_widget.logger.info("Duty Zabbix note sent: ticket_id=%s", self.duty_widget.get_settings().get("duty_zabbix_task_id", "not_set") or "not_set")
-        except Exception as exc:
-            self.duty_widget.logger.warning("Duty Zabbix note send failed: reason=%s", exc)
+    def _save_last_note(self):
+        self.duty_widget._save_last_note(self.note_kind, self.duty_widget._current_note_text(self.note_kind))
 
-    def send_service_note(self):
-        try:
+    def send_note(self):
+        self._save_last_note()
+        if self.note_kind == "services":
             self.duty_widget.open_service_check_note()
-            self.duty_widget.logger.info("Duty service checks note sent: ticket_id=%s", self.duty_widget.get_settings().get("duty_service_checks_task_id", "not_set") or "not_set")
-        except Exception as exc:
-            self.duty_widget.logger.warning("Duty service checks note send failed: reason=%s", exc)
+        else:
+            self.duty_widget.open_graph_check_note()
+        self.accept()
 
-    def send_both_notes(self):
-        self.send_zabbix_note()
-        self.send_service_note()
+    def accept(self):
+        self._save_last_note()
+        super().accept()
 
 
 class DutyModeWidget(QWidget):
@@ -3472,6 +3457,9 @@ class DutyModeWidget(QWidget):
         self.duty_flow_running = False
         self.duty_flow_services_first = False
         self.duty_summary_dialog = None
+        self.duty_flow_queue = []
+        self.duty_zabbix_problems_status = "Ожидает проверки"
+        self.duty_zabbix_graphs_status = "Ожидает проверки"
 
         self.audio_player = None
         self.audio_output = None
@@ -3498,7 +3486,7 @@ class DutyModeWidget(QWidget):
         self.msk_time_label = QLabel("")
         self.msk_time_label.setStyleSheet("font-size: 15px; font-weight: bold;")
 
-        self.settings_button = QPushButton("Настройки дежурки")
+        self.settings_button = QPushButton("Настройки")
         self.settings_button.setMinimumHeight(32)
         self.settings_button.setMinimumWidth(150)
         self.settings_button.setStyleSheet("padding: 5px 12px;")
@@ -3535,6 +3523,7 @@ class DutyModeWidget(QWidget):
         self.service_duty_status_value = QLabel(self.duty_service_checks_status)
         self.duty_stage_value = QLabel("Текущий этап: завершено")
         self.graphs_state_value = QLabel("")
+        self.services_state_value = QLabel("")
 
         state_labels = [
             QLabel("Дежурство:"),
@@ -3545,6 +3534,7 @@ class DutyModeWidget(QWidget):
             QLabel("Статус сервисы:"),
             QLabel("Текущий этап:"),
             QLabel("Графики:"),
+            QLabel("Сервисы:"),
         ]
         for label in state_labels:
             label.setStyleSheet("font-weight: bold;")
@@ -3565,6 +3555,8 @@ class DutyModeWidget(QWidget):
         state_layout.addWidget(self.duty_stage_value, 3, 1)
         state_layout.addWidget(state_labels[7], 3, 2)
         state_layout.addWidget(self.graphs_state_value, 3, 3)
+        state_layout.addWidget(state_labels[8], 4, 0)
+        state_layout.addWidget(self.services_state_value, 4, 1)
         root.addWidget(state_group)
 
         actions_layout = QHBoxLayout()
@@ -3575,7 +3567,7 @@ class DutyModeWidget(QWidget):
         self.enable_button.setMinimumHeight(38)
         self.enable_button.clicked.connect(self.toggle_enabled)
 
-        self.check_triggers_button = QPushButton("Проверить триггеры")
+        self.check_triggers_button = QPushButton("Проверить выбранное")
         self.check_triggers_button.setMinimumHeight(34)
         self.check_triggers_button.clicked.connect(self.start_duty_check_flow)
 
@@ -3589,34 +3581,51 @@ class DutyModeWidget(QWidget):
         actions_layout.addStretch()
         root.addLayout(actions_layout)
 
+        checks_group = QGroupBox("Что проверяем в дежурстве")
+        checks_layout = QHBoxLayout(checks_group)
+        self.duty_zabbix_enabled_checkbox = QCheckBox("Zabbix / проблемы и графики")
+        self.duty_service_checks_enabled_checkbox = QCheckBox("Сервисы")
+        self.duty_zabbix_enabled_checkbox.setChecked(bool(self.get_settings().get("check_zabbix_enabled", True)))
+        self.duty_service_checks_enabled_checkbox.setChecked(bool(self.get_settings().get("check_services_enabled", self.get_settings().get("duty_service_checks_enabled", False))))
+        self.duty_zabbix_enabled_checkbox.toggled.connect(self.set_duty_zabbix_enabled)
+        self.duty_service_checks_enabled_checkbox.toggled.connect(self.set_duty_service_checks_enabled)
+        checks_layout.addWidget(self.duty_zabbix_enabled_checkbox)
+        checks_layout.addWidget(self.duty_service_checks_enabled_checkbox)
+        checks_layout.addStretch(1)
+        root.addWidget(checks_group)
+
+        panels = QHBoxLayout()
         services_group = QGroupBox("Проверка сервисов")
         services_layout = QVBoxLayout(services_group)
-        self.duty_service_checks_enabled_checkbox = QCheckBox("Проверять сервисы в режиме дежурства")
-        self.duty_service_checks_enabled_checkbox.setToolTip("Если выключено, при дежурной проверке графиков/Zabbix проверка сервисов запускаться не будет.")
-        self.duty_service_checks_enabled_checkbox.setChecked(bool(self.get_settings().get("duty_service_checks_enabled", False)))
-        self.duty_service_checks_enabled_checkbox.toggled.connect(self.set_duty_service_checks_enabled)
-        services_layout.addWidget(self.duty_service_checks_enabled_checkbox)
-        services_actions = QHBoxLayout()
         self.check_services_button = QPushButton("Проверить сервисы")
-        self.check_services_button.setMinimumHeight(34)
         self.check_services_button.clicked.connect(self.run_service_checks)
         self.service_note_button = QPushButton("Заметка ОТРС")
-        self.service_note_button.setMinimumHeight(34)
         self.service_note_button.clicked.connect(self.open_service_check_note)
-        services_actions.addWidget(self.check_services_button)
-        services_actions.addWidget(self.service_note_button)
-        services_actions.addStretch(1)
+        services_actions = QHBoxLayout(); services_actions.addWidget(self.check_services_button); services_actions.addWidget(self.service_note_button); services_actions.addStretch(1)
         services_layout.addLayout(services_actions)
         self.service_task_hint_label = QLabel("")
-        self.service_task_hint_label.setWordWrap(True)
-        services_layout.addWidget(self.service_task_hint_label)
         self.service_summary_label = QLabel("Проверка сервисов ещё не выполнялась.")
-        self.service_summary_label.setWordWrap(True)
-        services_layout.addWidget(self.service_summary_label)
-        self.service_results_list = QListWidget()
-        self.service_results_list.setMinimumHeight(120)
-        services_layout.addWidget(self.service_results_list)
-        root.addWidget(services_group)
+        self.service_results_list = QListWidget(); self.service_results_list.setMinimumHeight(120)
+        self.service_status_panel = QTextBrowser(); self.service_status_panel.setOpenExternalLinks(False); self.service_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.service_status_panel.setMinimumHeight(260)
+        services_layout.addWidget(self.service_summary_label); services_layout.addWidget(self.service_results_list); services_layout.addWidget(self.service_status_panel)
+        zabbix_group = QGroupBox("Zabbix / проблемы и графики")
+        zabbix_layout = QVBoxLayout(zabbix_group)
+        self.zabbix_status_panel = QTextBrowser(); self.zabbix_status_panel.setOpenExternalLinks(False); self.zabbix_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.zabbix_status_panel.setMinimumHeight(260)
+        zabbix_layout.addWidget(self.zabbix_status_panel)
+        panels.addWidget(services_group, 1); panels.addWidget(zabbix_group, 1)
+        root.addLayout(panels)
+
+        manual_group = QGroupBox("Заметка дежурного")
+        manual_layout = QVBoxLayout(manual_group)
+        self.manual_duty_note_edit = QTextEdit(); self.manual_duty_note_edit.setPlainText(self.get_settings().get("manual_duty_note", "")); self.manual_duty_note_edit.textChanged.connect(self.update_manual_duty_note_preview)
+        self.manual_duty_note_preview = QTextBrowser(); self.manual_duty_note_preview.setOpenExternalLinks(False); self.manual_duty_note_preview.anchorClicked.connect(lambda url: open_external_url(url.toString()))
+        manual_buttons = QHBoxLayout()
+        save_manual = QPushButton("Сохранить"); save_manual.clicked.connect(self.save_manual_duty_note)
+        copy_manual = QPushButton("Скопировать заметку"); copy_manual.clicked.connect(lambda: QApplication.clipboard().setText(self.manual_duty_note_edit.toPlainText()))
+        clear_manual = QPushButton("Очистить"); clear_manual.clicked.connect(self.clear_manual_duty_note)
+        manual_buttons.addWidget(save_manual); manual_buttons.addWidget(copy_manual); manual_buttons.addWidget(clear_manual); manual_buttons.addStretch(1)
+        manual_layout.addWidget(self.manual_duty_note_edit); manual_layout.addWidget(QLabel("Предпросмотр")); manual_layout.addWidget(self.manual_duty_note_preview); manual_layout.addLayout(manual_buttons)
+        root.addWidget(manual_group)
 
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
@@ -3648,6 +3657,125 @@ class DutyModeWidget(QWidget):
         self.render_empty_hint()
         self.render_service_results()
 
+
+
+    def _selected_duty_checks(self):
+        settings = self.get_settings()
+        queue = []
+        if bool(settings.get("check_services_enabled", settings.get("duty_service_checks_enabled", False))):
+            queue.append("services")
+        if bool(settings.get("check_zabbix_enabled", True)):
+            queue.append("zabbix")
+        return queue
+
+    def set_duty_zabbix_enabled(self, enabled):
+        settings = self.get_settings()
+        settings["check_zabbix_enabled"] = bool(enabled)
+        save_config(self.config)
+        self.update_dashboard_summary()
+
+    def save_manual_duty_note(self):
+        self.get_settings()["manual_duty_note"] = self.manual_duty_note_edit.toPlainText()
+        save_config(self.config)
+        self.update_manual_duty_note_preview()
+
+    def clear_manual_duty_note(self):
+        if QMessageBox.question(self, "Заметка дежурного", "Очистить заметку дежурного?") == QMessageBox.Yes:
+            self.manual_duty_note_edit.clear()
+            self.save_manual_duty_note()
+
+    def update_manual_duty_note_preview(self):
+        if hasattr(self, "manual_duty_note_preview"):
+            self.manual_duty_note_preview.setHtml(plain_text_to_safe_html_with_links(self.manual_duty_note_edit.toPlainText()))
+
+    def _current_note_text(self, note_kind):
+        if note_kind == "services":
+            return build_service_check_note_text(self.config, self.service_check_results)
+        return self.build_graph_check_note_text()
+
+    def _current_note_summary(self, note_kind):
+        if note_kind == "services":
+            stats = summarize_service_results(self.service_check_results)
+            return f"Проверка сервисов завершена: OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}"
+        stats = self.duty_trigger_stats or {}
+        return f"Проблемы Zabbix: {self.duty_zabbix_problems_status}. Графики дежурства: {self.duty_zabbix_graphs_status}. OK={stats.get('ok',0)}, ALERT={stats.get('alert',0)}, ошибки={stats.get('errors',0)}"
+
+    def _save_last_note(self, note_kind, note_text):
+        settings = self.get_settings()
+        now = format_dt(datetime.now(MSK))
+        if note_kind == "services":
+            settings["last_service_check_note"] = str(note_text or "")
+            settings["last_service_check_time"] = now
+        else:
+            settings["last_zabbix_check_note"] = str(note_text or "")
+            settings["last_zabbix_check_time"] = now
+        save_config(self.config)
+        self.update_dashboard_summary()
+
+    def _show_duty_note_dialog(self, note_kind):
+        dialog = DutyNoteDialog(self, note_kind, parent=self)
+        if note_kind == "services":
+            dialog.finished.connect(lambda _r: self._after_service_note_dialog())
+        else:
+            dialog.finished.connect(lambda _r: self._finish_duty_summary_dialog())
+        dialog.show(); dialog.raise_(); dialog.activateWindow()
+
+    def _after_service_note_dialog(self):
+        if self.duty_flow_queue and self.duty_flow_queue[0] == "zabbix":
+            self._run_next_duty_queue_item()
+        else:
+            self._finish_duty_summary_dialog()
+
+    def _run_next_duty_queue_item(self):
+        if not self.duty_flow_queue:
+            self._finish_duty_summary_dialog(); return
+        item = self.duty_flow_queue.pop(0)
+        if item == "services":
+            self.service_checks_launched_from_duty = True
+            self.duty_service_checks_status = "выполняется"
+            self.duty_current_stage = "проверка сервисов"
+            self.update_dashboard_summary()
+            self.logger.info("Duty service checks started: task_number=%s", self._service_checks_task_number() or "not_set")
+            self.run_service_checks(from_duty=True)
+        elif item == "zabbix":
+            self.start_duty_zabbix_stage()
+
+    def _render_status_panels(self):
+        if not hasattr(self, "service_status_panel"):
+            return
+        settings = self.get_settings()
+        service_enabled = bool(settings.get("check_services_enabled", settings.get("duty_service_checks_enabled", False)))
+        if not service_enabled:
+            service_html = "<b>Проверка сервисов не выбрана</b>"
+        else:
+            stats = summarize_service_results(self.service_check_results)
+            lines = [f"<b>Задача для проверки сервисов:</b> {self._task_summary(self._service_checks_task_number())}. Автозапуск в дежурстве: включён.", f"Проверка сервисов завершена: OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}", "<br><b>Сервисы:</b>"]
+            result_by_id = {r.get('service_id'): r for r in self.service_check_results}
+            for service in self.service_settings().get("items", []):
+                result = result_by_id.get(service.get("id")) or make_service_result(service, status="not_checked")
+                label = service_result_display_label(result) + (" (SSL-сертификат принят)" if result.get("warning") else "")
+                color = "#e8eef7"
+                if result.get("status") in {"auth_error","load_error","timeout","error","ssl_error","autofill_error"}: color = "#ff5c5c"
+                elif result.get("status") == "ok": color = "#7CFC98"
+                elif result.get("status") == "manual_required" or (result.get("manual") and result.get("status") == "unknown"): color = "#f6d365"
+                lines.append(f'<span style="color:{color}">{service.get("name") or service.get("id")} — {label}</span>')
+            note = settings.get("last_service_check_note", "")
+            if note:
+                lines.append("<br><b>Последняя заметка:</b><br>" + plain_text_to_safe_html_with_links(f"Заметка в {settings.get('last_service_check_time','')}:\n{note}"))
+            service_html = "<br>".join(lines)
+        self.service_status_panel.setHtml(service_html)
+        z_enabled = bool(settings.get("check_zabbix_enabled", True))
+        if not z_enabled:
+            z_html = "<b>Проверка Zabbix не выбрана</b>"
+        else:
+            lines = [f"<b>Задача Zabbix / графики:</b> {self._task_summary(self._zabbix_task_number())}", f"Проблемы Zabbix — {self.duty_zabbix_problems_status}", f"Графики дежурства — {self.duty_zabbix_graphs_status}", "<br><b>Графики:</b>"]
+            for i, item in enumerate(self.check_graphs, 1):
+                lines.append(f"{i}. {self._graph_note_title(item)} — {self.duty_zabbix_graphs_status if self.duty_zabbix_graphs_status != 'Открыто для проверки' else 'Открыто для проверки'}")
+            note = settings.get("last_zabbix_check_note", "")
+            if note:
+                lines.append("<br><b>Последняя заметка:</b><br>" + plain_text_to_safe_html_with_links(f"Заметка в {settings.get('last_zabbix_check_time','')}:\n{note}"))
+            z_html = "<br>".join(lines)
+        self.zabbix_status_panel.setHtml(z_html)
 
     def service_settings(self):
         return ensure_service_checks_defaults(self.config)
@@ -3684,6 +3812,7 @@ class DutyModeWidget(QWidget):
                 "Проверка сервисов завершена: "
                 f"OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}"
             )
+        self._render_status_panels()
 
     def _set_service_check_running(self, running):
         self.service_check_running = bool(running)
@@ -4165,10 +4294,7 @@ class DutyModeWidget(QWidget):
                 stats["timeouts"],
             )
             self.service_checks_launched_from_duty = False
-            if self.duty_flow_services_first:
-                self.start_duty_zabbix_stage()
-            else:
-                self.update_dashboard_summary()
+            self._show_duty_note_dialog("services")
 
     def open_service_check_note(self):
         task_url = (self.get_settings().get("duty_service_checks_task_url") or self.service_settings().get("otrs_task_url", "")).strip()
@@ -4217,7 +4343,7 @@ class DutyModeWidget(QWidget):
         settings = self.get_settings()
         enabled = settings.get("enabled", False)
 
-        service_enabled = bool(settings.get("duty_service_checks_enabled", False))
+        service_enabled = bool(settings.get("check_services_enabled", settings.get("duty_service_checks_enabled", False)))
         if not service_enabled and self.duty_service_checks_status not in {"выполняется", "выполнено", "ошибка", "требуется внимание"}:
             self.duty_service_checks_status = "отключено"
 
@@ -4232,6 +4358,10 @@ class DutyModeWidget(QWidget):
             self.duty_service_checks_enabled_checkbox.blockSignals(True)
             self.duty_service_checks_enabled_checkbox.setChecked(service_enabled)
             self.duty_service_checks_enabled_checkbox.blockSignals(False)
+        if hasattr(self, "duty_zabbix_enabled_checkbox"):
+            self.duty_zabbix_enabled_checkbox.blockSignals(True)
+            self.duty_zabbix_enabled_checkbox.setChecked(bool(settings.get("check_zabbix_enabled", True)))
+            self.duty_zabbix_enabled_checkbox.blockSignals(False)
         if hasattr(self, "service_task_hint_label"):
             self.service_task_hint_label.setText(
                 f"Задача для проверки сервисов: {self._task_summary(self._service_checks_task_number())}. "
@@ -4243,6 +4373,9 @@ class DutyModeWidget(QWidget):
             else "ещё не выполнялась"
         )
         self.graphs_state_value.setText(str(self._graphs_count()))
+        if hasattr(self, "services_state_value"):
+            self.services_state_value.setText(str(len(self.enabled_services())))
+        self._render_status_panels()
 
     def update_task_label(self):
         self.update_dashboard_summary()
@@ -4250,8 +4383,9 @@ class DutyModeWidget(QWidget):
     def set_duty_service_checks_enabled(self, enabled):
         settings = self.get_settings()
         settings["duty_service_checks_enabled"] = bool(enabled)
+        settings["check_services_enabled"] = bool(enabled)
         save_config(self.config)
-        self.duty_service_checks_status = "отключено" if not enabled else "ожидает Zabbix"
+        self.duty_service_checks_status = "отключено" if not enabled else "ожидает проверки"
         self.update_dashboard_summary()
 
     def open_tasks_dialog(self):
@@ -4262,6 +4396,9 @@ class DutyModeWidget(QWidget):
     def toggle_enabled(self):
         settings = self.get_settings()
         was_enabled = settings.get("enabled", False)
+        if not was_enabled and not self._selected_duty_checks():
+            if not self._ask_duty_check_selection():
+                return
         settings["enabled"] = not was_enabled
         save_config(self.config)
         self.update_enable_button()
@@ -4686,7 +4823,8 @@ class DutyModeWidget(QWidget):
         self.logger.info("Duty triggers check finished: stats=%s", stats)
         self.update_dashboard_summary()
         if self.duty_flow_running:
-            self.finish_duty_check_flow()
+            self.duty_zabbix_problems_status = "Проверено" if not stats.get("errors", 0) else "Ошибка"
+            self.open_graph_check_overlay()
 
     def _maybe_run_duty_service_checks_after_zabbix(self, zabbix_status):
         # Backward-compatible no-op: duty flow now runs service checks before Zabbix.
@@ -4699,61 +4837,79 @@ class DutyModeWidget(QWidget):
             self.logger.info("Duty check ignored: reason=already_running")
             self.status_label.setText("Дежурная проверка уже выполняется.")
             return
+        queue = self._selected_duty_checks()
+        if not queue:
+            if not self._ask_duty_check_selection():
+                return
+            queue = self._selected_duty_checks()
+            if not queue:
+                return
         self.duty_flow_running = True
-        self.duty_flow_services_first = False
-        self.duty_zabbix_status = "ожидает"
-        self.duty_service_checks_status = "ожидает"
-        self.duty_current_stage = "проверка сервисов"
+        self.duty_flow_queue = list(queue)
+        self.duty_zabbix_status = "ожидает" if "zabbix" in queue else "отключено"
+        self.duty_service_checks_status = "ожидает" if "services" in queue else "отключено"
+        self.duty_zabbix_problems_status = "Ожидает проверки"
+        self.duty_zabbix_graphs_status = "Ожидает проверки"
         self.logger.info("Duty check started")
-        service_enabled = bool(self.get_settings().get("duty_service_checks_enabled", False))
-        self.logger.info("Duty service checks enabled: value=%s", str(service_enabled).lower())
         self.mark_check_started()
-        if service_enabled:
-            self.duty_flow_services_first = True
-            self.service_checks_launched_from_duty = True
-            self.duty_service_checks_status = "выполняется"
-            self.status_label.setText("Текущий этап: проверка сервисов")
-            self.logger.info("Duty service checks started: task_number=%s", self._service_checks_task_number() or "not_set")
-            self.update_dashboard_summary()
-            self.run_service_checks(from_duty=True)
-            return
-        self.duty_service_checks_status = "отключено"
-        self.logger.info("Duty service checks skipped: reason=disabled")
-        self.start_duty_zabbix_stage()
+        self._run_next_duty_queue_item()
+
+    def _ask_duty_check_selection(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Выберите, что проверять в режиме дежурства")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Выберите, что проверять в режиме дежурства"))
+        z = QCheckBox("Zabbix / проблемы и графики")
+        svc = QCheckBox("Сервисы")
+        layout.addWidget(z); layout.addWidget(svc)
+        row = QHBoxLayout()
+        save = QPushButton("Сохранить и включить дежурство")
+        cancel = QPushButton("Отмена")
+        row.addWidget(save); row.addWidget(cancel); layout.addLayout(row)
+        result = {"ok": False}
+        def on_save():
+            if not z.isChecked() and not svc.isChecked():
+                QMessageBox.warning(dialog, "Режим дежурства", "Нужно выбрать хотя бы один тип проверки")
+                return
+            settings = self.get_settings()
+            settings["check_zabbix_enabled"] = z.isChecked()
+            settings["check_services_enabled"] = svc.isChecked()
+            settings["duty_service_checks_enabled"] = svc.isChecked()
+            save_config(self.config)
+            result["ok"] = True
+            dialog.accept()
+        save.clicked.connect(on_save); cancel.clicked.connect(dialog.reject)
+        dialog.exec()
+        self.update_dashboard_summary()
+        return result["ok"]
 
     def start_duty_zabbix_stage(self):
-        self.duty_current_stage = "проверка Zabbix / графиков"
+        self.duty_current_stage = "zabbix_problems"
         self.duty_zabbix_status = "выполняется"
-        self.status_label.setText("Текущий этап: проверка Zabbix / графиков")
+        self.duty_zabbix_problems_status = "Открыто для проверки"
+        self.duty_zabbix_graphs_status = "Ожидает проверки"
+        self.status_label.setText("Текущий этап: Zabbix / проблемы")
         self.update_dashboard_summary()
-        if not self.start_check():
-            self.finish_duty_check_flow()
-            return
         self.logger.info("Duty Zabbix check started: task_number=%s", self._zabbix_task_number() or "not_set")
         self.run_duty_triggers_check(part_of_duty_flow=True)
 
     def finish_duty_check_flow(self):
-        self.duty_current_stage = "ожидание отправки заметок"
+        self.duty_current_stage = "zabbix_note"
         self.logger.info("Duty check finished")
         self.update_dashboard_summary()
-        self.open_duty_summary_dialog()
+        self._show_duty_note_dialog("zabbix")
 
     def open_duty_summary_dialog(self):
-        self.duty_current_stage = "ожидание отправки заметок"
-        self.update_dashboard_summary()
-        self.logger.info("Duty summary dialog opened")
-        dialog = DutyCheckSummaryDialog(self, parent=self)
-        self.duty_summary_dialog = dialog
-        dialog.finished.connect(lambda _result: self._finish_duty_summary_dialog())
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        self.finish_duty_check_flow()
 
     def _finish_duty_summary_dialog(self):
         self.duty_current_stage = "завершено"
         self.duty_flow_running = False
         self.duty_flow_services_first = False
         self.duty_summary_dialog = None
+        self.duty_flow_queue = []
+        self.duty_zabbix_problems_status = "Ожидает проверки"
+        self.duty_zabbix_graphs_status = "Ожидает проверки"
         self.update_dashboard_summary()
 
     def run_duty_triggers_check(self, part_of_duty_flow=False):
@@ -5214,7 +5370,7 @@ class DutyModeWidget(QWidget):
             credentials=self.credentials,
             parent=self,
         )
-        self.graph_check_overlay.confirmed.connect(self.open_graph_check_note)
+        self.graph_check_overlay.confirmed.connect(self._finish_zabbix_graphs_from_overlay)
         self.graph_check_overlay.finished.connect(lambda _result: setattr(self, "graph_check_overlay", None))
         self.graph_check_overlay.destroyed.connect(lambda: setattr(self, "graph_check_overlay", None))
         self.cards = self.graph_check_overlay.cards
@@ -5222,6 +5378,17 @@ class DutyModeWidget(QWidget):
         self.graph_check_overlay.raise_()
         self.graph_check_overlay.activateWindow()
 
+
+
+    def _finish_zabbix_graphs_from_overlay(self):
+        self.duty_zabbix_graphs_status = "Проверено"
+        self.duty_zabbix_status = "выполнено"
+        if self.graph_check_overlay is not None:
+            self.graph_check_overlay.close()
+        if self.duty_flow_running:
+            self.finish_duty_check_flow()
+        else:
+            self.open_graph_check_note()
 
     def _bound_task_details(self):
         settings = self.get_settings()

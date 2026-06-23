@@ -111,6 +111,13 @@ def ensure_duty_mode_defaults(config):
     settings.setdefault("duty_service_checks_task_id", "")
     settings.setdefault("duty_service_checks_task_url", "")
     settings.setdefault("duty_service_checks_enabled", False)
+    settings.setdefault("check_services_enabled", bool(settings.get("duty_service_checks_enabled", False)))
+    settings.setdefault("check_zabbix_enabled", True)
+    settings.setdefault("last_service_check_note", "")
+    settings.setdefault("last_zabbix_check_note", "")
+    settings.setdefault("last_service_check_time", "")
+    settings.setdefault("last_zabbix_check_time", "")
+    settings.setdefault("manual_duty_note", "")
     legacy_expected_title = (
         settings.get("duty_zabbix_expected_task_title")
         or settings.get("expected_task_title")
@@ -167,6 +174,13 @@ def _default_config():
             "duty_zabbix_expected_task_title": "Дежурная проверка Zabbix / графиков",
             "duty_service_checks_expected_task_title": "Дежурная проверка сервисов",
             "duty_service_checks_enabled": False,
+            "check_services_enabled": False,
+            "check_zabbix_enabled": True,
+            "last_service_check_note": "",
+            "last_zabbix_check_note": "",
+            "last_service_check_time": "",
+            "last_zabbix_check_time": "",
+            "manual_duty_note": "",
             "duty_zabbix_task_number": "",
             "duty_zabbix_task_id": "",
             "duty_zabbix_task_url": "",
