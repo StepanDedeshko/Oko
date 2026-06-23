@@ -3560,7 +3560,10 @@ class DutyModeWidget(QWidget):
         self.manual_duty_note_view = QTextBrowser()
         self.manual_duty_note_view.setOpenExternalLinks(False)
         self.manual_duty_note_view.anchorClicked.connect(lambda url: open_external_url(url.toString()))
-        self.manual_duty_note_view.setMinimumHeight(110)
+        self.manual_duty_note_view.setFixedHeight(95)
+        self.manual_duty_note_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        manual_group.setMaximumHeight(165)
+        manual_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.manual_duty_note_view.setToolTip("Дважды щёлкните, чтобы редактировать заметку. Ссылки открываются во внешнем браузере.")
         self.manual_duty_note_view.mouseDoubleClickEvent = lambda event: self.open_manual_duty_note_editor()
         manual_buttons = QHBoxLayout()
@@ -3576,21 +3579,21 @@ class DutyModeWidget(QWidget):
         services_layout = QVBoxLayout(services_group)
         self.check_services_button = QPushButton("Проверить сервисы")
         self.check_services_button.clicked.connect(self.run_service_checks)
+        self.check_services_button.hide()
         self.service_note_button = QPushButton("Заметка ОТРС")
         self.service_note_button.clicked.connect(self.open_service_check_note)
-        services_actions = QHBoxLayout(); services_actions.addWidget(self.check_services_button); services_actions.addWidget(self.service_note_button); services_actions.addStretch(1)
-        services_layout.addLayout(services_actions)
+        self.service_note_button.hide()
         self.service_task_hint_label = QLabel("")
         self.service_summary_label = QLabel("Проверка сервисов ещё не выполнялась."); self.service_summary_label.hide()
         self.service_results_list = QListWidget(); self.service_results_list.hide()
-        self.service_status_panel = QTextBrowser(); self.service_status_panel.setOpenExternalLinks(False); self.service_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.service_status_panel.setMinimumHeight(320)
-        services_layout.addWidget(self.service_status_panel)
+        self.service_status_panel = QTextBrowser(); self.service_status_panel.setOpenExternalLinks(False); self.service_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.service_status_panel.setMinimumHeight(360)
+        services_layout.addWidget(self.service_status_panel, stretch=1)
         zabbix_group = QGroupBox("Zabbix / проблемы и графики")
         zabbix_layout = QVBoxLayout(zabbix_group)
-        self.zabbix_status_panel = QTextBrowser(); self.zabbix_status_panel.setOpenExternalLinks(False); self.zabbix_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.zabbix_status_panel.setMinimumHeight(320)
-        zabbix_layout.addWidget(self.zabbix_status_panel)
+        self.zabbix_status_panel = QTextBrowser(); self.zabbix_status_panel.setOpenExternalLinks(False); self.zabbix_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.zabbix_status_panel.setMinimumHeight(360)
+        zabbix_layout.addWidget(self.zabbix_status_panel, stretch=1)
         panels.addWidget(services_group, 1); panels.addWidget(zabbix_group, 1)
-        root.addLayout(panels)
+        root.addLayout(panels, stretch=1)
 
         self.status_label = QLabel("", self)
         self.status_label.setWordWrap(True)
@@ -3600,7 +3603,7 @@ class DutyModeWidget(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        root.addWidget(self.scroll, stretch=1)
+        self.scroll.hide()
 
         self.content = QWidget()
         self.content.setMinimumWidth(0)
@@ -3735,7 +3738,8 @@ class DutyModeWidget(QWidget):
             service_html = "<b>Проверка сервисов не выбрана</b>"
         else:
             stats = summarize_service_results(self.service_check_results)
-            lines = [f"<b>Задача для проверки сервисов:</b> {self._task_summary(self._service_checks_task_number())}. Автозапуск в дежурстве: включён.", f"Проверка сервисов завершена: OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}", "<br><b>Сервисы:</b>"]
+            service_task = self._task_summary_html("service_checks", self._service_checks_task_number())
+            lines = [f"<b>Задача для проверки сервисов:</b> {service_task}", "Автозапуск в дежурстве: включён.", f"Проверка сервисов завершена: OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}", "<br><b>Сервисы:</b>"]
             result_by_id = {r.get('service_id'): r for r in self.service_check_results}
             for service in self.service_settings().get("items", []):
                 result = result_by_id.get(service.get("id")) or make_service_result(service, status="not_checked")
@@ -3755,10 +3759,11 @@ class DutyModeWidget(QWidget):
         if not z_enabled:
             z_html = "<b>Проверка Zabbix не выбрана</b>"
         else:
-            lines = [f"<b>Задача Zabbix / графики:</b> {self._task_summary(self._zabbix_task_number())}", f"Проблемы Zabbix — {self.duty_zabbix_problems_status}", f"Графики дежурства — {self.duty_zabbix_graphs_status}", "<br><b>Графики:</b>"]
+            zabbix_task = self._task_summary_html("zabbix", self._zabbix_task_number())
+            lines = [f"<b>Задача Zabbix / графики:</b> {zabbix_task}", f"Проблемы Zabbix — {self._zabbix_status_html(self.duty_zabbix_problems_status)}", f"Графики дежурства — {self._zabbix_status_html(self.duty_zabbix_graphs_status)}", "<br><b>Графики:</b>"]
             for i, item in enumerate(self.check_graphs, 1):
                 graph_status = self.duty_zabbix_graph_statuses.get(item.get("id"), self.duty_zabbix_graphs_status)
-                lines.append(f"{i}. {self._graph_note_title(item)} — {graph_status}")
+                lines.append(f"{i}. {self._graph_note_title(item)} — {self._zabbix_status_html(graph_status)}")
             note = settings.get("last_zabbix_check_note", "")
             if note:
                 lines.append("<br><b>Последняя заметка:</b><br>" + plain_text_to_safe_html_with_links(f"Заметка в {settings.get('last_zabbix_check_time','')}:\n{note}"))
@@ -4324,6 +4329,47 @@ class DutyModeWidget(QWidget):
 
     def _task_summary(self, number):
         return f"№{number}" if number else "не привязана"
+
+
+    def _duty_task_url(self, task_type):
+        settings = self.get_settings()
+        if task_type == "service_checks":
+            url = str(settings.get("duty_service_checks_task_url", "") or "").strip()
+            ticket_id = str(settings.get("duty_service_checks_task_id", "") or "").strip()
+        else:
+            url = str(settings.get("duty_zabbix_task_url") or settings.get("current_ticket_url") or "").strip()
+            ticket_id = str(settings.get("duty_zabbix_task_id") or settings.get("current_ticket_id") or "").strip()
+        if url:
+            return url
+        if ticket_id:
+            base = str(settings.get("otrs", {}).get("note_url_base", "") or "").strip()
+            if base:
+                return base + ticket_id
+        return ""
+
+    def _task_summary_html(self, task_type, number):
+        summary = self._task_summary(number)
+        url = self._duty_task_url(task_type)
+        if not url or not number:
+            return summary
+        import html
+        escaped_url = html.escape(url, quote=True)
+        escaped_summary = html.escape(summary, quote=True)
+        return f'<a href="{escaped_url}">{escaped_summary}</a>'
+
+    def _zabbix_status_html(self, status):
+        status = str(status or "Ожидает проверки")
+        lowered = status.casefold()
+        color = "#e8eef7"
+        if "проверено" in lowered or lowered == "ок" or lowered == "ok" or "выполнено" in lowered:
+            color = "#7CFC98"
+        elif "ошиб" in lowered or "нет данных" in lowered:
+            color = "#ff5c5c"
+        elif "таймаут" in lowered or "вним" in lowered or "пропущ" in lowered:
+            color = "#f6d365"
+        elif "открыто" in lowered:
+            color = "#58a6ff"
+        return f'<span style="color:{color}">{status}</span>'
 
     def _graphs_count(self):
         self.load_check_graphs()
