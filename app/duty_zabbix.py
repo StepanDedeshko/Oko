@@ -300,27 +300,28 @@ def normalize_problem_row(cells):
     }
 
 
+def _problem_field(problem, field, default=""):
+    if isinstance(problem, dict):
+        return problem.get(field, default)
+    return getattr(problem, field, default)
+
+
 def format_zabbix_problems_note_block(problems):
     problems = list(problems or [])
     if not problems:
         return ""
     lines = ["Замеченные проблемы Zabbix:"]
     for index, problem in enumerate(problems, start=1):
-        severity = str(problem.get("severity", "") or "").strip() or "без важности"
-        host = str(problem.get("host", "") or "").strip() or "без узла"
-        text = str(problem.get("problem", "") or problem.get("raw_text", "") or "Проблема без описания").strip()
-        lines.append(f"{index}. [{severity}] {host} — {text}")
-        if problem.get("time"):
-            lines.append(f"   Время: {problem.get('time')}")
-        if problem.get("status"):
-            lines.append(f"   Состояние: {problem.get('status')}")
-        if problem.get("acknowledged"):
-            lines.append(f"   Подтверждено: {problem.get('acknowledged')}")
-        if problem.get("duration"):
-            lines.append(f"   Длительность: {problem.get('duration')}")
-        if problem.get("tags"):
-            lines.append(f"   Теги: {problem.get('tags')}")
-        if problem.get("handled"):
+        time = str(_problem_field(problem, "time", "") or "").strip() or "Время не указано"
+        severity = str(_problem_field(problem, "severity", "") or "").strip() or "Важность не указана"
+        host = str(_problem_field(problem, "host", "") or "").strip() or "Узел не указан"
+        text = str(
+            _problem_field(problem, "problem", "")
+            or _problem_field(problem, "raw_text", "")
+            or "Проблема не указана"
+        ).strip() or "Проблема не указана"
+        lines.append(f'{index}. {time}, {severity}, {host}, {text}. - "Ссылка на задачу в Redmine"')
+        if _problem_field(problem, "handled", False):
             lines.append("   Примечание: проблема уже была добавлена в задачу ранее.")
     return "\n".join(lines)
 

@@ -190,12 +190,17 @@ class DutyZabbixTests(unittest.TestCase):
 
     def test_format_zabbix_problems_note_block(self):
         block = format_zabbix_problems_note_block([
-            {"time": "23.06.2026 10:12", "severity": "High", "host": "server-01", "problem": "CPU load is high", "tags": "service=cpu"}
+            {"time": "23.06.2026 12:06:15", "severity": "Высокая", "host": "server-01", "problem": "CPU load is high", "tags": "service=cpu"}
         ])
         self.assertIn("Замеченные проблемы Zabbix:", block)
-        self.assertIn("1. [High] server-01 — CPU load is high", block)
-        self.assertIn("Время: 23.06.2026 10:12", block)
-        self.assertIn("Теги: service=cpu", block)
+        self.assertIn('1. 23.06.2026 12:06:15, Высокая, server-01, CPU load is high. - "Ссылка на задачу в Redmine"', block)
+
+    def test_format_zabbix_problems_note_block_uses_fallbacks_and_handled_note(self):
+        block = format_zabbix_problems_note_block([
+            {"time": "", "severity": "", "host": "", "problem": "", "raw_text": "", "handled": True}
+        ])
+        self.assertIn('1. Время не указано, Важность не указана, Узел не указан, Проблема не указана. - "Ссылка на задачу в Redmine"', block)
+        self.assertIn("Примечание: проблема уже была добавлена в задачу ранее.", block)
 
 
 if __name__ == "__main__":
