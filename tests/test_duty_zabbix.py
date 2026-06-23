@@ -21,6 +21,7 @@ from app.duty_zabbix import (
     problem_matches_keywords,
     rotate_zabbix_problem_csv_files,
     zabbix_problems_collect_js,
+    zabbix_problem_row_status_color,
     zabbix_status_color,
     zabbix_status_html,
 )
@@ -133,6 +134,12 @@ class DutyZabbixTests(unittest.TestCase):
         self.assertEqual(zabbix_status_color("Требуется внимание"), "#f6d365")
         self.assertEqual(zabbix_status_color("Открыто для проверки"), "#58a6ff")
         self.assertEqual(zabbix_status_color("Ошибка: URL не найден"), "#ff5c5c")
+
+    def test_problem_row_status_colors(self):
+        self.assertEqual(zabbix_problem_row_status_color(" ПРОБЛЕМА "), "#ff5c5c")
+        self.assertEqual(zabbix_problem_row_status_color("решено"), "#7CFC98")
+        self.assertEqual(zabbix_problem_row_status_color("РЕШЕНА"), "#7CFC98")
+        self.assertEqual(zabbix_problem_row_status_color("другое"), "")
 
     def test_zabbix_status_html_escapes_label(self):
         html = zabbix_status_html("Ошибка <script>")

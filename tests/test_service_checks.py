@@ -729,6 +729,9 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("#export_csv", duty_source)
         self.assertIn("load_compared_zabbix_problem_exports", duty_source)
         self.assertIn("handled_problems.json", (Path(__file__).resolve().parents[1] / "app" / "duty_zabbix.py").read_text(encoding="utf-8"))
+        duty_graph_card_source = duty_source.split("class DutyGraphCard", 1)[1].split("class", 1)[0]
+        self.assertNotIn("_connect_csv_download_handler", duty_graph_card_source)
+        self.assertIn("zabbix_problem_row_status_color", duty_source)
 
     def test_duty_template_context_variables_are_present(self):
         duty_source = (Path(__file__).resolve().parents[1] / "app" / "duty_mode.py").read_text(encoding="utf-8")

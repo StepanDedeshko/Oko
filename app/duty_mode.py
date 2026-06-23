@@ -102,6 +102,7 @@ from app.duty_zabbix import (
     rotate_zabbix_problem_csv_files,
     zabbix_problems_collect_js,
     zabbix_problems_next_page_js,
+    zabbix_problem_row_status_color,
     zabbix_status_html,
 )
 
@@ -421,9 +422,10 @@ class ZabbixProblemsSelectionDialog(QDialog):
                 item = QTableWidgetItem(str(value or ""))
                 if col == 0:
                     item.setCheckState(Qt.Unchecked)
-                if str(problem.get("status", "")).upper() == "РЕШЕНО":
-                    item.setForeground(QColor("#9aa4b2"))
-                elif problem.get("handled"):
+                    color = zabbix_problem_row_status_color(problem.get("status", ""))
+                    if color:
+                        item.setForeground(QColor(color))
+                elif col == 6 and problem.get("handled"):
                     item.setForeground(QColor("#f6d365"))
                 self.table.setItem(row, col, item)
         self.table.resizeColumnsToContents()
@@ -969,7 +971,6 @@ class AttachExistingTaskDialog(QDialog):
             pass
 
         self.view.setPage(self.page)
-        self._connect_csv_download_handler()
         self.view.loadFinished.connect(self.on_loaded)
 
         root.addWidget(self.view, stretch=1)
@@ -1552,7 +1553,6 @@ class OtrsCreateTaskDialog(QDialog):
             pass
 
         self.view.setPage(self.page)
-        self._connect_csv_download_handler()
         self.view.loadFinished.connect(self.on_loaded)
         self.view.urlChanged.connect(self.on_url_changed)
 
@@ -1909,7 +1909,6 @@ class OtrsNoteDialog(QDialog):
             pass
 
         self.view.setPage(self.page)
-        self._connect_csv_download_handler()
         self.view.loadFinished.connect(self.on_loaded)
         self.view.urlChanged.connect(self.on_url_changed)
 
@@ -2501,7 +2500,6 @@ class DutyGraphCard(QFrame):
 
         self.page = QWebEnginePage(profile, self.view)
         self.view.setPage(self.page)
-        self._connect_csv_download_handler()
         self.view.loadFinished.connect(self.on_loaded)
 
         self.duty_trigger_status_label = QLabel("")

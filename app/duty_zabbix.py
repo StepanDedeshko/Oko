@@ -383,6 +383,15 @@ CSV_HEADER_MAP = {
 }
 
 
+def zabbix_problem_row_status_color(status):
+    status_text = normalize_problem_text(status).casefold()
+    if status_text == "проблема":
+        return "#ff5c5c"
+    if status_text in {"решено", "решена"}:
+        return "#7CFC98"
+    return ""
+
+
 def normalize_problem_text(value):
     return " ".join(str(value or "").replace("\ufeff", "").split()).strip()
 
