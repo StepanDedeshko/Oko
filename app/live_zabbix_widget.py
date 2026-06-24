@@ -7,12 +7,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 import json
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -37,6 +38,33 @@ DOM_PARSER_SCRIPT = DOM_PARSER_SCRIPT_PLACEHOLDER
 WEBENGINE_JS_ERROR_MESSAGE = "Ошибка диагностики WebEngine: JS не вернул document.location.href. Проверьте выполнение runJavaScript, page.url/view.url и выбранный WebEngine profile."
 JS_EMPTY_STRING_ERROR_MESSAGE = "Ошибка JS диагностики: runJavaScript вернул пустую строку. DOM-парсер не запускался корректно."
 ZERO_PROBLEMS_MESSAGE = "Страница загружена, но проблемы не найдены. Возможные причины: страница логина, таблица ещё не загрузилась, DOM Zabbix не распознан."
+ACKNOWLEDGE_PAGE_MESSAGE = "Открыта форма подтверждения Zabbix. Мониторинг страницы Problems не выполняется в этом WebView."
+
+
+class ZabbixAcknowledgeDialog(QDialog):
+    """Separate WebView for Zabbix acknowledge/update popup pages."""
+
+    def __init__(self, profile, url, parent=None, closed_callback=None):
+        super().__init__(parent)
+        self.closed_callback = closed_callback
+        self.setWindowTitle("Подтверждение Zabbix")
+        self.resize(1100, 760)
+        layout = QVBoxLayout(self)
+        self.view = register_web_view(QWebEngineView(self))
+        if profile is not None:
+            self.page = QWebEnginePage(profile, self.view)
+            self.view.setPage(self.page)
+        layout.addWidget(self.view)
+        self.view.load(QUrl(url))
+
+    def closeEvent(self, event):
+        view = self.view
+        self.view = None
+        if view is not None:
+            safe_delete_web_view(view, logger=get_logger(), context="ZabbixAcknowledgeDialog")
+        if self.closed_callback:
+            self.closed_callback()
+        super().closeEvent(event)
 
 
 class LiveZabbixMonitorWidget(QWidget):
@@ -62,6 +90,8 @@ class LiveZabbixMonitorWidget(QWidget):
         self.last_js_health = None
         self.last_js_smoke = None
         self.last_js_result_meta = {}
+        self._restoring_column_widths = False
+        self.ack_dialogs = []
         self._parse_attempts = []
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_now)
@@ -131,6 +161,25 @@ class LiveZabbixMonitorWidget(QWidget):
         ]
         self.table = QTableWidget(0, len(self.table_columns))
         self.table.setHorizontalHeaderLabels(self.table_columns)
+        self.table.setObjectName("LiveZabbixProblemsTable")
+        self.table.setStyleSheet(
+            """
+            QTableWidget#LiveZabbixProblemsTable {
+                font-size: 9px;
+                gridline-color: rgba(128, 128, 128, 90);
+            }
+            QTableWidget#LiveZabbixProblemsTable::item {
+                padding: 1px 3px;
+            }
+            QHeaderView::section {
+                font-size: 9px;
+                padding: 2px 4px;
+            }
+            """
+        )
+        self.table.verticalHeader().setDefaultSectionSize(22)
+        self.table.verticalHeader().setMinimumSectionSize(18)
+        self.table.cellClicked.connect(self._on_table_cell_clicked)
         self._configure_table_columns()
         root.addWidget(self.table, stretch=1)
 
@@ -138,15 +187,19 @@ class LiveZabbixMonitorWidget(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
-        defaults = [140, 120, 80, 180, 420, 110, 130, 100, 180, 110, 90, 130, 110]
+        defaults = [110, 82, 46, 150, 420, 82, 92, 76, 140, 88, 68, 92, 90]
         widths = self.settings.get("table_column_widths") or defaults
+        self._restoring_column_widths = True
         for index, width in enumerate(defaults):
             value = widths[index] if index < len(widths) else width
             self.table.setColumnWidth(index, max(60, int(value)))
+        self._restoring_column_widths = False
         header.setSectionResizeMode(4, QHeaderView.Stretch)
         header.sectionResized.connect(self._save_table_column_widths)
 
     def _save_table_column_widths(self, *_args):
+        if self._restoring_column_widths:
+            return
         self.settings["table_column_widths"] = [self.table.columnWidth(index) for index in range(self.table.columnCount())]
         save_config(self.config)
 
@@ -432,6 +485,16 @@ class LiveZabbixMonitorWidget(QWidget):
             "load_finished_ok": self.last_load_ok,
         }
 
+    @staticmethod
+    def _is_acknowledge_page_url_or_title(url_value, title_value):
+        combined = f"{url_value or ''} {title_value or ''}".casefold()
+        return (
+            "popup_action" in combined
+            or "acknowledge" in combined
+            or "action=popup.acknowledge" in combined
+            or "обновление проблемы" in combined
+        )
+
     def _diagnostic_payload(self, payload):
         safe_debug = dict((payload or {}).get("safe_debug") or {})
         health = self.last_js_health if isinstance(self.last_js_health, dict) else {}
@@ -474,6 +537,8 @@ class LiveZabbixMonitorWidget(QWidget):
             safe_debug["zero_reason"] = JS_EMPTY_STRING_ERROR_MESSAGE
         if safe_debug.get("load_finished_ok") is True and not safe_debug.get("document_location_href") and safe_debug.get("js_result_is_none"):
             safe_debug["zero_reason"] = WEBENGINE_JS_ERROR_MESSAGE
+        if self._is_acknowledge_page_url_or_title(health.get("href", ""), health.get("title", "")):
+            safe_debug["zero_reason"] = ACKNOWLEDGE_PAGE_MESSAGE
         return safe_debug
 
     def _update_diagnostics(self, payload, status_text=None):
@@ -504,6 +569,13 @@ class LiveZabbixMonitorWidget(QWidget):
                     color = self._severity_color(item.severity_level, item.severity_class, item.severity)
                     if color:
                         cell.setBackground(QColor(color))
+                if column == 6 and (item.ack_url or item.problem_url):
+                    cell.setForeground(QColor("#64b5f6"))
+                    font = cell.font()
+                    font.setUnderline(True)
+                    cell.setFont(font)
+                    cell.setToolTip("Открыть подтверждение Zabbix")
+                    cell.setData(Qt.UserRole, item.ack_url or item.problem_url)
                 self.table.setItem(row, column, cell)
             open_button = QPushButton("Открыть")
             open_button.setEnabled(bool(item.problem_url))
@@ -513,11 +585,6 @@ class LiveZabbixMonitorWidget(QWidget):
             graphs_button.setEnabled(bool(item.graph_urls))
             graphs_button.clicked.connect(lambda _=False, urls=list(item.graph_urls): self.open_graphs(urls))
             self.table.setCellWidget(row, 11, graphs_button)
-            ack_button = QPushButton("Открыть подтверждение")
-            ack_target = item.ack_url or item.problem_url
-            ack_button.setEnabled(bool(ack_target))
-            ack_button.clicked.connect(lambda _=False, url=ack_target: self.open_acknowledgement(url))
-            self.table.setCellWidget(row, 6, ack_button)
             processed_button = QPushButton("Обработано")
             processed_button.clicked.connect(lambda _=False, key=item.key: self.mark_processed(key))
             self.table.setCellWidget(row, 12, processed_button)
@@ -551,11 +618,23 @@ class LiveZabbixMonitorWidget(QWidget):
     def open_acknowledgement(self, url):
         if not url:
             return
-        if self.view is not None:
-            self.view.load(QUrl(url))
-            self.show_webview()
-        else:
-            QDesktopServices.openUrl(QUrl(url))
+        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        dialog = ZabbixAcknowledgeDialog(profile, url, parent=self, closed_callback=self.poll_now)
+        self.ack_dialogs.append(dialog)
+        dialog.finished.connect(lambda _=0, d=dialog: self._ack_dialog_finished(d))
+        dialog.show()
+
+    def _ack_dialog_finished(self, dialog):
+        if dialog in self.ack_dialogs:
+            self.ack_dialogs.remove(dialog)
+
+    def _on_table_cell_clicked(self, row, column):
+        if column != 6:
+            return
+        item = self.table.item(row, column)
+        url = item.data(Qt.UserRole) if item is not None else ""
+        if url:
+            self.open_acknowledgement(url)
 
     def open_graphs(self, urls):
         for url in urls or []:

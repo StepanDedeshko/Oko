@@ -190,13 +190,20 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
             "QHeaderView.Interactive",
             "QHeaderView.Stretch",
             "table_column_widths",
+            "font-size: 9px",
+            "setDefaultSectionSize(22)",
+            "cellClicked.connect",
             "_severity_color",
             "disaster",
             "high",
             "average",
             "warning",
             "not_classified",
-            "Открыть подтверждение",
+            "Открыть подтверждение Zabbix",
+            "ZabbixAcknowledgeDialog",
+            "ACKNOWLEDGE_PAGE_MESSAGE",
+            "popup_action",
         ]:
             self.assertIn(marker, source)
+        self.assertNotIn('QPushButton("Открыть подтверждение")', source)
         self.assertNotIn("Создать Redmine", source)
