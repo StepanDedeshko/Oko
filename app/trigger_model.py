@@ -46,6 +46,7 @@ class ZabbixProblemSnapshotItem:
     key: str
     trigger_name: str = ""
     host: str = ""
+    host_url: str = ""
     severity: str = ""
     started_at: str = ""
     status: str = "active"
@@ -69,6 +70,7 @@ class ZabbixProblemSnapshotItem:
             "key": self.key,
             "trigger_name": self.trigger_name,
             "host": self.host,
+            "host_url": self.host_url,
             "severity": self.severity,
             "started_at": self.started_at,
             "status": self.status,
@@ -238,6 +240,7 @@ def enrich_problem(config: dict, problem: dict, time_range="1h", processed_keys:
         key=key,
         trigger_name=str(problem.get("trigger_name") or problem.get("name") or problem.get("display_name") or ""),
         host=str(problem.get("host") or ""),
+        host_url=str(problem.get("host_url") or ""),
         severity=str(problem.get("severity") or ""),
         started_at=str(problem.get("started_at") or problem.get("time") or ""),
         status=str(problem.get("status") or "active"),

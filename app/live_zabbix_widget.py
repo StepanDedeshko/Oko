@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QHeaderView,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -92,6 +93,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self.last_js_result_meta = {}
         self._restoring_column_widths = False
         self.ack_dialogs = []
+        self.last_separator_rows = []
         self._parse_attempts = []
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_now)
@@ -155,9 +157,6 @@ class LiveZabbixMonitorWidget(QWidget):
             "Действия",
             "Теги",
             "Статус Око",
-            "Zabbix",
-            "Графики",
-            "Обработано",
         ]
         self.table = QTableWidget(0, len(self.table_columns))
         self.table.setHorizontalHeaderLabels(self.table_columns)
@@ -165,19 +164,19 @@ class LiveZabbixMonitorWidget(QWidget):
         self.table.setStyleSheet(
             """
             QTableWidget#LiveZabbixProblemsTable {
-                font-size: 9px;
+                font-size: 10px;
                 gridline-color: rgba(128, 128, 128, 90);
             }
             QTableWidget#LiveZabbixProblemsTable::item {
                 padding: 1px 3px;
             }
             QHeaderView::section {
-                font-size: 9px;
+                font-size: 10px;
                 padding: 2px 4px;
             }
             """
         )
-        self.table.verticalHeader().setDefaultSectionSize(22)
+        self.table.verticalHeader().setDefaultSectionSize(24)
         self.table.verticalHeader().setMinimumSectionSize(18)
         self.table.cellClicked.connect(self._on_table_cell_clicked)
         self._configure_table_columns()
@@ -187,7 +186,7 @@ class LiveZabbixMonitorWidget(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
-        defaults = [110, 82, 46, 150, 420, 82, 92, 76, 140, 88, 68, 92, 90]
+        defaults = [105, 82, 42, 145, 460, 76, 86, 72, 130, 80]
         widths = self.settings.get("table_column_widths") or defaults
         self._restoring_column_widths = True
         for index, width in enumerate(defaults):
@@ -430,6 +429,7 @@ class LiveZabbixMonitorWidget(QWidget):
             self._update_diagnostics(payload, status_text=self._js_error_status(meta))
             return
         raw_items = payload.get("items") or []
+        self.last_separator_rows = payload.get("separators") or []
         self._parse_attempts.append(payload)
         if not force and not raw_items and len(self._parse_attempts) < 3:
             self._update_diagnostics(payload, status_text="Страница загружена, ждём таблицу Zabbix Problems…")
@@ -549,8 +549,18 @@ class LiveZabbixMonitorWidget(QWidget):
 
     def _render(self, diff, payload=None):
         all_items = diff.new + diff.active + diff.resolved + diff.processed
-        self.table.setRowCount(len(all_items))
-        for row, item in enumerate(all_items):
+        separator_rows = [row for row in self.last_separator_rows if str(row.get("text") or "").strip()]
+        self.table.setRowCount(len(all_items) + len(separator_rows))
+        table_row = 0
+        for separator in separator_rows:
+            label = QTableWidgetItem(str(separator.get("text") or ""))
+            label.setTextAlignment(Qt.AlignCenter)
+            label.setBackground(QColor("#263238"))
+            self.table.setItem(table_row, 0, label)
+            self.table.setSpan(table_row, 0, 1, self.table.columnCount())
+            table_row += 1
+        for item in all_items:
+            row = table_row
             values = [
                 item.started_at,
                 item.severity,
@@ -576,18 +586,22 @@ class LiveZabbixMonitorWidget(QWidget):
                     cell.setFont(font)
                     cell.setToolTip("Открыть подтверждение Zabbix")
                     cell.setData(Qt.UserRole, item.ack_url or item.problem_url)
+                if column == 3 and item.host_url:
+                    cell.setForeground(QColor("#64b5f6"))
+                    font = cell.font()
+                    font.setUnderline(True)
+                    cell.setFont(font)
+                    cell.setToolTip("Открыть узел")
+                    cell.setData(Qt.UserRole, item.host_url)
+                if column == 4 and (item.graph_urls or item.problem_url):
+                    cell.setForeground(QColor("#64b5f6"))
+                    font = cell.font()
+                    font.setUnderline(True)
+                    cell.setFont(font)
+                    cell.setToolTip("Открыть график/проблему")
+                    cell.setData(Qt.UserRole, {"graph_urls": list(item.graph_urls), "problem_url": item.problem_url})
                 self.table.setItem(row, column, cell)
-            open_button = QPushButton("Открыть")
-            open_button.setEnabled(bool(item.problem_url))
-            open_button.clicked.connect(lambda _=False, url=item.problem_url: QDesktopServices.openUrl(QUrl(url)))
-            self.table.setCellWidget(row, 10, open_button)
-            graphs_button = QPushButton("Открыть графики")
-            graphs_button.setEnabled(bool(item.graph_urls))
-            graphs_button.clicked.connect(lambda _=False, urls=list(item.graph_urls): self.open_graphs(urls))
-            self.table.setCellWidget(row, 11, graphs_button)
-            processed_button = QPushButton("Обработано")
-            processed_button.clicked.connect(lambda _=False, key=item.key: self.mark_processed(key))
-            self.table.setCellWidget(row, 12, processed_button)
+            table_row += 1
         self.counts_label.setText(f"Новые: {len(diff.new)} | Активные: {len(diff.active)} | Решённые: {len(diff.resolved)} | Обработанные: {len(diff.processed)}")
         self.updated_label.setText("Последнее обновление: " + datetime.now().strftime("%H:%M:%S"))
         if all_items:
@@ -629,12 +643,29 @@ class LiveZabbixMonitorWidget(QWidget):
             self.ack_dialogs.remove(dialog)
 
     def _on_table_cell_clicked(self, row, column):
-        if column != 6:
-            return
         item = self.table.item(row, column)
-        url = item.data(Qt.UserRole) if item is not None else ""
-        if url:
-            self.open_acknowledgement(url)
+        payload = item.data(Qt.UserRole) if item is not None else ""
+        if column == 3:
+            if payload:
+                if QMessageBox.question(self, "Zabbix", "Открыть узел сети в Zabbix?", QMessageBox.Open | QMessageBox.Cancel) == QMessageBox.Open:
+                    QDesktopServices.openUrl(QUrl(str(payload)))
+            else:
+                QMessageBox.information(self, "Zabbix", "Ссылка на узел не найдена.")
+            return
+        if column == 4:
+            graph_urls = payload.get("graph_urls", []) if isinstance(payload, dict) else []
+            problem_url = payload.get("problem_url", "") if isinstance(payload, dict) else ""
+            if graph_urls:
+                if QMessageBox.question(self, "Zabbix", "Открыть график проблемы?", QMessageBox.Open | QMessageBox.Cancel) == QMessageBox.Open:
+                    self.open_graphs(graph_urls)
+            elif problem_url:
+                if QMessageBox.question(self, "Zabbix", "Открыть проблему в Zabbix?", QMessageBox.Open | QMessageBox.Cancel) == QMessageBox.Open:
+                    QDesktopServices.openUrl(QUrl(str(problem_url)))
+            else:
+                QMessageBox.information(self, "Zabbix", "Ссылка на график/проблему не найдена.")
+            return
+        if column == 6 and payload:
+            self.open_acknowledgement(payload)
 
     def open_graphs(self, urls):
         for url in urls or []:

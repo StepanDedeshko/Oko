@@ -91,7 +91,7 @@ class LiveZabbixMonitorDiagnosticsTests(unittest.TestCase):
         self.assertIn("URL Zabbix Problems", text)
         self.assertIn("Интервал опроса", text)
         self.assertIn("Открыть URL в браузере", text)
-        self.assertIn("Обработано", text)
+        self.assertIn("Обработанные", text)
         self.assertIn("QTimer.singleShot(delay_ms", text)
         self.assertNotIn("Создать Redmine", text)
 
@@ -173,6 +173,8 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
 
     def test_live_monitor_columns_widths_severity_colors_and_ack_button(self):
         source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        parser_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix.py").read_text(encoding="utf-8")
+        combined_source = source + parser_source
         for marker in [
             '"Время"',
             '"Важность"',
@@ -184,14 +186,11 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
             '"Действия"',
             '"Теги"',
             '"Статус Око"',
-            '"Zabbix"',
-            '"Графики"',
-            '"Обработано"',
             "QHeaderView.Interactive",
             "QHeaderView.Stretch",
             "table_column_widths",
-            "font-size: 9px",
-            "setDefaultSectionSize(22)",
+            "font-size: 10px",
+            "setDefaultSectionSize(24)",
             "cellClicked.connect",
             "_severity_color",
             "disaster",
@@ -200,10 +199,20 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
             "warning",
             "not_classified",
             "Открыть подтверждение Zabbix",
+            "Открыть узел сети в Zabbix",
+            "Открыть график проблемы",
             "ZabbixAcknowledgeDialog",
             "ACKNOWLEDGE_PAGE_MESSAGE",
             "popup_action",
+            ".overlay-dialogue",
+            ".modal-popup",
+            "#acknowledge_form",
+            ".table-forms",
+            "isSeparatorRow",
+            "separators",
         ]:
-            self.assertIn(marker, source)
+            self.assertIn(marker, combined_source)
         self.assertNotIn('QPushButton("Открыть подтверждение")', source)
+        self.assertNotIn('"Графики",', source)
+        self.assertNotIn('"Обработано",', source)
         self.assertNotIn("Создать Redmine", source)

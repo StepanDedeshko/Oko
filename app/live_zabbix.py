@@ -42,7 +42,7 @@ def normalize_snapshot(items) -> dict[str, ZabbixProblemSnapshotItem]:
         if isinstance(item, ZabbixProblemSnapshotItem):
             snapshot_item = item
         else:
-            snapshot_item = ZabbixProblemSnapshotItem(key=build_problem_key(item), **{k: v for k, v in dict(item or {}).items() if k in {"trigger_name", "host", "severity", "started_at", "status", "info", "duration", "acknowledged", "ack_text", "ack_url", "actions_text", "tags", "severity_class", "severity_level", "event_id", "problem_url", "graph_urls", "trigger_kind", "processed"}})
+            snapshot_item = ZabbixProblemSnapshotItem(key=build_problem_key(item), **{k: v for k, v in dict(item or {}).items() if k in {"trigger_name", "host", "host_url", "severity", "started_at", "status", "info", "duration", "acknowledged", "ack_text", "ack_url", "actions_text", "tags", "severity_class", "severity_level", "event_id", "problem_url", "graph_urls", "trigger_kind", "processed"}})
         if snapshot_item.key:
             result[snapshot_item.key] = snapshot_item
     return result
@@ -136,13 +136,14 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     var headerRows = Array.from(table.querySelectorAll('thead tr'));
     if (!headerRows.length) headerRows = Array.from(table.querySelectorAll('tr')).slice(0, 2);
     headerRows.forEach(function(row) {
-      Array.from(row.querySelectorAll('th')).forEach(function(th, index) {
+      directCells(row).filter(function(cell) { return cell.tagName === 'TH'; }).forEach(function(th, index) {
         var header = normalizeHeader(text(th));
         Object.keys(headerAliases).forEach(function(field) {
           if (headerAliases[field].indexOf(header) !== -1) map[field] = index;
         });
       });
     });
+    map.__header_count = Object.keys(map).filter(function(key) { return key.indexOf('__') !== 0; }).length ? (headerRows[0] ? directCells(headerRows[0]).length : 0) : 0;
     return map;
   }
   function severityLevel(value, className) {
@@ -164,14 +165,29 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     var match = href.match(/(?:eventid|eventids%5B0%5D|eventids\[0\])=(\d+)/i);
     return match ? match[1] : '';
   }
+  function directCells(row) { return Array.from(row.children).filter(function(child) { return ['TD', 'TH'].indexOf(child.tagName) !== -1; }); }
+  function isSeparatorRow(row, cellsRaw) {
+    var value = text(row).toLowerCase();
+    if (/^(сегодня|вчера)$/.test(value)) return true;
+    if (cellsRaw.length === 1 && (cellsRaw[0].hasAttribute('colspan') || /сегодня|вчера/.test(value))) return true;
+    if (/separator|group|timeline|date/.test(row.className || '') && cellsRaw.length <= 2) return true;
+    return false;
+  }
   function cellAt(cells, map, field, fallbackIndex) {
-    var index = Object.prototype.hasOwnProperty.call(map, field) ? map[field] : fallbackIndex;
+    var headerCount = map.__header_count || cells.length;
+    var offset = cells.length > headerCount ? cells.length - headerCount : 0;
+    var index = Object.prototype.hasOwnProperty.call(map, field) ? map[field] + offset : fallbackIndex;
     return index >= 0 && index < cells.length ? cells[index] : null;
   }
-  var tables = Array.from(document.querySelectorAll('table'));
+  if (document.querySelector('#acknowledge_form') || /popup_action|acknowledge|popup\.acknowledge/i.test(document.location.href || '') || /обновление проблемы/i.test(document.title || '')) {
+    var ackDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: false, table_count: 0, tr_count: 0, header_map: {}, candidate_count: 0, problem_count: 0, zero_reason: 'Открыта форма подтверждения Zabbix. Мониторинг страницы Problems не выполняется в этом WebView.', sample_rows: []};
+    return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: false, table_count: 0, tr_count: 0, header_map: {}, candidate_count: 0, problem_count: 0, items: [], separators: [], safe_debug: ackDebug, zero_reason: ackDebug.zero_reason});
+  }
+  var tables = Array.from(document.querySelectorAll('table')).filter(function(table) { return !table.closest('.overlay-dialogue, .modal, .modal-popup, #acknowledge_form, .table-forms'); });
   var rows = Array.from(document.querySelectorAll('tr'));
   var loginDetected = !!document.querySelector('input[type=password], input[name*=password i], form[action*=login i]') || /login|sign[ -]?in|вход/i.test(document.title || '');
   var items = [];
+  var separators = [];
   var candidates = [];
   var headerMap = {};
   var problemTable = tables.find(function(table) {
@@ -182,15 +198,16 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     }
     return false;
   }) || tables[0] || null;
-  if (problemTable && !Object.keys(headerMap).length) headerMap = buildHeaderMap(problemTable);
-  var dataRows = problemTable ? Array.from(problemTable.querySelectorAll('tbody tr')).filter(function(row) { return row.querySelectorAll('td').length; }) : rows;
+  if (problemTable && !Object.keys(headerMap).filter(function(key) { return key.indexOf('__') !== 0; }).length) headerMap = buildHeaderMap(problemTable);
+  var dataRows = problemTable ? Array.from(problemTable.querySelectorAll('tbody > tr')).filter(function(row) { return directCells(row).some(function(cell) { return cell.tagName === 'TD'; }); }) : rows;
   dataRows.forEach(function(row) {
     var rowText = text(row);
-    var cellsRaw = Array.from(row.querySelectorAll('td,th'));
+    var cellsRaw = directCells(row);
     var cells = cellsRaw.map(text);
-    if (!rowText || cellsRaw.length < 2) return;
+    if (isSeparatorRow(row, cellsRaw)) { separators.push({row_type: 'separator', text: rowText}); return; }
+    if (!rowText || cellsRaw.length < 2 || cellsRaw.some(function(cell) { return cell.hasAttribute('colspan'); })) return;
     var links = Array.from(row.querySelectorAll('a[href]'));
-    var hasHeaderMap = Object.keys(headerMap).length > 0;
+    var hasHeaderMap = Object.keys(headerMap).filter(function(key) { return key.indexOf('__') !== 0; }).length > 0;
     var looksLikeProblem = hasHeaderMap || links.some(function(a) { return /event|problem|tr_events|trigger|zabbix\.php/i.test(a.href || ''); }) || row.hasAttribute('data-eventid') || row.hasAttribute('data-problemid') || /problem|event|trigger/i.test(row.className || '');
     if (!looksLikeProblem && cellsRaw.length < 4) return;
     candidates.push(row);
@@ -198,6 +215,8 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     var ackCell = cellAt(cellsRaw, headerMap, 'acknowledged', 6);
     var actionsCell = cellAt(cellsRaw, headerMap, 'actions_text', 7);
     var problemCell = cellAt(cellsRaw, headerMap, 'trigger_name', cellsRaw.length - 1);
+    var hostCell = cellAt(cellsRaw, headerMap, 'host', 3);
+    var hostLink = (hostCell ? Array.from(hostCell.querySelectorAll('a[href]')) : []).find(function(a) { return /host|hostid|hosts|zabbix\.php/i.test(a.href || ''); });
     var problemLink = (problemCell ? Array.from(problemCell.querySelectorAll('a[href]')) : links).find(function(a) { return /event|problem|tr_events|trigger|zabbix\.php/i.test(a.href || ''); }) || links.find(function(a) { return /event|problem|tr_events|trigger|zabbix\.php/i.test(a.href || ''); });
     var graphLink = links.find(function(a) { return /chart|graph|history|graphs/i.test(a.href || ''); });
     var ackLink = (ackCell ? Array.from(ackCell.querySelectorAll('a[href]')) : links).find(function(a) { return /acknowledge|eventid|problem/i.test(a.href || '') || /подтверд|ack/i.test(text(a)); });
@@ -214,7 +233,8 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
       severity_class: severityClass,
       severity_level: severityLevel(severityText, severityClass),
       info: text(cellAt(cellsRaw, headerMap, 'info', 2)),
-      host: text(cellAt(cellsRaw, headerMap, 'host', 3)) || cells[1] || '',
+      host: text(hostCell) || cells[1] || '',
+      host_url: hostLink ? abs(hostLink.getAttribute('href')) : '',
       trigger_name: text(problemCell) || rowText,
       duration: text(cellAt(cellsRaw, headerMap, 'duration', 5)),
       acknowledged: acknowledged,
@@ -238,7 +258,7 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     else if (candidates.length === 0) reason = 'DOM Zabbix не распознан: строки таблиц не похожи на проблемы.';
     else reason = 'Кандидаты найдены, но не удалось извлечь проблемы из DOM.';
   }
-  var safeDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, header_map: headerMap, candidate_count: candidates.length, problem_count: items.length, zero_reason: reason, sample_rows: sampleRows};
-  return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, header_map: headerMap, candidate_count: candidates.length, problem_count: items.length, items: items, safe_debug: safeDebug, zero_reason: reason});
+  var safeDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, header_map: headerMap, separator_count: separators.length, candidate_count: candidates.length, problem_count: items.length, zero_reason: reason, sample_rows: sampleRows};
+  return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, header_map: headerMap, candidate_count: candidates.length, problem_count: items.length, separators: separators, items: items, safe_debug: safeDebug, zero_reason: reason});
 })();
 """
