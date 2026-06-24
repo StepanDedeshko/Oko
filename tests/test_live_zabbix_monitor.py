@@ -94,3 +94,38 @@ class LiveZabbixMonitorDiagnosticsTests(unittest.TestCase):
         self.assertIn("Обработано", text)
         self.assertIn("QTimer.singleShot(delay_ms", text)
         self.assertNotIn("Создать Redmine", text)
+
+class LiveZabbixMonitorWebEngineDiagnosticsTests(unittest.TestCase):
+    def test_health_check_and_qwebengine_diagnostics_are_present(self):
+        live_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix.py").read_text(encoding="utf-8")
+        widget_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("JS_HEALTH_CHECK_SCRIPT", live_source)
+        self.assertIn("window.location.href", live_source)
+        self.assertIn("document.readyState", live_source)
+        self.assertIn("bodyTextLength", live_source)
+        self.assertIn("htmlLength", live_source)
+        for marker in [
+            "requested_url_full_masked",
+            "qurl_is_valid",
+            "qurl_scheme",
+            "qurl_host_masked",
+            "view_url_after_load",
+            "page_url_after_load",
+            "load_finished_ok",
+            "js_result_type",
+            "js_result_is_none",
+            "js_result_preview",
+        ]:
+            self.assertIn(marker, widget_source)
+        self.assertIn("JS diagnostic returned None / invalid result", widget_source)
+        self.assertIn("Ошибка диагностики WebEngine", widget_source)
+
+    def test_profile_selection_and_show_webview_controls_are_present(self):
+        widget_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("Показать WebView", widget_source)
+        self.assertIn("WebEngine profile", widget_source)
+        self.assertIn("available_zabbix_ids", widget_source)
+        self.assertIn("selected_zabbix_id", widget_source)
+        self.assertIn("profile_selection_reason", widget_source)
+        self.assertIn("_profile_for_url", widget_source)
+        self.assertIn("Определён по домену URL Zabbix Problems", widget_source)

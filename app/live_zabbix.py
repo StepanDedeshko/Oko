@@ -72,6 +72,20 @@ def diff_snapshots(previous, current, processed_keys: set[str] | None = None) ->
 
 
 
+
+JS_HEALTH_CHECK_SCRIPT = r"""
+(function() {
+  return {
+    href: String(window.location.href || ""),
+    title: String(document.title || ""),
+    readyState: String(document.readyState || ""),
+    bodyExists: !!document.body,
+    bodyTextLength: document.body && document.body.innerText ? document.body.innerText.length : -1,
+    htmlLength: document.documentElement && document.documentElement.outerHTML ? document.documentElement.outerHTML.length : -1
+  };
+})();
+"""
+
 DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
 (function() {
   function text(el) { return (el && (el.innerText || el.textContent) || '').replace(/\s+/g, ' ').trim(); }
