@@ -99,7 +99,9 @@ class LiveZabbixMonitorWebEngineDiagnosticsTests(unittest.TestCase):
     def test_health_check_and_qwebengine_diagnostics_are_present(self):
         live_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix.py").read_text(encoding="utf-8")
         widget_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("JS_SMOKE_TEST_SCRIPT", live_source)
         self.assertIn("JS_HEALTH_CHECK_SCRIPT", live_source)
+        self.assertIn("JSON.stringify", live_source)
         self.assertIn("window.location.href", live_source)
         self.assertIn("document.readyState", live_source)
         self.assertIn("bodyTextLength", live_source)
@@ -118,6 +120,9 @@ class LiveZabbixMonitorWebEngineDiagnosticsTests(unittest.TestCase):
         ]:
             self.assertIn(marker, widget_source)
         self.assertIn("JS diagnostic returned None / invalid result", widget_source)
+        self.assertIn("JS returned empty string", widget_source)
+        self.assertIn("json.loads", widget_source)
+        self.assertIn("Ошибка JS диагностики", widget_source)
         self.assertIn("Ошибка диагностики WebEngine", widget_source)
 
     def test_profile_selection_and_show_webview_controls_are_present(self):

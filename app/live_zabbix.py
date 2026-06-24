@@ -73,9 +73,16 @@ def diff_snapshots(previous, current, processed_keys: set[str] | None = None) ->
 
 
 
+JS_SMOKE_TEST_SCRIPT = r"""
+(function() {
+  return JSON.stringify({smoke: "ok", href: String(window.location.href || "")});
+})();
+"""
+
+
 JS_HEALTH_CHECK_SCRIPT = r"""
 (function() {
-  return {
+  var result = {
     href: String(window.location.href || ""),
     title: String(document.title || ""),
     readyState: String(document.readyState || ""),
@@ -83,6 +90,7 @@ JS_HEALTH_CHECK_SCRIPT = r"""
     bodyTextLength: document.body && document.body.innerText ? document.body.innerText.length : -1,
     htmlLength: document.documentElement && document.documentElement.outerHTML ? document.documentElement.outerHTML.length : -1
   };
+  return JSON.stringify(result);
 })();
 """
 
@@ -146,7 +154,7 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     else reason = 'Кандидаты найдены, но не удалось извлечь проблемы из DOM.';
   }
   var safeDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, candidate_count: candidates.length, problem_count: items.length, zero_reason: reason, sample_rows: sampleRows};
-  return {ok: true, url: document.location.href, title: document.title || '', login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, candidate_count: candidates.length, problem_count: items.length, items: items, safe_debug: safeDebug, zero_reason: reason};
+  return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, candidate_count: candidates.length, problem_count: items.length, items: items, safe_debug: safeDebug, zero_reason: reason});
 })();
 
 """

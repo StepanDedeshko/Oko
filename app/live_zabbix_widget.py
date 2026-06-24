@@ -27,13 +27,14 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, SnapshotDiff, diff_snapshots, ensure_live_monitor_defaults
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, SnapshotDiff, diff_snapshots, ensure_live_monitor_defaults
 from app.logger import get_logger
 from app.trigger_model import append_history_event, enrich_problem
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 
 DOM_PARSER_SCRIPT = DOM_PARSER_SCRIPT_PLACEHOLDER
 WEBENGINE_JS_ERROR_MESSAGE = "Ошибка диагностики WebEngine: JS не вернул document.location.href. Проверьте выполнение runJavaScript, page.url/view.url и выбранный WebEngine profile."
+JS_EMPTY_STRING_ERROR_MESSAGE = "Ошибка JS диагностики: runJavaScript вернул пустую строку. DOM-парсер не запускался корректно."
 ZERO_PROBLEMS_MESSAGE = "Страница загружена, но проблемы не найдены. Возможные причины: страница логина, таблица ещё не загрузилась, DOM Zabbix не распознан."
 
 
@@ -58,6 +59,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self.profile_selection_reason = ""
         self.last_load_ok = None
         self.last_js_health = None
+        self.last_js_smoke = None
         self.last_js_result_meta = {}
         self._parse_attempts = []
         self.timer = QTimer(self)
@@ -257,7 +259,7 @@ class LiveZabbixMonitorWidget(QWidget):
 
     def _run_dom_parser(self, force=False):
         if self.view is not None and self.view.page() is not None:
-            self.view.page().runJavaScript(JS_HEALTH_CHECK_SCRIPT, lambda health: self._on_js_health_checked(health, force=force))
+            self.view.page().runJavaScript(JS_SMOKE_TEST_SCRIPT, lambda smoke: self._on_js_smoke_checked(smoke, force=force))
 
     def _js_result_meta(self, result):
         preview = repr(result)
@@ -269,20 +271,60 @@ class LiveZabbixMonitorWidget(QWidget):
             "js_result_preview": preview,
         }
 
-    def _on_js_health_checked(self, health, force=False):
-        self.last_js_health = health
-        self.last_js_result_meta = self._js_result_meta(health)
-        if not isinstance(health, dict) or not str(health.get("href") or ""):
-            payload = {
-                "ok": False,
-                "items": [],
-                "safe_debug": {
-                    "zero_reason": "JS diagnostic returned None / invalid result",
-                    "health_check": health if isinstance(health, dict) else {},
-                },
-            }
+    def _decode_js_json_result(self, result):
+        meta = self._js_result_meta(result)
+        if result is None:
+            meta["js_result_error"] = "JS diagnostic returned None / invalid result"
+            return None, meta
+        if isinstance(result, str):
+            if result == "":
+                meta["js_result_error"] = "JS returned empty string"
+                return None, meta
+            try:
+                return json.loads(result), meta
+            except json.JSONDecodeError as exc:
+                meta["js_result_error"] = f"JSON parse error: {exc}"
+                return None, meta
+        if isinstance(result, dict):
+            return result, meta
+        meta["js_result_error"] = "JS diagnostic returned invalid result type"
+        return None, meta
+
+    def _js_error_status(self, meta):
+        if meta.get("js_result_error") == "JS returned empty string":
+            return JS_EMPTY_STRING_ERROR_MESSAGE
+        return WEBENGINE_JS_ERROR_MESSAGE
+
+    def _js_error_payload(self, meta, health_check=None, smoke_check=None):
+        return {
+            "ok": False,
+            "items": [],
+            "safe_debug": {
+                "zero_reason": meta.get("js_result_error") or "JS diagnostic returned None / invalid result",
+                "health_check": health_check or {},
+                "smoke_check": smoke_check or {},
+            },
+        }
+
+    def _on_js_smoke_checked(self, smoke_result, force=False):
+        smoke, meta = self._decode_js_json_result(smoke_result)
+        self.last_js_smoke = smoke
+        self.last_js_result_meta = meta
+        if not isinstance(smoke, dict) or smoke.get("smoke") != "ok":
+            payload = self._js_error_payload(meta, smoke_check=smoke if isinstance(smoke, dict) else {})
             self._parse_attempts.append(payload)
-            self._update_diagnostics(payload, status_text=WEBENGINE_JS_ERROR_MESSAGE)
+            self._update_diagnostics(payload, status_text=self._js_error_status(meta))
+            return
+        self.view.page().runJavaScript(JS_HEALTH_CHECK_SCRIPT, lambda health: self._on_js_health_checked(health, force=force))
+
+    def _on_js_health_checked(self, health_result, force=False):
+        health, meta = self._decode_js_json_result(health_result)
+        self.last_js_health = health
+        self.last_js_result_meta = meta
+        if not isinstance(health, dict) or not str(health.get("href") or ""):
+            payload = self._js_error_payload(meta, health_check=health if isinstance(health, dict) else {})
+            self._parse_attempts.append(payload)
+            self._update_diagnostics(payload, status_text=self._js_error_status(meta))
             return
         self.view.page().runJavaScript(DOM_PARSER_SCRIPT, lambda result: self._on_dom_parsed(result, force=force))
 
@@ -293,15 +335,15 @@ class LiveZabbixMonitorWidget(QWidget):
         return path
 
     def _on_dom_parsed(self, payload, force=False):
-        self.last_js_result_meta = self._js_result_meta(payload)
+        payload, meta = self._decode_js_json_result(payload)
+        self.last_js_result_meta = meta
         if isinstance(payload, list):
             payload = {"ok": True, "items": payload, "safe_debug": {"problem_count": len(payload)}}
         if not isinstance(payload, dict):
-            payload = {
-                "ok": False,
-                "items": [],
-                "safe_debug": {"zero_reason": "JS diagnostic returned None / invalid result"},
-            }
+            payload = self._js_error_payload(meta)
+            self._parse_attempts.append(payload)
+            self._update_diagnostics(payload, status_text=self._js_error_status(meta))
+            return
         raw_items = payload.get("items") or []
         self._parse_attempts.append(payload)
         if not force and not raw_items and len(self._parse_attempts) < 3:
@@ -361,6 +403,7 @@ class LiveZabbixMonitorWidget(QWidget):
     def _diagnostic_payload(self, payload):
         safe_debug = dict((payload or {}).get("safe_debug") or {})
         health = self.last_js_health if isinstance(self.last_js_health, dict) else {}
+        smoke = self.last_js_smoke if isinstance(self.last_js_smoke, dict) else {}
         safe_debug.update({
             "used_url": self._safe_url_for_report(self.problems_url()),
             "document_location_href": safe_debug.get("url_path") or "",
@@ -380,6 +423,10 @@ class LiveZabbixMonitorWidget(QWidget):
                 "bodyTextLength": health.get("bodyTextLength", -1),
                 "htmlLength": health.get("htmlLength", -1),
             },
+            "js_smoke_test": {
+                "smoke": smoke.get("smoke", ""),
+                "href": self._safe_url_for_report(smoke.get("href", "")),
+            },
             "login_detected": bool((payload or {}).get("login_detected") or safe_debug.get("login_detected")),
             "table_count": int((payload or {}).get("table_count") or safe_debug.get("table_count") or 0),
             "tr_count": int((payload or {}).get("tr_count") or safe_debug.get("tr_count") or 0),
@@ -391,6 +438,8 @@ class LiveZabbixMonitorWidget(QWidget):
         safe_debug.update(self.last_js_result_meta or {})
         if safe_debug["problem_count"] == 0 and not safe_debug["zero_reason"]:
             safe_debug["zero_reason"] = ZERO_PROBLEMS_MESSAGE
+        if safe_debug.get("js_result_error") == "JS returned empty string":
+            safe_debug["zero_reason"] = JS_EMPTY_STRING_ERROR_MESSAGE
         if safe_debug.get("load_finished_ok") is True and not safe_debug.get("document_location_href") and safe_debug.get("js_result_is_none"):
             safe_debug["zero_reason"] = WEBENGINE_JS_ERROR_MESSAGE
         return safe_debug
