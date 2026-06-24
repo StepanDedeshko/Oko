@@ -3964,6 +3964,7 @@ class DutyModeWidget(QWidget):
         self.detected_zabbix_problems = []
         self.selected_zabbix_problems_for_note = []
         self.graph_trigger_check_started_for_overlay = False
+        self._graph_trigger_check_id = 0
         self.duty_flow_queue = []
         self._duty_guard = DutyFlowGuard(logger=self.logger)
         self._duty_run_id = 0
@@ -4287,6 +4288,7 @@ class DutyModeWidget(QWidget):
         self.duty_flow_queue = []
         self.service_checks_launched_from_duty = False
         self.graph_trigger_check_started_for_overlay = False
+        self._cancel_graph_trigger_check("duty_flow_cancel")
         self._set_duty_trigger_check_running(False)
         self.duty_trigger_queue = []
         for context in list(self._hidden_trigger_contexts):
@@ -5517,6 +5519,39 @@ class DutyModeWidget(QWidget):
         self.last_check_at = datetime.now(MSK)
         self.update_dashboard_summary()
 
+    def _graph_trigger_callback_is_current(self, trigger_check_id, callback=""):
+        if trigger_check_id is None:
+            return True
+        if trigger_check_id != self._graph_trigger_check_id:
+            self.logger.info(
+                "Graph trigger callback ignored after close/cancel: callback=%s callback_trigger_check_id=%s current_trigger_check_id=%s",
+                callback,
+                trigger_check_id,
+                self._graph_trigger_check_id,
+            )
+            return False
+        return True
+
+    def _cancel_graph_trigger_check(self, reason=""):
+        self._graph_trigger_check_id += 1
+        self.logger.info(
+            "Graph trigger check cancelled: trigger_check_id=%s reason=%s",
+            self._graph_trigger_check_id,
+            reason,
+        )
+        self.graph_trigger_check_started_for_overlay = False
+        self._set_duty_trigger_check_running(False)
+        self.duty_trigger_queue = []
+        self._duty_trigger_run_id = None
+        self._duty_trigger_stage_id = None
+        for context in list(self._hidden_trigger_contexts):
+            try:
+                context["cancelled"] = True
+                context["completed"] = True
+                self._cleanup_hidden_view(context)
+            except Exception:
+                self.logger.exception("Failed to cleanup graph trigger context after cancel")
+
     def _set_duty_trigger_check_running(self, running):
         self.duty_trigger_running = bool(running)
         if hasattr(self, "check_triggers_button"):
@@ -5810,6 +5845,9 @@ class DutyModeWidget(QWidget):
             self.duty_current_stage = "проверка Zabbix / графиков"
             self.mark_check_started()
         self.logger.info("Duty trigger manual check started: enabled_count=%s", len(enabled_triggers))
+        self._graph_trigger_check_id += 1
+        trigger_check_id = self._graph_trigger_check_id
+        self.logger.info("Graph trigger check started: trigger_check_id=%s part_of_duty_flow=%s", trigger_check_id, part_of_duty_flow)
         self._duty_trigger_run_id = self._duty_run_id if part_of_duty_flow else None
         self._duty_trigger_stage_id = self._duty_stage_id if part_of_duty_flow else None
         self.duty_zabbix_status = "выполняется"
@@ -5822,7 +5860,7 @@ class DutyModeWidget(QWidget):
             self.render_check_graph_cards()
         self._clear_duty_trigger_statuses()
 
-        self.duty_trigger_queue = list(enabled_triggers)
+        self.duty_trigger_queue = [dict(trigger, _graph_trigger_check_id=trigger_check_id) for trigger in enabled_triggers]
         self.duty_trigger_stats = {"total": len(enabled_triggers), "ok": 0, "alert": 0, "errors": 0}
         self.duty_trigger_results = []
         if not enabled_triggers:
@@ -5833,6 +5871,9 @@ class DutyModeWidget(QWidget):
         self._run_next_duty_trigger()
 
     def _run_next_duty_trigger(self):
+        if not self.duty_trigger_running:
+            self.logger.info("Graph trigger callback ignored after close/cancel: callback=run_next_duty_trigger")
+            return
         if self._duty_trigger_run_id is not None and not self._duty_callback_is_current(self._duty_trigger_run_id, self._duty_trigger_stage_id, "run_next_duty_trigger"):
             self.duty_trigger_queue = []
             self._set_duty_trigger_check_running(False)
@@ -5930,6 +5971,7 @@ class DutyModeWidget(QWidget):
             "cleanup_started": False,
             "duty_run_id": self._duty_trigger_run_id,
             "duty_stage_id": self._duty_trigger_stage_id,
+            "trigger_check_id": trigger.get("_graph_trigger_check_id"),
         }
         context["timeout_timer"].setSingleShot(True)
         context["read_timer"].setSingleShot(True)
@@ -5938,6 +5980,10 @@ class DutyModeWidget(QWidget):
 
         def on_timeout(ctx=context):
             if ctx.get("completed"):
+                return
+            if not self._graph_trigger_callback_is_current(ctx.get("trigger_check_id"), "duty_trigger_context"):
+                ctx["completed"] = True
+                self._cleanup_hidden_view(ctx)
                 return
             if ctx.get("duty_run_id") is not None and not self._duty_callback_is_current(ctx.get("duty_run_id"), ctx.get("duty_stage_id"), "duty_trigger_timeout"):
                 ctx["completed"] = True
@@ -5958,6 +6004,10 @@ class DutyModeWidget(QWidget):
 
         def read_html(ctx=context):
             if ctx.get("completed"):
+                return
+            if not self._graph_trigger_callback_is_current(ctx.get("trigger_check_id"), "duty_trigger_context"):
+                ctx["completed"] = True
+                self._cleanup_hidden_view(ctx)
                 return
             if ctx.get("duty_run_id") is not None and not self._duty_callback_is_current(ctx.get("duty_run_id"), ctx.get("duty_stage_id"), "duty_trigger_read_html"):
                 ctx["completed"] = True
@@ -5983,6 +6033,10 @@ class DutyModeWidget(QWidget):
 
         def on_loaded(ok, ctx=context, zid=zabbix_id):
             if ctx.get("completed"):
+                return
+            if not self._graph_trigger_callback_is_current(ctx.get("trigger_check_id"), "duty_trigger_context"):
+                ctx["completed"] = True
+                self._cleanup_hidden_view(ctx)
                 return
             t = ctx.get("trigger") or {}
             if not ok:
@@ -6086,6 +6140,10 @@ class DutyModeWidget(QWidget):
     def _after_hidden_duty_trigger_html(self, context, html):
         if context.get("completed"):
             return
+        if not self._graph_trigger_callback_is_current(context.get("trigger_check_id"), "duty_trigger_html"):
+            context["completed"] = True
+            self._cleanup_hidden_view(context)
+            return
         if context.get("duty_run_id") is not None and not self._duty_callback_is_current(context.get("duty_run_id"), context.get("duty_stage_id"), "duty_trigger_html"):
             context["completed"] = True
             self._cleanup_hidden_view(context)
@@ -6105,6 +6163,8 @@ class DutyModeWidget(QWidget):
             self._finish_trigger_without_html(trigger, "ERROR", reason=str(exc))
 
     def _finish_trigger_without_html(self, trigger, status, reason=None):
+        if not self._graph_trigger_callback_is_current((trigger or {}).get("_graph_trigger_check_id"), "finish_trigger_without_html"):
+            return
         if self._duty_trigger_run_id is not None and not self._duty_callback_is_current(self._duty_trigger_run_id, self._duty_trigger_stage_id, "finish_trigger_without_html"):
             return
         message = self._status_message(status, trigger=trigger)
@@ -6129,9 +6189,12 @@ class DutyModeWidget(QWidget):
                 self._build_trigger_result_log(trigger, {}, final_status),
                 target_found,
             )
-        QTimer.singleShot(0, self._run_next_duty_trigger)
+        trigger_check_id = (trigger or {}).get("_graph_trigger_check_id")
+        QTimer.singleShot(0, lambda tid=trigger_check_id: self._run_next_duty_trigger_for_check(tid))
 
     def _after_duty_trigger_html(self, trigger, html):
+        if not self._graph_trigger_callback_is_current((trigger or {}).get("_graph_trigger_check_id"), "after_duty_trigger_html"):
+            return
         if self._duty_trigger_run_id is not None and not self._duty_callback_is_current(self._duty_trigger_run_id, self._duty_trigger_stage_id, "after_duty_trigger_html"):
             return
         html = html or ""
@@ -6220,7 +6283,13 @@ class DutyModeWidget(QWidget):
             target_found,
             bool(html.strip()),
         )
-        QTimer.singleShot(0, self._run_next_duty_trigger)
+        trigger_check_id = (trigger or {}).get("_graph_trigger_check_id")
+        QTimer.singleShot(0, lambda tid=trigger_check_id: self._run_next_duty_trigger_for_check(tid))
+
+    def _run_next_duty_trigger_for_check(self, trigger_check_id):
+        if not self._graph_trigger_callback_is_current(trigger_check_id, "run_next_duty_trigger_timer"):
+            return
+        self._run_next_duty_trigger()
 
     def start_check(self):
         if self.skip_timer.isActive():
@@ -6269,11 +6338,14 @@ class DutyModeWidget(QWidget):
         self.graph_check_overlay.activateWindow()
         if run_triggers_after_open:
             self.graph_trigger_check_started_for_overlay = True
-            QTimer.singleShot(1500, lambda r=run_id, s=stage_id: self._run_duty_triggers_for_stage(r, s))
+            scheduled_trigger_check_id = self._graph_trigger_check_id
+            QTimer.singleShot(1500, lambda r=run_id, s=stage_id, tid=scheduled_trigger_check_id: self._run_duty_triggers_for_stage(r, s, tid))
 
 
 
-    def _run_duty_triggers_for_stage(self, run_id=None, stage_id=None):
+    def _run_duty_triggers_for_stage(self, run_id=None, stage_id=None, trigger_check_id=None):
+        if not self._graph_trigger_callback_is_current(trigger_check_id, "run_duty_triggers_after_overlay"):
+            return
         if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "run_duty_triggers_after_overlay"):
             return
         self.run_duty_triggers_check(part_of_duty_flow=True)
@@ -6283,7 +6355,14 @@ class DutyModeWidget(QWidget):
         if run_id is None or not self._duty_callback_is_current(run_id, stage_id, "graph_overlay_closed"):
             return
         if self.duty_flow_running and self.duty_current_stage == "zabbix_graphs":
-            self._finish_zabbix_graphs_from_overlay(run_id, stage_id, action="close_graph_overlay")
+            if self._duty_stage_action_in_progress:
+                self.logger.info("Duty graph overlay closed after stage action: run_id=%s stage_id=%s", run_id, stage_id)
+                return
+            self._cancel_graph_trigger_check("graph overlay closed by user")
+            self.duty_zabbix_graphs_status = "Пропущено"
+            self.duty_zabbix_status = "пропущено"
+            self.update_dashboard_summary()
+            self._cancel_current_duty_flow("graph overlay closed by user")
 
     def _finish_zabbix_graphs_from_overlay(self, run_id=None, stage_id=None, action="finish_zabbix_graphs"):
         if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "zabbix_graphs_confirmed"):
@@ -6293,14 +6372,7 @@ class DutyModeWidget(QWidget):
         if self.duty_trigger_running or self._hidden_trigger_contexts or self.hidden_trigger_views:
             self.logger.info("Проверка триггеров графиков ещё выполняется; пользователь завершил этап без ожидания")
             self.logger.info("Duty graph trigger check skipped by user action: run_id=%s stage_id=%s", self._duty_run_id, self._duty_stage_id)
-            self._set_duty_trigger_check_running(False)
-            self.duty_trigger_queue = []
-            for context in list(self._hidden_trigger_contexts):
-                try:
-                    context["completed"] = True
-                    self._cleanup_hidden_view(context)
-                except Exception:
-                    self.logger.exception("Failed to cleanup trigger context after graph stage skip")
+            self._cancel_graph_trigger_check("graph stage completed while trigger check was running")
         if self.duty_trigger_results:
             self._finalize_zabbix_graph_statuses_from_trigger_stats()
         else:
