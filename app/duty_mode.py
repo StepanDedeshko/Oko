@@ -42,6 +42,7 @@ except Exception:
 from app.autologin import make_zabbix_login_js
 from app.config import ensure_duty_mode_defaults, ensure_duty_triggers_defaults, save_config
 from app.credentials import load_otrs_credentials, load_service_credentials
+from app.duty_flow_guard import DutyFlowGuard
 from app.duty_settings import DutyModeSettingsWidget
 from app.duty_triggers import diagnose_metric_html, evaluate_stagnation_trigger
 from app.logger import get_logger
