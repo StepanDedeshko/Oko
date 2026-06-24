@@ -757,7 +757,6 @@ class ZabbixProblemsDialog(QDialog):
             safe_delete_web_view(view, logger=self.logger, context="ZabbixProblemsDialog", load_handler=self.on_loaded)
 
     def closeEvent(self, event):
-        self._emit_close_requested_once()
         self.cleanup()
         super().closeEvent(event)
 
@@ -778,6 +777,7 @@ class GraphCheckOverlayDialog(QDialog):
         self.logger = get_logger()
         self._confirmed = False
         self._close_requested_emitted = False
+        self._force_closing = False
 
         self.setObjectName("GraphCheckOverlayDialog")
         self.setWindowTitle("Проверка графиков")
@@ -920,7 +920,8 @@ class GraphCheckOverlayDialog(QDialog):
 
     def request_close(self):
         self._emit_close_requested_once()
-        self.close()
+        self._force_closing = True
+        self.done(QDialog.Rejected)
 
     def confirm_check(self):
         self.logger.info("Duty graph check confirmed")
@@ -928,7 +929,9 @@ class GraphCheckOverlayDialog(QDialog):
         self.confirmed.emit()
 
     def reject(self):
-        self.request_close()
+        self._emit_close_requested_once()
+        self._force_closing = True
+        super().reject()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -955,6 +958,8 @@ class GraphCheckOverlayDialog(QDialog):
 
     def closeEvent(self, event):
         self._emit_close_requested_once()
+        self._force_closing = True
+        event.accept()
         self.cleanup()
         super().closeEvent(event)
 

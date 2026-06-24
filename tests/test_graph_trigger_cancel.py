@@ -124,6 +124,20 @@ class GraphTriggerCancelTests(unittest.TestCase):
         self.assertEqual(calls.count(("cancel_triggers", "graph overlay closed by user")), 1)
         self.assertEqual(calls.count(("cancel_flow", "graph overlay closed by user")), 1)
 
+    def test_graph_overlay_close_methods_emit_and_close_dialog(self):
+        import inspect
+
+        request_source = inspect.getsource(self.duty_mode.GraphCheckOverlayDialog.request_close)
+        reject_source = inspect.getsource(self.duty_mode.GraphCheckOverlayDialog.reject)
+        close_event_source = inspect.getsource(self.duty_mode.GraphCheckOverlayDialog.closeEvent)
+
+        self.assertIn("_emit_close_requested_once", request_source)
+        self.assertIn("done(QDialog.Rejected)", request_source)
+        self.assertIn("_emit_close_requested_once", reject_source)
+        self.assertIn("super().reject()", reject_source)
+        self.assertIn("_emit_close_requested_once", close_event_source)
+        self.assertIn("event.accept()", close_event_source)
+
 
 if __name__ == "__main__":
     unittest.main()
