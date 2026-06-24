@@ -449,7 +449,8 @@ class MainWindow(QMainWindow):
             profiles=self.profiles,
             credentials=self.credentials,
             graph_card_finder=self.find_graph_card_by_product_section_title,
-            source_view_finder=self.find_source_view_by_product_section
+            source_view_finder=self.find_source_view_by_product_section,
+            active_product_getter=lambda: self.active_product_section()[0]
         )
 
         index = self.stack.addWidget(self.duty_mode_widget)

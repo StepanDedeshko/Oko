@@ -111,6 +111,15 @@ def ensure_duty_mode_defaults(config):
     settings.setdefault("duty_service_checks_task_id", "")
     settings.setdefault("duty_service_checks_task_url", "")
     settings.setdefault("duty_service_checks_enabled", False)
+    settings.setdefault("check_services_enabled", bool(settings.get("duty_service_checks_enabled", False)))
+    settings.setdefault("check_zabbix_enabled", True)
+    settings.setdefault("last_service_check_note", "")
+    settings.setdefault("last_zabbix_check_note", "")
+    settings.setdefault("last_service_check_time", "")
+    settings.setdefault("last_zabbix_check_time", "")
+    settings.setdefault("manual_duty_note", "")
+    settings.setdefault("zabbix_problem_keywords", [])
+    settings.setdefault("zabbix_problem_exclude_keywords", [])
     legacy_expected_title = (
         settings.get("duty_zabbix_expected_task_title")
         or settings.get("expected_task_title")
@@ -167,6 +176,15 @@ def _default_config():
             "duty_zabbix_expected_task_title": "Дежурная проверка Zabbix / графиков",
             "duty_service_checks_expected_task_title": "Дежурная проверка сервисов",
             "duty_service_checks_enabled": False,
+            "check_services_enabled": False,
+            "check_zabbix_enabled": True,
+            "last_service_check_note": "",
+            "last_zabbix_check_note": "",
+            "last_service_check_time": "",
+            "last_zabbix_check_time": "",
+            "manual_duty_note": "",
+            "zabbix_problem_keywords": [],
+            "zabbix_problem_exclude_keywords": [],
             "duty_zabbix_task_number": "",
             "duty_zabbix_task_id": "",
             "duty_zabbix_task_url": "",
@@ -177,6 +195,7 @@ def _default_config():
         },
         "duty_triggers": default_duty_triggers_config(),
         "service_checks": default_service_checks_config(),
+        "zabbix_trigger_catalog": {"version": 1, "triggers": []},
         "app": {"name": "Око"},
     }
 
@@ -209,6 +228,7 @@ EXPORTABLE_CONFIG_KEYS = (
     "duty_triggers",
     "service_checks",
     "templates",
+    "zabbix_trigger_catalog",
     "app",
 )
 
@@ -322,6 +342,18 @@ def import_settings_file(source_path, config_path=None):
     safe_settings = sanitize_export_data(imported_settings)
     with config_path.open("w", encoding="utf-8") as file:
         json.dump(safe_settings, file, ensure_ascii=False, indent=2)
+
+    catalog = safe_settings.get("zabbix_trigger_catalog")
+    if isinstance(catalog, dict):
+        try:
+            data_dir = config_path.parent / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "zabbix_trigger_catalog.json").write_text(
+                json.dumps(catalog, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            get_logger().exception("Не удалось восстановить zabbix_trigger_catalog.json из экспорта настроек")
     return backup_path
 
 

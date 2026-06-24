@@ -87,6 +87,39 @@ class SettingsTransferTest(unittest.TestCase):
             self.assertEqual(imported["settings"]["theme"], "new")
             self.assertNotIn("token", json.dumps(imported).lower())
 
+
+    def test_settings_export_and_import_preserve_zabbix_trigger_catalog(self):
+        catalog = {
+            "version": 1,
+            "triggers": [
+                {
+                    "id": "cpu_high",
+                    "enabled": False,
+                    "name": "CPU high",
+                    "description": "CPU",
+                    "category": "ПО",
+                    "source_sheets": ["Общий список"],
+                    "match_type": "zabbix_template",
+                }
+            ],
+        }
+        config = {"settings": {"theme": "mass_effect"}, "zabbix_trigger_catalog": catalog}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            export_path = tmpdir / "export.json"
+            config_path = tmpdir / "config.json"
+            config_path.write_text(json.dumps({"settings": {"theme": "old"}}), encoding="utf-8")
+            export_settings_file(config, export_path)
+            exported = json.loads(export_path.read_text(encoding="utf-8"))
+            self.assertEqual(exported["settings"]["zabbix_trigger_catalog"]["triggers"][0]["enabled"], False)
+
+            import_settings_file(export_path, config_path=config_path)
+            imported = json.loads(config_path.read_text(encoding="utf-8"))
+            restored_file = tmpdir / "data" / "zabbix_trigger_catalog.json"
+            restored_catalog = json.loads(restored_file.read_text(encoding="utf-8"))
+            self.assertEqual(imported["zabbix_trigger_catalog"]["triggers"][0]["enabled"], False)
+            self.assertEqual(restored_catalog["triggers"][0]["name"], "CPU high")
+
     def test_invalid_import_returns_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source_path = Path(tmpdir) / "bad.json"

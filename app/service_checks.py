@@ -28,6 +28,7 @@ SERVICE_CHECK_STATUSES = {
     "error": "Ошибка",
     "ssl_error": "Ошибка SSL-сертификата",
     "manual_required": "Требуется ручная проверка",
+    "skipped": "Пропущено вручную",
     "autofill_error": "Ошибка автозаполнения формы",
 }
 
@@ -1004,7 +1005,9 @@ def service_result_display_label(result):
             return "ОК — подтверждено вручную"
         if status == "error":
             return "Ошибка — подтверждена вручную"
-        if status == "unknown" and "пропущ" in details.casefold():
+        if status in {"unknown", "skipped"} and "пропущ" in details.casefold():
+            return "Пропущено вручную"
+        if status == "skipped":
             return "Пропущено вручную"
     return service_status_label(status)
 
@@ -1074,8 +1077,8 @@ def summarize_service_results(results):
     results = list(results or [])
     ok = sum(1 for item in results if item.get("status") == "ok")
     timeout = sum(1 for item in results if item.get("status") == "timeout")
-    unknown = sum(1 for item in results if item.get("status") == "unknown")
-    errors = sum(1 for item in results if item.get("status") not in {"ok", "unknown", "not_checked", "checking"})
+    unknown = sum(1 for item in results if item.get("status") in {"unknown", "skipped"})
+    errors = sum(1 for item in results if item.get("status") not in {"ok", "unknown", "skipped", "not_checked", "checking"})
     return {
         "total": len(results),
         "ok": ok,
