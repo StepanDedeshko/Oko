@@ -24,6 +24,8 @@ class GraphTriggerCancelTests(unittest.TestCase):
         widget = self.duty_mode.DutyModeWidget.__new__(self.duty_mode.DutyModeWidget)
         widget.logger = _Logger()
         widget._graph_trigger_check_id = 10
+        widget._graph_overlay_cancelled = False
+        widget._graph_trigger_start_pending = True
         widget.graph_trigger_check_started_for_overlay = True
         widget.duty_trigger_running = True
         widget.duty_trigger_queue = [{"id": "trigger-1"}]
@@ -83,6 +85,44 @@ class GraphTriggerCancelTests(unittest.TestCase):
         self.assertEqual(widget.duty_zabbix_status, "пропущено")
         self.assertIn(("cancel_triggers", "graph overlay closed by user"), calls)
         self.assertIn(("cancel_flow", "graph overlay closed by user"), calls)
+
+    def test_delayed_trigger_start_after_close_is_ignored(self):
+        widget = self.make_widget_stub()
+        widget._graph_overlay_cancelled = True
+        widget._graph_trigger_start_pending = True
+        widget.duty_flow_running = True
+        widget._duty_flow_running = True
+        widget.graph_check_overlay = object()
+        calls = []
+        widget.run_duty_triggers_check = lambda part_of_duty_flow=False: calls.append(part_of_duty_flow)
+
+        widget._run_duty_triggers_for_stage(run_id=1, stage_id=2, trigger_check_id=widget._graph_trigger_check_id)
+
+        self.assertFalse(widget._graph_trigger_start_pending)
+        self.assertEqual(calls, [])
+
+    def test_graph_overlay_close_is_idempotent(self):
+        widget = self.make_widget_stub()
+        calls = []
+        widget.graph_check_overlay = object()
+        widget.duty_flow_running = True
+        widget.duty_current_stage = "zabbix_graphs"
+        widget._duty_stage_action_in_progress = False
+        widget._duty_callback_is_current = lambda run_id, stage_id, callback="": True
+        widget._cancel_graph_trigger_check = lambda reason="": calls.append(("cancel_triggers", reason))
+        widget.update_dashboard_summary = lambda: calls.append(("update", ""))
+
+        def cancel_flow(reason=""):
+            widget.duty_flow_running = False
+            calls.append(("cancel_flow", reason))
+
+        widget._cancel_current_duty_flow = cancel_flow
+
+        widget._graph_overlay_closed(run_id=1, stage_id=2)
+        widget._graph_overlay_closed(run_id=1, stage_id=2)
+
+        self.assertEqual(calls.count(("cancel_triggers", "graph overlay closed by user")), 1)
+        self.assertEqual(calls.count(("cancel_flow", "graph overlay closed by user")), 1)
 
 
 if __name__ == "__main__":

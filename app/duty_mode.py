@@ -757,6 +757,7 @@ class ZabbixProblemsDialog(QDialog):
             safe_delete_web_view(view, logger=self.logger, context="ZabbixProblemsDialog", load_handler=self.on_loaded)
 
     def closeEvent(self, event):
+        self._emit_close_requested_once()
         self.cleanup()
         super().closeEvent(event)
 
@@ -765,6 +766,7 @@ class GraphCheckOverlayDialog(QDialog):
     """Glass-like overlay for duty graph verification."""
 
     confirmed = Signal()
+    close_requested = Signal()
 
     def __init__(self, graphs, config, profiles, credentials=None, parent=None):
         super().__init__(parent)
@@ -774,6 +776,8 @@ class GraphCheckOverlayDialog(QDialog):
         self.credentials = credentials or {}
         self.cards = []
         self.logger = get_logger()
+        self._confirmed = False
+        self._close_requested_emitted = False
 
         self.setObjectName("GraphCheckOverlayDialog")
         self.setWindowTitle("Проверка графиков")
@@ -806,7 +810,7 @@ class GraphCheckOverlayDialog(QDialog):
         subtitle.setWordWrap(True)
         close_button = QPushButton("Закрыть")
         close_button.setObjectName("DestructiveAction")
-        close_button.clicked.connect(self.close)
+        close_button.clicked.connect(self.request_close)
         header.addWidget(title)
         header.addWidget(subtitle, stretch=1)
         header.addWidget(close_button)
@@ -844,7 +848,7 @@ class GraphCheckOverlayDialog(QDialog):
         bottom_close_button = QPushButton("Закрыть")
         bottom_close_button.setObjectName("DestructiveAction")
         bottom_close_button.setMinimumHeight(38)
-        bottom_close_button.clicked.connect(self.close)
+        bottom_close_button.clicked.connect(self.request_close)
 
         actions.addWidget(refresh_button)
         actions.addStretch(1)
@@ -907,13 +911,28 @@ class GraphCheckOverlayDialog(QDialog):
                 card.refresh_graph()
         self.logger.info("Duty graph overlay manual refresh finished")
 
+    def _emit_close_requested_once(self):
+        if self._confirmed or self._close_requested_emitted:
+            return
+        self._close_requested_emitted = True
+        self.logger.info("Graph overlay close requested by user")
+        self.close_requested.emit()
+
+    def request_close(self):
+        self._emit_close_requested_once()
+        self.close()
+
     def confirm_check(self):
         self.logger.info("Duty graph check confirmed")
+        self._confirmed = True
         self.confirmed.emit()
+
+    def reject(self):
+        self.request_close()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
-            self.close()
+            self.request_close()
             return
         super().keyPressEvent(event)
 
@@ -935,6 +954,7 @@ class GraphCheckOverlayDialog(QDialog):
         self.logger.info("Graph check overlay cleanup finished")
 
     def closeEvent(self, event):
+        self._emit_close_requested_once()
         self.cleanup()
         super().closeEvent(event)
 
@@ -3965,6 +3985,8 @@ class DutyModeWidget(QWidget):
         self.selected_zabbix_problems_for_note = []
         self.graph_trigger_check_started_for_overlay = False
         self._graph_trigger_check_id = 0
+        self._graph_overlay_cancelled = False
+        self._graph_trigger_start_pending = False
         self.duty_flow_queue = []
         self._duty_guard = DutyFlowGuard(logger=self.logger)
         self._duty_run_id = 0
@@ -5540,6 +5562,7 @@ class DutyModeWidget(QWidget):
             reason,
         )
         self.graph_trigger_check_started_for_overlay = False
+        self._graph_trigger_start_pending = False
         self._set_duty_trigger_check_running(False)
         self.duty_trigger_queue = []
         self._duty_trigger_run_id = None
@@ -5847,6 +5870,7 @@ class DutyModeWidget(QWidget):
         self.logger.info("Duty trigger manual check started: enabled_count=%s", len(enabled_triggers))
         self._graph_trigger_check_id += 1
         trigger_check_id = self._graph_trigger_check_id
+        self._graph_trigger_start_pending = False
         self.logger.info("Graph trigger check started: trigger_check_id=%s part_of_duty_flow=%s", trigger_check_id, part_of_duty_flow)
         self._duty_trigger_run_id = self._duty_run_id if part_of_duty_flow else None
         self._duty_trigger_stage_id = self._duty_stage_id if part_of_duty_flow else None
@@ -6309,6 +6333,28 @@ class DutyModeWidget(QWidget):
         self.status_label.setText("Идёт проверка графиков в overlay-панели.")
         return True
 
+    def _handle_graph_overlay_closed_by_user(self, reason="graph overlay closed by user"):
+        if self._graph_overlay_cancelled:
+            self.logger.info("Graph overlay close requested by user ignored: already cancelled")
+            return
+        self._graph_overlay_cancelled = True
+        self._graph_trigger_start_pending = False
+        self.logger.info(
+            "Graph overlay close requested by user: trigger_check_id=%s reason=%s",
+            self._graph_trigger_check_id,
+            reason,
+        )
+        if self.graph_trigger_check_started_for_overlay and not self.duty_trigger_running:
+            self.logger.info("Graph overlay close before trigger start: trigger_check_id=%s", self._graph_trigger_check_id)
+        self._cancel_graph_trigger_check(reason)
+        self.duty_zabbix_graphs_status = "Пропущено"
+        self.duty_zabbix_status = "пропущено"
+        self.update_dashboard_summary()
+        self._cancel_current_duty_flow(reason)
+        if hasattr(self, "check_triggers_button"):
+            self.check_triggers_button.setEnabled(True)
+        self.logger.info("Duty start button unlocked after graph overlay close")
+
     def open_graph_check_overlay(self, run_triggers_after_open=False):
         if self.graph_check_overlay is not None:
             try:
@@ -6320,6 +6366,8 @@ class DutyModeWidget(QWidget):
             return
 
         token = self._duty_guard.token() if self._duty_guard.running else None
+        self._graph_overlay_cancelled = False
+        self._graph_trigger_start_pending = bool(run_triggers_after_open)
         self.graph_check_overlay = GraphCheckOverlayDialog(
             graphs=self.check_graphs,
             config=self.config,
@@ -6329,7 +6377,9 @@ class DutyModeWidget(QWidget):
         )
         run_id = token.run_id if token else None
         stage_id = token.stage_id if token else None
+        self.logger.info("Graph overlay opened: run_id=%s stage_id=%s trigger_check_id=%s", run_id, stage_id, self._graph_trigger_check_id)
         self.graph_check_overlay.confirmed.connect(lambda r=run_id, s=stage_id: self._finish_zabbix_graphs_from_overlay(r, s))
+        self.graph_check_overlay.close_requested.connect(lambda r=run_id, s=stage_id: self._handle_graph_overlay_closed_by_user("graph overlay closed by user"))
         self.graph_check_overlay.finished.connect(lambda _result, r=run_id, s=stage_id: self._graph_overlay_closed(r, s))
         self.graph_check_overlay.destroyed.connect(lambda: setattr(self, "graph_check_overlay", None))
         self.cards = self.graph_check_overlay.cards
@@ -6338,16 +6388,33 @@ class DutyModeWidget(QWidget):
         self.graph_check_overlay.activateWindow()
         if run_triggers_after_open:
             self.graph_trigger_check_started_for_overlay = True
+            self._graph_trigger_start_pending = True
             scheduled_trigger_check_id = self._graph_trigger_check_id
+            self.logger.info("Graph trigger delayed start scheduled: trigger_check_id=%s", scheduled_trigger_check_id)
             QTimer.singleShot(1500, lambda r=run_id, s=stage_id, tid=scheduled_trigger_check_id: self._run_duty_triggers_for_stage(r, s, tid))
 
 
 
     def _run_duty_triggers_for_stage(self, run_id=None, stage_id=None, trigger_check_id=None):
+        if self._graph_overlay_cancelled:
+            self._graph_trigger_start_pending = False
+            self.logger.info("Graph trigger delayed start ignored after overlay close: trigger_check_id=%s", trigger_check_id)
+            return
+        if not self.duty_flow_running or not self._duty_flow_running:
+            self._graph_trigger_start_pending = False
+            self.logger.info("Graph trigger delayed start ignored: duty flow already stopped")
+            return
+        if self.graph_check_overlay is None:
+            self._graph_trigger_start_pending = False
+            self.logger.info("Graph trigger delayed start ignored: overlay is None")
+            return
         if not self._graph_trigger_callback_is_current(trigger_check_id, "run_duty_triggers_after_overlay"):
+            self._graph_trigger_start_pending = False
             return
         if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "run_duty_triggers_after_overlay"):
+            self._graph_trigger_start_pending = False
             return
+        self._graph_trigger_start_pending = False
         self.run_duty_triggers_check(part_of_duty_flow=True)
 
     def _graph_overlay_closed(self, run_id=None, stage_id=None):
@@ -6358,11 +6425,7 @@ class DutyModeWidget(QWidget):
             if self._duty_stage_action_in_progress:
                 self.logger.info("Duty graph overlay closed after stage action: run_id=%s stage_id=%s", run_id, stage_id)
                 return
-            self._cancel_graph_trigger_check("graph overlay closed by user")
-            self.duty_zabbix_graphs_status = "Пропущено"
-            self.duty_zabbix_status = "пропущено"
-            self.update_dashboard_summary()
-            self._cancel_current_duty_flow("graph overlay closed by user")
+            self._handle_graph_overlay_closed_by_user("graph overlay closed by user")
 
     def _finish_zabbix_graphs_from_overlay(self, run_id=None, stage_id=None, action="finish_zabbix_graphs"):
         if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "zabbix_graphs_confirmed"):
