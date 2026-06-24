@@ -70,3 +70,27 @@ class LiveZabbixMonitorModelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class LiveZabbixMonitorDiagnosticsTests(unittest.TestCase):
+    def test_dom_parser_returns_diagnostic_object_without_page_text(self):
+        from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER
+
+        self.assertIn("safe_debug", DOM_PARSER_SCRIPT_PLACEHOLDER)
+        self.assertIn("table_count", DOM_PARSER_SCRIPT_PLACEHOLDER)
+        self.assertIn("candidate_count", DOM_PARSER_SCRIPT_PLACEHOLDER)
+        self.assertIn("problem_count", DOM_PARSER_SCRIPT_PLACEHOLDER)
+        self.assertIn("text_length", DOM_PARSER_SCRIPT_PLACEHOLDER)
+        self.assertIn("url_path", DOM_PARSER_SCRIPT_PLACEHOLDER)
+        self.assertNotIn("document.body.innerText", DOM_PARSER_SCRIPT_PLACEHOLDER)
+
+    def test_zero_problem_message_and_processed_button_are_clear(self):
+        source = Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py"
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("Проверить DOM", text)
+        self.assertIn("Страница загружена, но проблемы не найдены", text)
+        self.assertIn("URL Zabbix Problems", text)
+        self.assertIn("Интервал опроса", text)
+        self.assertIn("Открыть URL в браузере", text)
+        self.assertIn("Обработано", text)
+        self.assertIn("QTimer.singleShot(delay_ms", text)
+        self.assertNotIn("Создать Redmine", text)

@@ -76,15 +76,43 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
 (function() {
   function text(el) { return (el && (el.innerText || el.textContent) || '').replace(/\s+/g, ' ').trim(); }
   function abs(href) { try { return new URL(href, document.location.href).href; } catch(e) { return href || ''; } }
+  function safeUrl(value) {
+    try {
+      var u = new URL(value || document.location.href, document.location.href);
+      var q = [];
+      u.searchParams.forEach(function(v, k) { q.push(k + '=***'); });
+      return u.pathname + (q.length ? '?' + q.join('&') : '');
+    } catch(e) { return ''; }
+  }
+  function attrs(el) {
+    var out = {};
+    if (!el || !el.attributes) return out;
+    Array.from(el.attributes).forEach(function(a) {
+      if (a.name === 'id' || a.name === 'class' || a.name === 'role' || a.name.indexOf('data-') === 0) out[a.name] = String(a.value || '').slice(0, 160);
+    });
+    return out;
+  }
+  function selector(row) {
+    var parent = row.parentElement;
+    var table = row.closest('table');
+    return (table ? 'table' + (table.id ? '#' + table.id : '') + (table.className ? '.' + String(table.className).trim().replace(/\s+/g, '.') : '') + ' > ' : '') + (parent ? parent.tagName.toLowerCase() + ' > ' : '') + row.tagName.toLowerCase();
+  }
+  var tables = Array.from(document.querySelectorAll('table'));
   var rows = Array.from(document.querySelectorAll('tr'));
+  var loginDetected = !!document.querySelector('input[type=password], input[name*=password i], form[action*=login i]') || /login|sign[ -]?in|вход/i.test(document.title || '');
   var items = [];
+  var candidates = [];
   rows.forEach(function(row) {
     var rowText = text(row);
-    if (!rowText || rowText.length < 3) return;
-    var cells = Array.from(row.querySelectorAll('td,th')).map(text).filter(Boolean);
-    if (cells.length < 2) return;
-    var problemLink = Array.from(row.querySelectorAll('a[href]')).find(function(a) { return /event|problem|tr_events|trigger|zabbix\.php/i.test(a.href || ''); });
-    var graphLink = Array.from(row.querySelectorAll('a[href]')).find(function(a) { return /chart|graph|history|graphs/i.test(a.href || ''); });
+    var cellsRaw = Array.from(row.querySelectorAll('td,th'));
+    var cells = cellsRaw.map(text).filter(Boolean);
+    if (!rowText || cells.length < 2) return;
+    var links = Array.from(row.querySelectorAll('a[href]'));
+    var looksLikeProblem = links.some(function(a) { return /event|problem|tr_events|trigger|zabbix\.php/i.test(a.href || ''); }) || row.hasAttribute('data-eventid') || row.hasAttribute('data-problemid') || /problem|event|trigger/i.test(row.className || '');
+    if (!looksLikeProblem && cells.length < 4) return;
+    candidates.push(row);
+    var problemLink = links.find(function(a) { return /event|problem|tr_events|trigger|zabbix\.php/i.test(a.href || ''); });
+    var graphLink = links.find(function(a) { return /chart|graph|history|graphs/i.test(a.href || ''); });
     var key = row.getAttribute('data-eventid') || row.getAttribute('data-event-id') || row.getAttribute('data-problemid') || row.getAttribute('data-problem-id') || row.id || '';
     var guessTime = cells[0] || '';
     var guessSeverity = cells.find(function(c) { return /disaster|high|average|warning|information|not classified|чрезвычай|высок|средн|предупр|информ|не классиф/i.test(c); }) || '';
@@ -92,6 +120,19 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     var guessName = cells[cells.length - 1] || rowText;
     items.push({id: key, event_id: key, started_at: guessTime, severity: guessSeverity, host: guessHost, trigger_name: guessName, status: 'active', problem_url: problemLink ? abs(problemLink.getAttribute('href')) : '', graph_urls: graphLink ? [abs(graphLink.getAttribute('href'))] : []});
   });
-  return items;
+  var sampleRows = candidates.slice(0, 5).map(function(row) {
+    var cells = Array.from(row.querySelectorAll('td,th')).slice(0, 12);
+    return {selector: selector(row), tag: row.tagName.toLowerCase(), attributes: attrs(row), cell_count: row.querySelectorAll('td,th').length, links_count: row.querySelectorAll('a[href]').length, cells: cells.map(function(cell, i) { return {cell_index: i, tag: cell.tagName.toLowerCase(), attributes: attrs(cell), text_length: text(cell).length, links_count: cell.querySelectorAll('a[href]').length}; })};
+  });
+  var reason = '';
+  if (items.length === 0) {
+    if (loginDetected) reason = 'Похоже, открыта страница логина.';
+    else if (tables.length === 0 || rows.length === 0) reason = 'Таблица Zabbix Problems ещё не загружена или отсутствует.';
+    else if (candidates.length === 0) reason = 'DOM Zabbix не распознан: строки таблиц не похожи на проблемы.';
+    else reason = 'Кандидаты найдены, но не удалось извлечь проблемы из DOM.';
+  }
+  var safeDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, candidate_count: candidates.length, problem_count: items.length, zero_reason: reason, sample_rows: sampleRows};
+  return {ok: true, url: document.location.href, title: document.title || '', login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, candidate_count: candidates.length, problem_count: items.length, items: items, safe_debug: safeDebug, zero_reason: reason};
 })();
+
 """
