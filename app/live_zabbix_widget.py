@@ -88,6 +88,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self.profile_warning = ""
         self.profile_selection_reason = ""
         self.last_load_ok = None
+        self._load_finished_connected = False
         self.last_js_health = None
         self.last_js_smoke = None
         self.last_js_result_meta = {}
@@ -238,6 +239,7 @@ class LiveZabbixMonitorWidget(QWidget):
             return
         if self.view is not None:
             safe_delete_web_view(self.view, logger=self.logger, context="LiveZabbixMonitorWidget profile switch", load_handler=self._on_loaded)
+            self._load_finished_connected = False
         self.current_zabbix_id = zabbix_id
         self.profile_warning = warning
         self.profile_selection_reason = reason
@@ -307,11 +309,9 @@ class LiveZabbixMonitorWidget(QWidget):
             self.poll_status_label.setText("Ошибка: URL Zabbix Problems не задан")
             return
         self.poll_status_label.setText("Запуск")
-        try:
-            self.view.loadFinished.disconnect(self._on_loaded)
-        except RuntimeError:
-            pass
-        self.view.loadFinished.connect(self._on_loaded)
+        if not self._load_finished_connected:
+            self.view.loadFinished.connect(self._on_loaded)
+            self._load_finished_connected = True
         self.view.load(QUrl(url))
         self.timer.start(int(self.settings.get("poll_interval_seconds", 10)) * 1000)
 
@@ -486,14 +486,21 @@ class LiveZabbixMonitorWidget(QWidget):
         }
 
     @staticmethod
-    def _is_acknowledge_page_url_or_title(url_value, title_value):
-        combined = f"{url_value or ''} {title_value or ''}".casefold()
-        return (
-            "popup_action" in combined
-            or "acknowledge" in combined
-            or "action=popup.acknowledge" in combined
-            or "обновление проблемы" in combined
-        )
+    def _acknowledge_detected_reason(url_value, title_value):
+        title = str(title_value or "")
+        url = str(url_value or "")
+        if "проблемы" in title.casefold():
+            return ""
+        parsed = urlparse(url)
+        query = dict(part.split("=", 1) if "=" in part else (part, "") for part in parsed.query.split("&") if part)
+        if query.get("action") == "popup.acknowledge.create":
+            return "action=popup.acknowledge.create"
+        popup_action = query.get("popup_action", "")
+        if popup_action in {"acknowledge.edit", "acknowledge.create"}:
+            return "popup_action=acknowledge"
+        if "обновление проблемы" in title.casefold():
+            return "title contains Обновление проблемы"
+        return ""
 
     def _diagnostic_payload(self, payload):
         safe_debug = dict((payload or {}).get("safe_debug") or {})
@@ -528,6 +535,7 @@ class LiveZabbixMonitorWidget(QWidget):
             "candidate_count": int((payload or {}).get("candidate_count") or safe_debug.get("candidate_count") or 0),
             "problem_count": int((payload or {}).get("problem_count") or safe_debug.get("problem_count") or len((payload or {}).get("items") or [])),
             "zero_reason": (payload or {}).get("zero_reason") or safe_debug.get("zero_reason") or "",
+            "acknowledge_detected_reason": (payload or {}).get("acknowledge_detected_reason") or safe_debug.get("acknowledge_detected_reason") or "",
         })
         safe_debug.update(self._qwebengine_url_diagnostics())
         safe_debug.update(self.last_js_result_meta or {})
@@ -537,7 +545,9 @@ class LiveZabbixMonitorWidget(QWidget):
             safe_debug["zero_reason"] = JS_EMPTY_STRING_ERROR_MESSAGE
         if safe_debug.get("load_finished_ok") is True and not safe_debug.get("document_location_href") and safe_debug.get("js_result_is_none"):
             safe_debug["zero_reason"] = WEBENGINE_JS_ERROR_MESSAGE
-        if self._is_acknowledge_page_url_or_title(health.get("href", ""), health.get("title", "")):
+        acknowledge_reason = safe_debug.get("acknowledge_detected_reason") or self._acknowledge_detected_reason(health.get("href", ""), health.get("title", ""))
+        safe_debug["acknowledge_detected_reason"] = acknowledge_reason
+        if acknowledge_reason:
             safe_debug["zero_reason"] = ACKNOWLEDGE_PAGE_MESSAGE
         return safe_debug
 
@@ -692,4 +702,5 @@ class LiveZabbixMonitorWidget(QWidget):
         self.stop_monitor()
         if self.view is not None:
             safe_delete_web_view(self.view, logger=self.logger, context="LiveZabbixMonitorWidget", load_handler=self._on_loaded)
+            self._load_finished_connected = False
             self.view = None

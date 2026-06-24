@@ -216,3 +216,19 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
         self.assertNotIn('"Графики",', source)
         self.assertNotIn('"Обработано",', source)
         self.assertNotIn("Создать Redmine", source)
+
+class LiveZabbixMonitorAcknowledgeDetectionTests(unittest.TestCase):
+    def test_ack_detection_is_exact_and_does_not_match_unacknowledged(self):
+        parser_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix.py").read_text(encoding="utf-8")
+        widget_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("acknowledgeDetectedReason", parser_source)
+        self.assertIn("action=popup.acknowledge.create", parser_source)
+        self.assertIn("popup_action=acknowledge", parser_source)
+        self.assertIn("#acknowledge_form found", parser_source)
+        self.assertIn("title contains Обновление проблемы", parser_source)
+        self.assertIn("if (/проблемы/i.test(title)) return '';", parser_source)
+        self.assertNotIn("popup_action|acknowledge|popup", parser_source)
+        self.assertIn("acknowledge_detected_reason", parser_source)
+        self.assertIn("Problems page loaded, but Problems table not found", parser_source)
+        self.assertIn("_load_finished_connected", widget_source)
+        self.assertNotIn("loadFinished.disconnect(self._on_loaded)", widget_source)

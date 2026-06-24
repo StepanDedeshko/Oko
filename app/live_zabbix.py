@@ -179,9 +179,23 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     var index = Object.prototype.hasOwnProperty.call(map, field) ? map[field] + offset : fallbackIndex;
     return index >= 0 && index < cells.length ? cells[index] : null;
   }
-  if (document.querySelector('#acknowledge_form') || /popup_action|acknowledge|popup\.acknowledge/i.test(document.location.href || '') || /обновление проблемы/i.test(document.title || '')) {
-    var ackDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: false, table_count: 0, tr_count: 0, header_map: {}, candidate_count: 0, problem_count: 0, zero_reason: 'Открыта форма подтверждения Zabbix. Мониторинг страницы Problems не выполняется в этом WebView.', sample_rows: []};
-    return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: false, table_count: 0, tr_count: 0, header_map: {}, candidate_count: 0, problem_count: 0, items: [], separators: [], safe_debug: ackDebug, zero_reason: ackDebug.zero_reason});
+  function acknowledgeDetectedReason() {
+    var title = String(document.title || '');
+    var href = String(document.location.href || '');
+    if (/проблемы/i.test(title)) return '';
+    var actionInput = document.querySelector('#acknowledge_form input[name="action"], input[name="action"][value="popup.acknowledge.create"]');
+    if (actionInput && actionInput.value === 'popup.acknowledge.create') return 'action=popup.acknowledge.create';
+    if (document.querySelector('#acknowledge_form')) return '#acknowledge_form found';
+    if (/[?&]action=popup\.acknowledge\.create(?:&|$)/i.test(href)) return 'action=popup.acknowledge.create';
+    if (/[?&]popup_action=acknowledge\.(?:edit|create)(?:&|$)/i.test(href)) return 'popup_action=acknowledge';
+    if (/обновление проблемы/i.test(title)) return 'title contains Обновление проблемы';
+    if (document.querySelector('.overlay-dialogue #acknowledge_form, .modal #acknowledge_form, .modal-popup #acknowledge_form')) return 'visible acknowledge form in popup';
+    return '';
+  }
+  var acknowledgeReason = acknowledgeDetectedReason();
+  if (acknowledgeReason) {
+    var ackDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: false, table_count: 0, tr_count: 0, header_map: {}, candidate_count: 0, problem_count: 0, acknowledge_detected_reason: acknowledgeReason, zero_reason: 'Открыта форма подтверждения Zabbix. Мониторинг страницы Problems не выполняется в этом WebView.', sample_rows: []};
+    return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: false, table_count: 0, tr_count: 0, header_map: {}, candidate_count: 0, problem_count: 0, acknowledge_detected_reason: acknowledgeReason, items: [], separators: [], safe_debug: ackDebug, zero_reason: ackDebug.zero_reason});
   }
   var tables = Array.from(document.querySelectorAll('table')).filter(function(table) { return !table.closest('.overlay-dialogue, .modal, .modal-popup, #acknowledge_form, .table-forms'); });
   var rows = Array.from(document.querySelectorAll('tr'));
@@ -254,11 +268,12 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
   var reason = '';
   if (items.length === 0) {
     if (loginDetected) reason = 'Похоже, открыта страница логина.';
+    else if (/проблемы/i.test(document.title || '') && (tables.length === 0 || rows.length === 0)) reason = 'Problems page loaded, but Problems table not found';
     else if (tables.length === 0 || rows.length === 0) reason = 'Таблица Zabbix Problems ещё не загружена или отсутствует.';
     else if (candidates.length === 0) reason = 'DOM Zabbix не распознан: строки таблиц не похожи на проблемы.';
     else reason = 'Кандидаты найдены, но не удалось извлечь проблемы из DOM.';
   }
-  var safeDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, header_map: headerMap, separator_count: separators.length, candidate_count: candidates.length, problem_count: items.length, zero_reason: reason, sample_rows: sampleRows};
-  return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, header_map: headerMap, candidate_count: candidates.length, problem_count: items.length, separators: separators, items: items, safe_debug: safeDebug, zero_reason: reason});
+  var safeDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, header_map: headerMap, acknowledge_detected_reason: '', separator_count: separators.length, candidate_count: candidates.length, problem_count: items.length, zero_reason: reason, sample_rows: sampleRows};
+  return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, header_map: headerMap, acknowledge_detected_reason: '', candidate_count: candidates.length, problem_count: items.length, separators: separators, items: items, safe_debug: safeDebug, zero_reason: reason});
 })();
 """
