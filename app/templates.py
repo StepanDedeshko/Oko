@@ -7,6 +7,7 @@ import re
 
 OTRS_GRAPH_CHECK_TEMPLATE_KEY = "otrs_graph_check"
 REDMINE_TASK_TEMPLATE_KEY = "redmine_task"
+REDMINE_SPECIAL_TASK_TEMPLATE_KEY = "redmine_special_task"
 OTRS_SERVICE_CHECK_TEMPLATE_KEY = "otrs_service_check"
 
 DEFAULT_OTRS_GRAPH_CHECK_TEMPLATE_NAME = "Заметка ОТРС: проверка графиков"
@@ -55,6 +56,24 @@ OK: {services_ok_count}
 Комментарий дежурного:
 [заполнить при необходимости]
 """
+
+DEFAULT_REDMINE_SPECIAL_TASK_TEMPLATE = {
+    "name": "Задача Redmine: специальные триггеры с графиками",
+    "create_url": "",
+    "subject_template": "Проверка графиков: {trigger_name} — {checked_at}",
+    "description_template": """Сработал специальный триггер: {trigger_name}
+Статус: {trigger_status}
+
+Ссылки на графики для ручной проверки:
+{special_graph_links}
+
+Обнаружены проблемы:
+{active_problems}
+""",
+    "tracker_id": "",
+    "priority_id": "",
+    "project": "",
+}
 
 DEFAULT_REDMINE_TASK_TEMPLATE = {
     "name": "Задача Redmine",
@@ -278,6 +297,10 @@ def default_redmine_task_template():
     return deepcopy(DEFAULT_REDMINE_TASK_TEMPLATE)
 
 
+def default_redmine_special_task_template():
+    return deepcopy(DEFAULT_REDMINE_SPECIAL_TASK_TEMPLATE)
+
+
 def ensure_templates_defaults(config):
     """Ensure safe, credential-free template settings exist in the app config."""
     templates = config.setdefault("templates", {})
@@ -294,6 +317,10 @@ def ensure_templates_defaults(config):
     redmine = templates.setdefault(REDMINE_TASK_TEMPLATE_KEY, {})
     for key, value in default_redmine_task_template().items():
         redmine.setdefault(key, value)
+
+    redmine_special = templates.setdefault(REDMINE_SPECIAL_TASK_TEMPLATE_KEY, {})
+    for key, value in default_redmine_special_task_template().items():
+        redmine_special.setdefault(key, value)
 
     return templates
 
@@ -341,6 +368,20 @@ def reset_redmine_task_template(config):
     templates = config.setdefault("templates", {})
     templates[REDMINE_TASK_TEMPLATE_KEY] = default_redmine_task_template()
     return templates[REDMINE_TASK_TEMPLATE_KEY]
+
+
+def reset_redmine_special_task_template(config):
+    templates = config.setdefault("templates", {})
+    templates[REDMINE_SPECIAL_TASK_TEMPLATE_KEY] = default_redmine_special_task_template()
+    return templates[REDMINE_SPECIAL_TASK_TEMPLATE_KEY]
+
+
+def get_redmine_task_template(config, special=False):
+    templates = ensure_templates_defaults(config)
+    key = REDMINE_SPECIAL_TASK_TEMPLATE_KEY if special else REDMINE_TASK_TEMPLATE_KEY
+    defaults = default_redmine_special_task_template() if special else default_redmine_task_template()
+    template = templates.get(key) or {}
+    return {key_: template.get(key_, value) for key_, value in defaults.items()}
 
 
 def render_template(template_text, context):
@@ -393,6 +434,7 @@ def sample_redmine_preview_context():
         "graph_images": "!graph_1.png!\n!graph_2.png!",
         "graph_images_collapsed": "{{collapse(скрыть/показать)\n!graph_1.png!\n!graph_2.png!\n}}",
         "screenshots_folder": "/tmp/oko_screenshots/example",
+        "special_graph_links": "1. https://zabbix.example.local/chart.php?graphid=101\n2. https://zabbix.example.local/chart.php?graphid=102",
     }
 
 

@@ -47,6 +47,7 @@ from app.duty_settings import DutyModeSettingsWidget
 from app.duty_triggers import diagnose_metric_html, evaluate_stagnation_trigger
 from app.logger import get_logger
 from app.time_range import add_graph_cache_buster, apply_time_range_to_url
+from app.redmine_triggers import format_graph_links, special_redmine_graph_urls
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 from app.service_checks import (
     AUTH_HTML_FORM,
@@ -5484,6 +5485,8 @@ class DutyModeWidget(QWidget):
             str(item.get("trigger", {}).get("display_name") or item.get("trigger", {}).get("id") or "Триггер")
             for item in active_results
         ) or "Не обнаружены"
+        special_graph_urls = self._special_redmine_graph_urls(active_results)
+        special_graph_links = format_graph_links(special_graph_urls)
 
         graph_titles = [self._graph_note_title(item) for item in self.check_graphs]
         graph_urls = [self._graph_note_url(item) for item in self.check_graphs]
@@ -5541,11 +5544,33 @@ class DutyModeWidget(QWidget):
             "active_problems": active_problems,
             "related_graphs": related_graphs,
             "related_graph_links": related_graph_links,
+            "special_graph_links": special_graph_links,
             "trigger_name": primary_trigger.get("display_name") or primary_trigger.get("id") or "",
             "trigger_status": primary.get("status", "") if isinstance(primary, dict) else "",
             "trigger_source_product": primary_trigger.get("source_product", ""),
             "trigger_source_section": primary_trigger.get("source_section", ""),
         }
+
+    def _special_redmine_graph_urls(self, active_results=None):
+        time_range = self.config.get("duty_mode", {}).get("check_time_range", "1h")
+        urls = []
+        seen = set()
+        for item in active_results if active_results is not None else self.duty_trigger_results:
+            if item.get("status") != "ALERT":
+                continue
+            for url in special_redmine_graph_urls(self.config, item.get("trigger", {}), time_range=time_range):
+                if url and url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+        return urls
+
+    def _open_special_redmine_graph_links(self):
+        urls = self._special_redmine_graph_urls()
+        if not urls:
+            return
+        self.logger.info("Opening special Redmine graph links: count=%s", len(urls))
+        for url in urls:
+            QDesktopServices.openUrl(QUrl(url))
 
     def mark_check_started(self):
         self.last_check_at = datetime.now(MSK)
@@ -6464,6 +6489,7 @@ class DutyModeWidget(QWidget):
         self.update_dashboard_summary()
         if self.graph_check_overlay is not None:
             self.graph_check_overlay.close()
+        self._open_special_redmine_graph_links()
         if self.duty_flow_running:
             self.finish_duty_check_flow()
         else:

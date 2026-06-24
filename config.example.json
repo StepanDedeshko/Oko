@@ -37,6 +37,61 @@
   "app": {
     "name": "Око"
   },
+  "special_redmine_triggers": {
+    "version": 1,
+    "items": [
+      {
+        "id": "special_redmine_trigger_1",
+        "enabled": false,
+        "match": {
+          "trigger_ids": [],
+          "trigger_names": []
+        },
+        "graph_urls": [],
+        "graph_ids": []
+      },
+      {
+        "id": "special_redmine_trigger_2",
+        "enabled": false,
+        "match": {
+          "trigger_ids": [],
+          "trigger_names": []
+        },
+        "graph_urls": [],
+        "graph_ids": []
+      },
+      {
+        "id": "special_redmine_trigger_3",
+        "enabled": false,
+        "match": {
+          "trigger_ids": [],
+          "trigger_names": []
+        },
+        "graph_urls": [],
+        "graph_ids": []
+      },
+      {
+        "id": "special_redmine_trigger_4",
+        "enabled": false,
+        "match": {
+          "trigger_ids": [],
+          "trigger_names": []
+        },
+        "graph_urls": [],
+        "graph_ids": []
+      },
+      {
+        "id": "special_redmine_trigger_5",
+        "enabled": false,
+        "match": {
+          "trigger_ids": [],
+          "trigger_names": []
+        },
+        "graph_urls": [],
+        "graph_ids": []
+      }
+    ]
+  },
   "duty_triggers": {
     "enabled": true,
     "items": [
@@ -75,5 +130,82 @@
     "night_threshold_minutes": 180,
     "mode1_night_silence_start": "01:00",
     "mode1_night_silence_end": "05:30"
+  },
+  "zabbix_trigger_definitions": {
+    "version": 1,
+    "items": [
+      {
+        "id": "special_trigger_1",
+        "enabled": false,
+        "kind": "special",
+        "display_name": "Специальный триггер 1",
+        "match": {
+          "trigger_ids": [],
+          "trigger_names": [],
+          "hosts": []
+        },
+        "graph_urls": [],
+        "graph_ids": []
+      },
+      {
+        "id": "special_trigger_2",
+        "enabled": false,
+        "kind": "special",
+        "display_name": "Специальный триггер 2",
+        "match": {
+          "trigger_ids": [],
+          "trigger_names": [],
+          "hosts": []
+        },
+        "graph_urls": [],
+        "graph_ids": []
+      },
+      {
+        "id": "special_trigger_3",
+        "enabled": false,
+        "kind": "special",
+        "display_name": "Специальный триггер 3",
+        "match": {
+          "trigger_ids": [],
+          "trigger_names": [],
+          "hosts": []
+        },
+        "graph_urls": [],
+        "graph_ids": []
+      },
+      {
+        "id": "special_trigger_4",
+        "enabled": false,
+        "kind": "special",
+        "display_name": "Специальный триггер 4",
+        "match": {
+          "trigger_ids": [],
+          "trigger_names": [],
+          "hosts": []
+        },
+        "graph_urls": [],
+        "graph_ids": []
+      },
+      {
+        "id": "special_trigger_5",
+        "enabled": false,
+        "kind": "special",
+        "display_name": "Специальный триггер 5",
+        "match": {
+          "trigger_ids": [],
+          "trigger_names": [],
+          "hosts": []
+        },
+        "graph_urls": [],
+        "graph_ids": []
+      }
+    ]
+  },
+  "live_zabbix_monitor": {
+    "enabled": false,
+    "zabbix_id": "",
+    "problems_url": "",
+    "poll_interval_seconds": 10,
+    "history_path": "data/live_zabbix_history.jsonl"
   }
 }
