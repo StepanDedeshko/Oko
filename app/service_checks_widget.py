@@ -215,6 +215,7 @@ class ServiceChecksSettingsWidget(QWidget):
 
         actions_group = QGroupBox("Мини-тест после входа")
         actions_form = QFormLayout(actions_group)
+        self.post_login_mini_test_enabled_input = QCheckBox("Включить")
         self.post_login_actions_input = _make_limited_text_edit(
             "click | .menu | 5 | 500 | Открыть меню\n"
             "wait_selector | .section-ready | 10 | 0 | Проверить раздел",
@@ -223,6 +224,7 @@ class ServiceChecksSettingsWidget(QWidget):
         )
         actions_hint = QLabel("Формат: type | selector/text | timeout_seconds | delay_ms | description. Типы: click, wait_selector, wait_text, delay.")
         actions_hint.setWordWrap(True)
+        actions_form.addRow("", self.post_login_mini_test_enabled_input)
         actions_form.addRow("Шаги мини-теста:", self.post_login_actions_input)
         actions_form.addRow("Подсказка:", actions_hint)
         form_layout.addWidget(actions_group)
@@ -277,6 +279,7 @@ class ServiceChecksSettingsWidget(QWidget):
         self.error_texts_input.textChanged.connect(self.update_current_from_form)
         self.success_selectors_input.textChanged.connect(self.update_current_from_form)
         self.error_selectors_input.textChanged.connect(self.update_current_from_form)
+        self.post_login_mini_test_enabled_input.toggled.connect(self.update_current_from_form)
         self.post_login_actions_input.textChanged.connect(self.update_current_from_form)
         self.logout_actions_input.textChanged.connect(self.update_current_from_form)
         self.logout_menu_selector_input.textChanged.connect(self.update_current_from_form)
@@ -316,7 +319,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item = self.current_item()
         self._loading = True
         enabled = item is not None
-        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.allow_http_error_load_input, self.session_group_input, self.session_group_order_input, self.session_group_login_owner_input, self.session_group_logout_owner_input, self.external_browser_open_delay_input, self.external_browser_manual_confirm_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.post_login_actions_input, self.logout_actions_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
+        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.allow_http_error_load_input, self.session_group_input, self.session_group_order_input, self.session_group_login_owner_input, self.session_group_logout_owner_input, self.external_browser_open_delay_input, self.external_browser_manual_confirm_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.post_login_mini_test_enabled_input, self.post_login_actions_input, self.logout_actions_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
             widget.setEnabled(enabled)
         self.otrs_task_url_input.setText(self.settings.get("otrs_task_url", ""))
         if item:
@@ -348,6 +351,7 @@ class ServiceChecksSettingsWidget(QWidget):
             self.error_texts_input.setPlainText("; ".join(item.get("error_texts", [])))
             self.success_selectors_input.setPlainText("\n".join(item.get("success_selectors", [])))
             self.error_selectors_input.setPlainText("\n".join(item.get("error_selectors", [])))
+            self.post_login_mini_test_enabled_input.setChecked(bool(item.get("post_login_mini_test_enabled", True)))
             self.post_login_actions_input.setPlainText(format_service_actions(item.get("post_login_actions", [])))
             self.logout_actions_input.setPlainText(format_service_actions(item.get("logout_actions", [])))
             self.logout_menu_selector_input.setText(item.get("logout_menu_selector", ""))
@@ -411,6 +415,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item["error_texts"] = parse_text_markers(self.error_texts_input.toPlainText())
         item["success_selectors"] = parse_selector_markers(self.success_selectors_input.toPlainText())
         item["error_selectors"] = parse_selector_markers(self.error_selectors_input.toPlainText())
+        item["post_login_mini_test_enabled"] = self.post_login_mini_test_enabled_input.isChecked()
         item["post_login_actions"] = normalize_service_actions(self.post_login_actions_input.toPlainText())
         item["logout_actions"] = normalize_service_actions(self.logout_actions_input.toPlainText())
         item["logout_menu_selector"] = self.logout_menu_selector_input.text().strip()

@@ -64,6 +64,7 @@ DEFAULT_SERVICE_ITEM = {
     "logout_wait_seconds": 10,
     "logout_menu_wait_seconds": 5,
     "post_login_actions": [],
+    "post_login_mini_test_enabled": True,
     "logout_actions": [],
     "session_group": "",
     "session_group_order": 0,
@@ -286,6 +287,7 @@ def ensure_service_checks_defaults(config):
         merged["logout_success_selectors"] = parse_selector_markers(merged.get("logout_success_selectors", []))
         merged["logout_success_texts"] = parse_text_markers(merged.get("logout_success_texts", []))
         merged["post_login_actions"] = normalize_service_actions(merged.get("post_login_actions", []))
+        merged["post_login_mini_test_enabled"] = bool(merged.get("post_login_mini_test_enabled", True))
         merged["logout_actions"] = normalize_service_actions(merged.get("logout_actions", []))
         merged["session_group"] = str(merged.get("session_group", "") or "").strip()
         try:
