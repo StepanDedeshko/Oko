@@ -179,6 +179,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(item["logout_wait_seconds"], 10)
         self.assertEqual(item["logout_menu_wait_seconds"], 5)
         self.assertEqual(item["post_login_actions"], [])
+        self.assertTrue(item["post_login_mini_test_enabled"])
         self.assertEqual(item["logout_actions"], [])
         self.assertEqual(item["session_group"], "")
         self.assertEqual(item["session_group_order"], 0)
@@ -195,6 +196,28 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(migrated["logout_success_texts"], ["Войти", "Login"])
         self.assertEqual(migrated["logout_actions"][0]["type"], "click")
         self.assertEqual(migrated["logout_actions"][0]["selector"], ".profile")
+        self.assertTrue(migrated["post_login_mini_test_enabled"])
+
+
+    def test_post_login_mini_test_enabled_false_preserves_actions_and_selectors(self):
+        config = {"service_checks": {"items": [{
+            "id": "svc",
+            "url": "https://example.local",
+            "login_selector": "#login",
+            "password_selector": "#password",
+            "submit_selector": "#submit",
+            "post_login_mini_test_enabled": False,
+            "post_login_actions": "click | .menu | 5 | 500 | Открыть меню",
+        }]}}
+        ensure_service_checks_defaults(config)
+        item = config["service_checks"]["items"][0]
+        self.assertFalse(item["post_login_mini_test_enabled"])
+        self.assertEqual(item["post_login_actions"][0]["type"], "click")
+        self.assertEqual(item["post_login_actions"][0]["selector"], ".menu")
+        self.assertEqual(item["url"], "https://example.local")
+        self.assertEqual(item["login_selector"], "#login")
+        self.assertEqual(item["password_selector"], "#password")
+        self.assertEqual(item["submit_selector"], "#submit")
 
     def test_normalize_service_actions_from_text_and_list(self):
         actions = normalize_service_actions(
@@ -612,6 +635,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
                     "logout_wait_seconds": 10,
                     "logout_menu_wait_seconds": 5,
                     "post_login_actions": [{"type": "wait_selector", "selector": ".ready", "timeout_seconds": 5, "delay_ms": 0, "description": "Проверить раздел"}],
+                    "post_login_mini_test_enabled": False,
                     "logout_actions": [{"type": "click", "selector": ".profile", "timeout_seconds": 5, "delay_ms": 500, "description": "Открыть профиль"}],
                     "session_group": "sensitive_group_1",
                     "session_group_order": 2,
@@ -638,6 +662,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(item["logout_button_selector"], "button.logout")
         self.assertEqual(item["logout_success_selectors"], ["form.login"])
         self.assertEqual(item["post_login_actions"][0]["type"], "wait_selector")
+        self.assertFalse(item["post_login_mini_test_enabled"])
         self.assertEqual(item["logout_actions"][0]["selector"], ".profile")
         self.assertEqual(item["session_group"], "sensitive_group_1")
         self.assertEqual(item["session_group_order"], 2)

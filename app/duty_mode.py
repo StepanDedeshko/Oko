@@ -3271,7 +3271,7 @@ class ServiceCheckVisibleDialog(QDialog):
             if success_found:
                 self.logger.info("Service check group result success: group=%s service_id=%s", self.group_name(), service_id)
             if not success_found and not error_found:
-                if not self.service.get("success_selectors") and self.service.get("post_login_actions"):
+                if not self.service.get("success_selectors") and self.service.get("post_login_actions") and self.service.get("post_login_mini_test_enabled", True):
                     self.logger.info("Service check group post_login started without result selector: group=%s service_id=%s reason=no_success_selectors", self.group_name(), service_id)
                     self._single_shot(2000, lambda: self.start_post_login_actions("", "", "", ""), "post_login_no_selector_delay")
                     return
@@ -3311,6 +3311,11 @@ class ServiceCheckVisibleDialog(QDialog):
         )
 
     def start_post_login_actions(self, html_text, matched_success, matched_error, login_details):
+        if not self.service.get("post_login_mini_test_enabled", True):
+            self.logger.info("Service post-login mini-test skipped by config: service_id=%s", self.service.get("id", ""))
+            self._post_login_actions_completed = False
+            self.start_logout_flow(html_text, matched_success, matched_error, login_details)
+            return
         actions = self.service.get("post_login_actions") or []
         if not actions:
             self._post_login_actions_completed = False
