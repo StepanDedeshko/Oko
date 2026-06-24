@@ -3818,16 +3818,26 @@ class DutyNoteDialog(QDialog):
         self.duty_widget._save_last_note(self.note_kind, self.duty_widget._current_note_text(self.note_kind))
 
     def send_note(self):
+        if not self.duty_widget._begin_duty_stage_action(f"send_{self.note_kind}_note"):
+            return
         self._save_last_note()
         if self.note_kind == "services":
             self.duty_widget.open_service_check_note()
         else:
             self.duty_widget.open_graph_check_note()
-        self.accept()
+        QDialog.accept(self)
 
     def accept(self):
+        if not self.duty_widget._begin_duty_stage_action(f"skip_{self.note_kind}_note"):
+            return
         self._save_last_note()
         super().accept()
+
+    def reject(self):
+        if not self.duty_widget._begin_duty_stage_action(f"close_{self.note_kind}_note"):
+            return
+        self._save_last_note()
+        super().reject()
 
 
 class DutyModeWidget(QWidget):
@@ -3869,6 +3879,16 @@ class DutyModeWidget(QWidget):
         self.selected_zabbix_problems_for_note = []
         self.graph_trigger_check_started_for_overlay = False
         self.duty_flow_queue = []
+        self._duty_guard = DutyFlowGuard(logger=self.logger)
+        self._duty_run_id = 0
+        self._duty_flow_running = False
+        self._duty_cancelling = False
+        self._duty_current_stage = None
+        self._duty_stage_id = 0
+        self._duty_stage_action_in_progress = False
+        self._duty_stage_action_id = 0
+        self._duty_trigger_run_id = None
+        self._duty_trigger_stage_id = None
         self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
         self.duty_zabbix_graph_statuses = {}
@@ -4141,6 +4161,67 @@ class DutyModeWidget(QWidget):
         stats = self.duty_trigger_stats or {}
         return f"Проблемы Zabbix: {self.duty_zabbix_problems_status}. Графики дежурства: {self.duty_zabbix_graphs_status}. OK={stats.get('ok',0)}, ALERT={stats.get('alert',0)}, ошибки={stats.get('errors',0)}"
 
+    def _sync_duty_guard_state(self):
+        self._duty_run_id = self._duty_guard.run_id
+        self._duty_flow_running = self._duty_guard.running
+        self._duty_cancelling = self._duty_guard.cancelling
+        self._duty_current_stage = self._duty_guard.current_stage
+        self._duty_stage_id = self._duty_guard.stage_id
+        self._duty_stage_action_in_progress = self._duty_guard.stage_action_in_progress
+        self._duty_stage_action_id = self._duty_guard.stage_action_id
+
+    def _start_duty_flow_guard(self):
+        run_id = self._duty_guard.start_flow()
+        self._sync_duty_guard_state()
+        return run_id
+
+    def _start_duty_stage(self, stage):
+        token = self._duty_guard.start_stage(stage)
+        self._sync_duty_guard_state()
+        return token
+
+    def _begin_duty_stage_action(self, action):
+        accepted = self._duty_guard.start_action(action)
+        self._sync_duty_guard_state()
+        return accepted
+
+    def _reset_duty_stage_action(self, next_stage=""):
+        self._duty_guard.reset_action(next_stage)
+        self._sync_duty_guard_state()
+
+    def _duty_callback_is_current(self, run_id, stage_id=None, callback=""):
+        return self._duty_guard.is_current(run_id, stage_id, callback=callback)
+
+    def _cancel_current_duty_flow(self, reason=""):
+        if getattr(self, "_duty_cancelling", False):
+            return
+        self._duty_cancelling = True
+        self._duty_guard.cancel_flow(reason)
+        self.duty_flow_running = False
+        self.duty_flow_queue = []
+        self.service_checks_launched_from_duty = False
+        self.graph_trigger_check_started_for_overlay = False
+        self._set_duty_trigger_check_running(False)
+        self.duty_trigger_queue = []
+        for context in list(self._hidden_trigger_contexts):
+            try:
+                context["completed"] = True
+                self._cleanup_hidden_view(context)
+            except Exception:
+                self.logger.exception("Duty flow cancel failed to cleanup hidden trigger context")
+        for dialog_name in ("zabbix_problems_dialog", "duty_summary_dialog", "graph_check_overlay"):
+            dialog = getattr(self, dialog_name, None)
+            if dialog is not None:
+                try:
+                    dialog.close()
+                except Exception:
+                    self.logger.exception("Duty flow cancel failed to close %s", dialog_name)
+                setattr(self, dialog_name, None)
+        self.duty_current_stage = "завершено"
+        self._sync_duty_guard_state()
+        self.update_dashboard_summary()
+
+
     def _save_last_note(self, note_kind, note_text):
         settings = self.get_settings()
         now = format_dt(datetime.now(MSK))
@@ -4154,24 +4235,45 @@ class DutyModeWidget(QWidget):
         self.update_dashboard_summary()
 
     def _show_duty_note_dialog(self, note_kind):
+        if self.duty_summary_dialog is not None:
+            try:
+                self.duty_summary_dialog.raise_()
+                self.duty_summary_dialog.activateWindow()
+            except Exception:
+                pass
+            self.logger.info("Duty note duplicate open ignored: run_id=%s stage_id=%s", self._duty_run_id, self._duty_stage_id)
+            return
+        stage = "service_note" if note_kind == "services" else "zabbix_note"
+        token = self._start_duty_stage(stage)
         dialog = DutyNoteDialog(self, note_kind, parent=self)
+        self.duty_summary_dialog = dialog
+        run_id = token.run_id if token else self._duty_run_id
+        stage_id = token.stage_id if token else self._duty_stage_id
         if note_kind == "services":
-            dialog.finished.connect(lambda _r: self._after_service_note_dialog())
+            dialog.finished.connect(lambda _r, r=run_id, s=stage_id: self._after_service_note_dialog(r, s))
         else:
-            dialog.finished.connect(lambda _r: self._finish_duty_summary_dialog())
+            dialog.finished.connect(lambda _r, r=run_id, s=stage_id: self._finish_duty_summary_dialog(r, s))
         dialog.show(); dialog.raise_(); dialog.activateWindow()
 
-    def _after_service_note_dialog(self):
+    def _after_service_note_dialog(self, run_id=None, stage_id=None):
+        if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "service_note_finished"):
+            return
+        self.duty_summary_dialog = None
+        self._reset_duty_stage_action("next_after_service_note")
         if self.duty_flow_queue and self.duty_flow_queue[0] == "zabbix":
             self._run_next_duty_queue_item()
         else:
             self._finish_duty_summary_dialog()
 
     def _run_next_duty_queue_item(self):
+        if not self._duty_guard.running:
+            return
+        self._reset_duty_stage_action("next_queue_item")
         if not self.duty_flow_queue:
             self._finish_duty_summary_dialog(); return
         item = self.duty_flow_queue.pop(0)
         if item == "services":
+            self._start_duty_stage("services")
             self.service_checks_launched_from_duty = True
             self.duty_service_checks_status = "выполняется"
             self.duty_current_stage = "проверка сервисов"
@@ -5341,6 +5443,10 @@ class DutyModeWidget(QWidget):
         return max(0.0, DUTY_TRIGGER_CHECK_COOLDOWN_SECONDS - elapsed)
 
     def _finish_duty_triggers_check(self):
+        if self._duty_trigger_run_id is not None and not self._duty_callback_is_current(self._duty_trigger_run_id, self._duty_trigger_stage_id, "duty_triggers_finished"):
+            self._set_duty_trigger_check_running(False)
+            self.duty_trigger_queue = []
+            return
         stats = self.duty_trigger_stats
         self._set_duty_trigger_check_running(False)
         self._last_duty_trigger_check_finished_at = datetime.now(MSK)
@@ -5367,8 +5473,9 @@ class DutyModeWidget(QWidget):
         self.finish_duty_check_flow()
 
     def start_duty_check_flow(self):
-        if self.duty_flow_running or self.service_check_running or self.duty_trigger_running:
+        if self.duty_flow_running or self._duty_guard.running or self.service_check_running:
             self.logger.info("Duty check ignored: reason=already_running")
+            self.logger.info("Duty flow duplicate start ignored: run_id=%s", self._duty_run_id)
             self.status_label.setText("Дежурная проверка уже выполняется.")
             return
         queue = self._selected_duty_checks()
@@ -5378,6 +5485,10 @@ class DutyModeWidget(QWidget):
             queue = self._selected_duty_checks()
             if not queue:
                 return
+        run_id = self._start_duty_flow_guard()
+        if run_id is None:
+            self.status_label.setText("Дежурная проверка уже выполняется.")
+            return
         self.duty_flow_running = True
         self.duty_flow_queue = list(queue)
         self.duty_zabbix_status = "ожидает" if "zabbix" in queue else "отключено"
@@ -5387,7 +5498,7 @@ class DutyModeWidget(QWidget):
         self.duty_zabbix_graph_statuses = {item.get("id"): "Ожидает проверки" for item in self.check_graphs}
         self.detected_zabbix_problems = []
         self.selected_zabbix_problems_for_note = []
-        self.logger.info("Duty check started")
+        self.logger.info("Duty check started: run_id=%s", self._duty_run_id)
         self.mark_check_started()
         self._run_next_duty_queue_item()
 
@@ -5465,30 +5576,39 @@ class DutyModeWidget(QWidget):
         credentials = self.credentials.get(zabbix_id, {}) if zabbix_id else {}
         self.duty_zabbix_problems_status = "Открыто для проверки"
         self.update_dashboard_summary()
+        token = self._duty_guard.token()
         dialog = ZabbixProblemsDialog(url, profile=profile, credentials=credentials, config=self.config, parent=self)
         self.zabbix_problems_dialog = dialog
-        dialog.problemsDetected.connect(self._remember_detected_zabbix_problems)
-        dialog.problemsSelected.connect(self._remember_selected_zabbix_problems)
-        dialog.confirmed.connect(self._finish_zabbix_problems_stage)
+        dialog.problemsDetected.connect(lambda problems, r=token.run_id, st=token.stage_id: self._remember_detected_zabbix_problems(problems, r, st))
+        dialog.problemsSelected.connect(lambda problems, r=token.run_id, st=token.stage_id: self._remember_selected_zabbix_problems(problems, r, st))
+        dialog.confirmed.connect(lambda r=token.run_id, st=token.stage_id: self._finish_zabbix_problems_stage(r, st))
         dialog.finished.connect(lambda _result: setattr(self, "zabbix_problems_dialog", None))
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
 
-    def _remember_detected_zabbix_problems(self, problems):
+    def _remember_detected_zabbix_problems(self, problems, run_id=None, stage_id=None):
+        if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "zabbix_problems_detected"):
+            return
         self.detected_zabbix_problems = list(problems or [])
         active_count, _handled_count, _resolved_count = self._zabbix_problem_counts()
         if active_count:
             self.duty_zabbix_problems_status = "Требуется внимание"
         self.update_dashboard_summary()
 
-    def _remember_selected_zabbix_problems(self, problems):
+    def _remember_selected_zabbix_problems(self, problems, run_id=None, stage_id=None):
+        if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "zabbix_problems_selected"):
+            return
         self.selected_zabbix_problems_for_note = list(problems or [])
         if self.detected_zabbix_problems or self.selected_zabbix_problems_for_note:
             self.duty_zabbix_problems_status = "Требуется внимание"
         self.update_dashboard_summary()
 
-    def _finish_zabbix_problems_stage(self):
+    def _finish_zabbix_problems_stage(self, run_id=None, stage_id=None):
+        if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "zabbix_problems_confirmed"):
+            return
+        if not self._begin_duty_stage_action("finish_zabbix_problems"):
+            return
         active_count, _handled_count, _resolved_count = self._zabbix_problem_counts()
         self.duty_zabbix_problems_status = "Требуется внимание" if active_count else "Проверено"
         self.load_check_graphs()
@@ -5503,12 +5623,14 @@ class DutyModeWidget(QWidget):
             )
             self.finish_duty_check_flow()
             return
+        self._start_duty_stage("zabbix_graphs")
         self.duty_zabbix_graphs_status = "Открыто для проверки"
         self.duty_zabbix_graph_statuses = {item.get("id"): "Открыто для проверки" for item in self.check_graphs}
         self.update_dashboard_summary()
         self.open_graph_check_overlay(run_triggers_after_open=True)
 
     def start_duty_zabbix_stage(self):
+        self._start_duty_stage("zabbix_problems")
         self.duty_current_stage = "zabbix_problems"
         self.duty_zabbix_status = "выполняется"
         self.duty_zabbix_problems_status = "Ожидает проверки"
@@ -5532,7 +5654,11 @@ class DutyModeWidget(QWidget):
     def open_duty_summary_dialog(self):
         self.finish_duty_check_flow()
 
-    def _finish_duty_summary_dialog(self):
+    def _finish_duty_summary_dialog(self, run_id=None, stage_id=None):
+        if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "duty_summary_finished"):
+            return
+        self._duty_guard.finish_flow()
+        self._sync_duty_guard_state()
         self.duty_current_stage = "завершено"
         self.duty_flow_running = False
         self.duty_flow_services_first = False
@@ -5541,6 +5667,16 @@ class DutyModeWidget(QWidget):
         self.detected_zabbix_problems = []
         self.selected_zabbix_problems_for_note = []
         self.duty_flow_queue = []
+        self._duty_guard = DutyFlowGuard(logger=self.logger)
+        self._duty_run_id = 0
+        self._duty_flow_running = False
+        self._duty_cancelling = False
+        self._duty_current_stage = None
+        self._duty_stage_id = 0
+        self._duty_stage_action_in_progress = False
+        self._duty_stage_action_id = 0
+        self._duty_trigger_run_id = None
+        self._duty_trigger_stage_id = None
         self.duty_zabbix_problems_status = "Ожидает проверки"
         self.duty_zabbix_graphs_status = "Ожидает проверки"
         self.update_dashboard_summary()
@@ -5580,7 +5716,7 @@ class DutyModeWidget(QWidget):
             if trigger.get("enabled", True)
         ]
         if not part_of_duty_flow:
-            self.logger.info("Duty check started")
+            self.logger.info("Duty check started: run_id=%s", self._duty_run_id)
             self.logger.info("Duty service checks enabled: value=false")
             self.logger.info("Duty service checks skipped: reason=disabled")
             self.logger.info("Duty Zabbix check started: task_number=%s", self._zabbix_task_number() or "not_set")
@@ -5588,6 +5724,8 @@ class DutyModeWidget(QWidget):
             self.duty_current_stage = "проверка Zabbix / графиков"
             self.mark_check_started()
         self.logger.info("Duty trigger manual check started: enabled_count=%s", len(enabled_triggers))
+        self._duty_trigger_run_id = self._duty_run_id if part_of_duty_flow else None
+        self._duty_trigger_stage_id = self._duty_stage_id if part_of_duty_flow else None
         self.duty_zabbix_status = "выполняется"
         if self.duty_flow_running and part_of_duty_flow:
             self.duty_current_stage = "zabbix_graphs"
@@ -5609,6 +5747,10 @@ class DutyModeWidget(QWidget):
         self._run_next_duty_trigger()
 
     def _run_next_duty_trigger(self):
+        if self._duty_trigger_run_id is not None and not self._duty_callback_is_current(self._duty_trigger_run_id, self._duty_trigger_stage_id, "run_next_duty_trigger"):
+            self.duty_trigger_queue = []
+            self._set_duty_trigger_check_running(False)
+            return
         if not self.duty_trigger_queue:
             self._finish_duty_triggers_check()
             return
@@ -5700,6 +5842,8 @@ class DutyModeWidget(QWidget):
             "read_timer": QTimer(self),
             "completed": False,
             "cleanup_started": False,
+            "duty_run_id": self._duty_trigger_run_id,
+            "duty_stage_id": self._duty_trigger_stage_id,
         }
         context["timeout_timer"].setSingleShot(True)
         context["read_timer"].setSingleShot(True)
@@ -5708,6 +5852,10 @@ class DutyModeWidget(QWidget):
 
         def on_timeout(ctx=context):
             if ctx.get("completed"):
+                return
+            if ctx.get("duty_run_id") is not None and not self._duty_callback_is_current(ctx.get("duty_run_id"), ctx.get("duty_stage_id"), "duty_trigger_timeout"):
+                ctx["completed"] = True
+                self._cleanup_hidden_view(ctx)
                 return
             ctx["completed"] = True
             t = ctx.get("trigger") or {}
@@ -5724,6 +5872,10 @@ class DutyModeWidget(QWidget):
 
         def read_html(ctx=context):
             if ctx.get("completed"):
+                return
+            if ctx.get("duty_run_id") is not None and not self._duty_callback_is_current(ctx.get("duty_run_id"), ctx.get("duty_stage_id"), "duty_trigger_read_html"):
+                ctx["completed"] = True
+                self._cleanup_hidden_view(ctx)
                 return
             try:
                 current_page = ctx.get("page")
@@ -5848,6 +6000,10 @@ class DutyModeWidget(QWidget):
     def _after_hidden_duty_trigger_html(self, context, html):
         if context.get("completed"):
             return
+        if context.get("duty_run_id") is not None and not self._duty_callback_is_current(context.get("duty_run_id"), context.get("duty_stage_id"), "duty_trigger_html"):
+            context["completed"] = True
+            self._cleanup_hidden_view(context)
+            return
         context["completed"] = True
         trigger = dict(context.get("trigger") or {})
         trigger["_source_url"] = context.get("source_url", "")
@@ -5863,6 +6019,8 @@ class DutyModeWidget(QWidget):
             self._finish_trigger_without_html(trigger, "ERROR", reason=str(exc))
 
     def _finish_trigger_without_html(self, trigger, status, reason=None):
+        if self._duty_trigger_run_id is not None and not self._duty_callback_is_current(self._duty_trigger_run_id, self._duty_trigger_stage_id, "finish_trigger_without_html"):
+            return
         message = self._status_message(status, trigger=trigger)
         target_found = self._set_target_status(trigger, status, message)
         self._set_zabbix_graph_status_for_trigger(trigger, status if target_found else "TARGET_NOT_FOUND")
@@ -5888,6 +6046,8 @@ class DutyModeWidget(QWidget):
         QTimer.singleShot(0, self._run_next_duty_trigger)
 
     def _after_duty_trigger_html(self, trigger, html):
+        if self._duty_trigger_run_id is not None and not self._duty_callback_is_current(self._duty_trigger_run_id, self._duty_trigger_stage_id, "after_duty_trigger_html"):
+            return
         html = html or ""
         plain_text = re.sub(r"<[^>]+>", " ", html)
         plain_text = " ".join(plain_text.split())
@@ -5997,10 +6157,14 @@ class DutyModeWidget(QWidget):
     def open_graph_check_overlay(self, run_triggers_after_open=False):
         if self.graph_check_overlay is not None:
             try:
-                self.graph_check_overlay.close()
+                self.graph_check_overlay.raise_()
+                self.graph_check_overlay.activateWindow()
             except Exception:
                 pass
+            self.logger.info("Duty graph overlay duplicate open ignored: run_id=%s", self._duty_run_id)
+            return
 
+        token = self._duty_guard.token() if self._duty_guard.running else None
         self.graph_check_overlay = GraphCheckOverlayDialog(
             graphs=self.check_graphs,
             config=self.config,
@@ -6008,8 +6172,10 @@ class DutyModeWidget(QWidget):
             credentials=self.credentials,
             parent=self,
         )
-        self.graph_check_overlay.confirmed.connect(self._finish_zabbix_graphs_from_overlay)
-        self.graph_check_overlay.finished.connect(lambda _result: setattr(self, "graph_check_overlay", None))
+        run_id = token.run_id if token else None
+        stage_id = token.stage_id if token else None
+        self.graph_check_overlay.confirmed.connect(lambda r=run_id, s=stage_id: self._finish_zabbix_graphs_from_overlay(r, s))
+        self.graph_check_overlay.finished.connect(lambda _result, r=run_id, s=stage_id: self._graph_overlay_closed(r, s))
         self.graph_check_overlay.destroyed.connect(lambda: setattr(self, "graph_check_overlay", None))
         self.cards = self.graph_check_overlay.cards
         self.graph_check_overlay.show()
@@ -6017,14 +6183,38 @@ class DutyModeWidget(QWidget):
         self.graph_check_overlay.activateWindow()
         if run_triggers_after_open:
             self.graph_trigger_check_started_for_overlay = True
-            QTimer.singleShot(1500, lambda: self.run_duty_triggers_check(part_of_duty_flow=True))
+            QTimer.singleShot(1500, lambda r=run_id, s=stage_id: self._run_duty_triggers_for_stage(r, s))
 
 
 
-    def _finish_zabbix_graphs_from_overlay(self):
-        if self.duty_trigger_running or self._hidden_trigger_contexts or self.hidden_trigger_views:
-            QMessageBox.warning(self, "Проверка графиков", "Проверка триггеров графиков ещё выполняется.")
+    def _run_duty_triggers_for_stage(self, run_id=None, stage_id=None):
+        if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "run_duty_triggers_after_overlay"):
             return
+        self.run_duty_triggers_check(part_of_duty_flow=True)
+
+    def _graph_overlay_closed(self, run_id=None, stage_id=None):
+        self.graph_check_overlay = None
+        if run_id is None or not self._duty_callback_is_current(run_id, stage_id, "graph_overlay_closed"):
+            return
+        if self.duty_flow_running and self.duty_current_stage == "zabbix_graphs":
+            self._finish_zabbix_graphs_from_overlay(run_id, stage_id, action="close_graph_overlay")
+
+    def _finish_zabbix_graphs_from_overlay(self, run_id=None, stage_id=None, action="finish_zabbix_graphs"):
+        if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "zabbix_graphs_confirmed"):
+            return
+        if not self._begin_duty_stage_action(action):
+            return
+        if self.duty_trigger_running or self._hidden_trigger_contexts or self.hidden_trigger_views:
+            self.logger.info("Проверка триггеров графиков ещё выполняется; пользователь завершил этап без ожидания")
+            self.logger.info("Duty graph trigger check skipped by user action: run_id=%s stage_id=%s", self._duty_run_id, self._duty_stage_id)
+            self._set_duty_trigger_check_running(False)
+            self.duty_trigger_queue = []
+            for context in list(self._hidden_trigger_contexts):
+                try:
+                    context["completed"] = True
+                    self._cleanup_hidden_view(context)
+                except Exception:
+                    self.logger.exception("Failed to cleanup trigger context after graph stage skip")
         if self.duty_trigger_results:
             self._finalize_zabbix_graph_statuses_from_trigger_stats()
         else:
