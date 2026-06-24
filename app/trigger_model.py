@@ -49,6 +49,16 @@ class ZabbixProblemSnapshotItem:
     severity: str = ""
     started_at: str = ""
     status: str = "active"
+    info: str = ""
+    duration: str = ""
+    acknowledged: bool = False
+    ack_text: str = ""
+    ack_url: str = ""
+    actions_text: str = ""
+    tags: str = ""
+    severity_class: str = ""
+    severity_level: str = ""
+    event_id: str = ""
     problem_url: str = ""
     graph_urls: list[str] = field(default_factory=list)
     trigger_kind: str = STANDARD_TRIGGER_KIND
@@ -62,6 +72,16 @@ class ZabbixProblemSnapshotItem:
             "severity": self.severity,
             "started_at": self.started_at,
             "status": self.status,
+            "info": self.info,
+            "duration": self.duration,
+            "acknowledged": self.acknowledged,
+            "ack_text": self.ack_text,
+            "ack_url": self.ack_url,
+            "actions_text": self.actions_text,
+            "tags": self.tags,
+            "severity_class": self.severity_class,
+            "severity_level": self.severity_level,
+            "event_id": self.event_id,
             "problem_url": self.problem_url,
             "graph_urls": list(self.graph_urls),
             "trigger_kind": self.trigger_kind,
@@ -221,6 +241,16 @@ def enrich_problem(config: dict, problem: dict, time_range="1h", processed_keys:
         severity=str(problem.get("severity") or ""),
         started_at=str(problem.get("started_at") or problem.get("time") or ""),
         status=str(problem.get("status") or "active"),
+        info=str(problem.get("info") or ""),
+        duration=str(problem.get("duration") or ""),
+        acknowledged=bool(problem.get("acknowledged", False)),
+        ack_text=str(problem.get("ack_text") or ""),
+        ack_url=str(problem.get("ack_url") or ""),
+        actions_text=str(problem.get("actions_text") or problem.get("actions") or ""),
+        tags=str(problem.get("tags") or ""),
+        severity_class=str(problem.get("severity_class") or ""),
+        severity_level=str(problem.get("severity_level") or ""),
+        event_id=str(problem.get("event_id") or problem.get("eventids_0") or problem.get("id") or ""),
         problem_url=str(problem.get("problem_url") or problem.get("url") or ""),
         graph_urls=graph_urls,
         trigger_kind=kind,

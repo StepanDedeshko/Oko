@@ -134,3 +134,69 @@ class LiveZabbixMonitorWebEngineDiagnosticsTests(unittest.TestCase):
         self.assertIn("profile_selection_reason", widget_source)
         self.assertIn("_profile_for_url", widget_source)
         self.assertIn("Определён по домену URL Zabbix Problems", widget_source)
+
+class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
+    def test_dom_parser_uses_russian_header_map_and_ack_event_fields(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix.py").read_text(encoding="utf-8")
+        for marker in [
+            "headerAliases",
+            "Время",
+            "Важность",
+            "Инфо",
+            "Узел сети",
+            "Проблема",
+            "Длительность",
+            "Подтверждено",
+            "Действия",
+            "Теги",
+            "header_map",
+            "eventids[0]",
+            "ack_url",
+        ]:
+            self.assertIn(marker.lower() if marker in {"Время", "Важность", "Инфо", "Узел сети", "Проблема", "Длительность", "Подтверждено", "Действия", "Теги"} else marker, source.lower() if marker in {"Время", "Важность", "Инфо", "Узел сети", "Проблема", "Длительность", "Подтверждено", "Действия", "Теги"} else source)
+
+    def test_snapshot_item_has_extended_zabbix_fields(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "trigger_model.py").read_text(encoding="utf-8")
+        for marker in [
+            "info",
+            "duration",
+            "acknowledged",
+            "ack_text",
+            "ack_url",
+            "actions_text",
+            "tags",
+            "severity_class",
+            "severity_level",
+            "event_id",
+        ]:
+            self.assertIn(marker, source)
+
+    def test_live_monitor_columns_widths_severity_colors_and_ack_button(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        for marker in [
+            '"Время"',
+            '"Важность"',
+            '"Инфо"',
+            '"Узел сети"',
+            '"Проблема"',
+            '"Длительность"',
+            '"Подтверждено"',
+            '"Действия"',
+            '"Теги"',
+            '"Статус Око"',
+            '"Zabbix"',
+            '"Графики"',
+            '"Обработано"',
+            "QHeaderView.Interactive",
+            "QHeaderView.Stretch",
+            "table_column_widths",
+            "_severity_color",
+            "disaster",
+            "high",
+            "average",
+            "warning",
+            "not_classified",
+            "Открыть подтверждение",
+        ]:
+            self.assertIn(marker, source)
+        self.assertNotIn("Создать Redmine", source)

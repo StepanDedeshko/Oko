@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import json
 
 from PySide6.QtCore import QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QHeaderView,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
@@ -113,10 +114,41 @@ class LiveZabbixMonitorWidget(QWidget):
         root.addWidget(QLabel("Диагностика DOM"))
         root.addWidget(self.diagnostics_text)
 
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(["Время", "Host", "Severity", "Триггер", "Статус", "Zabbix", "Графики", "Обработка"])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table_columns = [
+            "Время",
+            "Важность",
+            "Инфо",
+            "Узел сети",
+            "Проблема",
+            "Длительность",
+            "Подтверждено",
+            "Действия",
+            "Теги",
+            "Статус Око",
+            "Zabbix",
+            "Графики",
+            "Обработано",
+        ]
+        self.table = QTableWidget(0, len(self.table_columns))
+        self.table.setHorizontalHeaderLabels(self.table_columns)
+        self._configure_table_columns()
         root.addWidget(self.table, stretch=1)
+
+    def _configure_table_columns(self):
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(False)
+        defaults = [140, 120, 80, 180, 420, 110, 130, 100, 180, 110, 90, 130, 110]
+        widths = self.settings.get("table_column_widths") or defaults
+        for index, width in enumerate(defaults):
+            value = widths[index] if index < len(widths) else width
+            self.table.setColumnWidth(index, max(60, int(value)))
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.sectionResized.connect(self._save_table_column_widths)
+
+    def _save_table_column_widths(self, *_args):
+        self.settings["table_column_widths"] = [self.table.columnWidth(index) for index in range(self.table.columnCount())]
+        save_config(self.config)
 
     def _profile_for_url(self, url):
         configured = str(self.settings.get("zabbix_id") or "").strip()
@@ -454,19 +486,41 @@ class LiveZabbixMonitorWidget(QWidget):
         all_items = diff.new + diff.active + diff.resolved + diff.processed
         self.table.setRowCount(len(all_items))
         for row, item in enumerate(all_items):
-            for column, value in enumerate([item.started_at, item.host, item.severity, item.trigger_name, item.status]):
-                self.table.setItem(row, column, QTableWidgetItem(value))
+            values = [
+                item.started_at,
+                item.severity,
+                item.info,
+                item.host,
+                item.trigger_name,
+                item.duration,
+                item.ack_text or ("Да" if item.acknowledged else "Нет"),
+                item.actions_text,
+                item.tags,
+                item.status,
+            ]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(str(value or ""))
+                if column == 1:
+                    color = self._severity_color(item.severity_level, item.severity_class, item.severity)
+                    if color:
+                        cell.setBackground(QColor(color))
+                self.table.setItem(row, column, cell)
             open_button = QPushButton("Открыть")
             open_button.setEnabled(bool(item.problem_url))
             open_button.clicked.connect(lambda _=False, url=item.problem_url: QDesktopServices.openUrl(QUrl(url)))
-            self.table.setCellWidget(row, 5, open_button)
+            self.table.setCellWidget(row, 10, open_button)
             graphs_button = QPushButton("Открыть графики")
             graphs_button.setEnabled(bool(item.graph_urls))
             graphs_button.clicked.connect(lambda _=False, urls=list(item.graph_urls): self.open_graphs(urls))
-            self.table.setCellWidget(row, 6, graphs_button)
+            self.table.setCellWidget(row, 11, graphs_button)
+            ack_button = QPushButton("Открыть подтверждение")
+            ack_target = item.ack_url or item.problem_url
+            ack_button.setEnabled(bool(ack_target))
+            ack_button.clicked.connect(lambda _=False, url=ack_target: self.open_acknowledgement(url))
+            self.table.setCellWidget(row, 6, ack_button)
             processed_button = QPushButton("Обработано")
             processed_button.clicked.connect(lambda _=False, key=item.key: self.mark_processed(key))
-            self.table.setCellWidget(row, 7, processed_button)
+            self.table.setCellWidget(row, 12, processed_button)
         self.counts_label.setText(f"Новые: {len(diff.new)} | Активные: {len(diff.active)} | Решённые: {len(diff.resolved)} | Обработанные: {len(diff.processed)}")
         self.updated_label.setText("Последнее обновление: " + datetime.now().strftime("%H:%M:%S"))
         if all_items:
@@ -476,6 +530,32 @@ class LiveZabbixMonitorWidget(QWidget):
         else:
             self.poll_status_label.setText(ZERO_PROBLEMS_MESSAGE)
         self._update_diagnostics(payload or {"safe_debug": {}, "items": []})
+
+    @staticmethod
+    def _severity_color(level, severity_class="", severity_text=""):
+        key = " ".join([str(level or ""), str(severity_class or ""), str(severity_text or "")]).casefold()
+        if "disaster" in key or "чрезвычай" in key:
+            return "#e45959"
+        if "high" in key or "высок" in key:
+            return "#ff8a65"
+        if "average" in key or "средн" in key:
+            return "#ffb74d"
+        if "warning" in key or "предупр" in key:
+            return "#ffd54f"
+        if "info" in key or "информ" in key:
+            return "#64b5f6"
+        if "na-bg" in key or "not_classified" in key or "не классиф" in key:
+            return "#b0bec5"
+        return ""
+
+    def open_acknowledgement(self, url):
+        if not url:
+            return
+        if self.view is not None:
+            self.view.load(QUrl(url))
+            self.show_webview()
+        else:
+            QDesktopServices.openUrl(QUrl(url))
 
     def open_graphs(self, urls):
         for url in urls or []:
