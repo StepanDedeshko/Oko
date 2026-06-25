@@ -100,6 +100,10 @@ class LiveZabbixMonitorWidget(QWidget):
         self.last_js_result_meta = {}
         self._restoring_column_widths = False
         self.ack_dialogs = []
+        self.redmine_graph_lookup_view = None
+        self._redmine_graph_lookup_queue = []
+        self._redmine_graph_lookup_items = []
+        self._redmine_graph_lookup_callback = None
         self.last_separator_rows = []
         self._parse_attempts = []
         self.timer = QTimer(self)
@@ -827,11 +831,25 @@ class LiveZabbixMonitorWidget(QWidget):
 
         return "На нескольких узлах наблюдаются триггеры"
 
+    @staticmethod
+    def _is_real_graph_url(url):
+        value = str(url or "")
+        if not value:
+            return False
+        lowered = value.casefold()
+        return (
+            "history.php" in lowered and "action=showgraph" in lowered
+        ) or (
+            "history.php" in lowered and "itemids" in lowered
+        ) or (
+            "chart.php" in lowered and ("graphid" in lowered or "itemids" in lowered)
+        )
+
     def _redmine_graph_link_for_item(self, item):
-        graph_urls = list(getattr(item, "graph_urls", []) or [])
-        if graph_urls:
-            return str(graph_urls[0] or "")
-        return str(getattr(item, "problem_url", "") or "")
+        for url in list(getattr(item, "graph_urls", []) or []):
+            if self._is_real_graph_url(url):
+                return str(url or "")
+        return ""
 
     def _redmine_description(self, items):
         items = self._unique_live_items(items)
@@ -865,7 +883,7 @@ class LiveZabbixMonitorWidget(QWidget):
         for item in items or []:
             for url in getattr(item, "graph_urls", []) or []:
                 text = str(url or "").strip()
-                if not text or text in seen:
+                if not text or text in seen or not self._is_real_graph_url(text):
                     continue
                 seen.add(text)
                 urls.append(text)
@@ -927,9 +945,149 @@ class LiveZabbixMonitorWidget(QWidget):
 
         redmine_url = self._merge_redmine_url_params(create_url, dynamic_params, default_params)
         if len(redmine_url) > 6500:
-            return redmine_url, f"Redmine-ссылка всё ещё длинная: {len(redmine_url)} символов. Лучше выбрать меньше строк."
+            return redmine_url, f"Redmine-ссылка длинная: {len(redmine_url)} символов. Лучше выбрать меньше строк."
 
         return redmine_url, ""
+
+    @staticmethod
+    def _graph_link_lookup_script():
+        return r"""
+(function() {
+  function abs(href) {
+    try { return new URL(href, document.location.href).href; }
+    catch(e) { return href || ''; }
+  }
+
+  function isGraphUrl(value) {
+    value = String(value || '').toLowerCase();
+    return (
+      value.indexOf('history.php') !== -1 && value.indexOf('action=showgraph') !== -1
+    ) || (
+      value.indexOf('history.php') !== -1 && value.indexOf('itemids') !== -1
+    ) || (
+      value.indexOf('chart.php') !== -1 && (value.indexOf('graphid') !== -1 || value.indexOf('itemids') !== -1)
+    );
+  }
+
+  var exact = document.querySelector('body > div > ul > li:nth-child(5) > a[href]');
+  if (exact && isGraphUrl(exact.getAttribute('href') || exact.href || '')) {
+    return JSON.stringify({ok: true, graph_url: abs(exact.getAttribute('href') || exact.href || ''), source: 'exact'});
+  }
+
+  var links = Array.from(document.querySelectorAll('a[href]'));
+  var graph = links.find(function(a) {
+    return isGraphUrl(a.getAttribute('href') || a.href || '');
+  });
+
+  return JSON.stringify({
+    ok: true,
+    graph_url: graph ? abs(graph.getAttribute('href') || graph.href || '') : '',
+    source: graph ? 'fallback' : '',
+    title: String(document.title || '').slice(0, 160)
+  });
+})();
+"""
+
+    def _ensure_redmine_graph_lookup_view(self):
+        if self.redmine_graph_lookup_view is not None:
+            return
+        self.redmine_graph_lookup_view = register_web_view(QWebEngineView())
+        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        if profile is not None:
+            page = QWebEnginePage(profile, self.redmine_graph_lookup_view)
+            self.redmine_graph_lookup_view.setPage(page)
+        self.redmine_graph_lookup_view.hide()
+
+    def _cleanup_redmine_graph_lookup_view(self):
+        if self.redmine_graph_lookup_view is not None:
+            safe_delete_web_view(self.redmine_graph_lookup_view, logger=self.logger, context="LiveZabbixMonitorWidget Redmine graph lookup")
+            self.redmine_graph_lookup_view = None
+
+    def _items_need_graph_lookup(self, items):
+        result = []
+        for item in items or []:
+            if self._redmine_graph_link_for_item(item):
+                continue
+            if str(getattr(item, "problem_url", "") or "").strip():
+                result.append(item)
+        return result
+
+    def _enrich_redmine_graph_links(self, items, callback):
+        items = self._unique_live_items(items)
+        queue = self._items_need_graph_lookup(items)
+        if not queue:
+            callback(items)
+            return
+
+        self._redmine_graph_lookup_items = items
+        self._redmine_graph_lookup_queue = list(queue)
+        self._redmine_graph_lookup_callback = callback
+        self.poll_status_label.setText(f"Ищу ссылки на графики: 0/{len(queue)}")
+        self._ensure_redmine_graph_lookup_view()
+        self._load_next_redmine_graph_lookup()
+
+    def _load_next_redmine_graph_lookup(self):
+        if not self._redmine_graph_lookup_queue:
+            callback = self._redmine_graph_lookup_callback
+            items = self._redmine_graph_lookup_items
+            self._redmine_graph_lookup_callback = None
+            self.poll_status_label.setText("Ссылки на графики обработаны")
+            if callback:
+                callback(items)
+            return
+
+        item = self._redmine_graph_lookup_queue.pop(0)
+        url = str(getattr(item, "problem_url", "") or "").strip()
+        if not url:
+            self._load_next_redmine_graph_lookup()
+            return
+
+        total = len(self._redmine_graph_lookup_items)
+        left = len(self._redmine_graph_lookup_queue)
+        self.poll_status_label.setText(f"Ищу ссылку на график: {total - left}/{total}")
+
+        try:
+            self.redmine_graph_lookup_view.loadFinished.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+
+        self.redmine_graph_lookup_view.loadFinished.connect(
+            lambda ok, current_item=item: self._on_redmine_graph_lookup_loaded(ok, current_item)
+        )
+        self.redmine_graph_lookup_view.load(QUrl(url))
+
+    def _on_redmine_graph_lookup_loaded(self, ok, item):
+        if not ok:
+            self.logger.warning("Redmine graph lookup page failed: problem_url=%s", getattr(item, "problem_url", ""))
+            self._load_next_redmine_graph_lookup()
+            return
+
+        page = self.redmine_graph_lookup_view.page() if self.redmine_graph_lookup_view is not None else None
+        if page is None:
+            self._load_next_redmine_graph_lookup()
+            return
+
+        page.runJavaScript(
+            self._graph_link_lookup_script(),
+            lambda result, current_item=item: self._on_redmine_graph_lookup_js_result(result, current_item),
+        )
+
+    def _on_redmine_graph_lookup_js_result(self, result, item):
+        payload, meta = self._decode_js_json_result(result)
+        graph_url = ""
+        if isinstance(payload, dict):
+            graph_url = str(payload.get("graph_url") or "").strip()
+
+        if graph_url and self._is_real_graph_url(graph_url):
+            urls = [url for url in list(getattr(item, "graph_urls", []) or []) if self._is_real_graph_url(url)]
+            if graph_url not in urls:
+                urls.insert(0, graph_url)
+            item.graph_urls = urls
+            self.logger.info("Redmine graph link found: trigger=%s graph_url=%s", getattr(item, "trigger_name", ""), graph_url)
+        else:
+            self.logger.info("Redmine graph link not found: trigger=%s meta=%s", getattr(item, "trigger_name", ""), meta)
+
+        self._load_next_redmine_graph_lookup()
 
     def open_redmine_for_selected_row(self):
         items = self._choose_redmine_items_for_selection()
@@ -937,6 +1095,9 @@ class LiveZabbixMonitorWidget(QWidget):
             QMessageBox.information(self, "Redmine", "Выберите одну или несколько строк проблемы в Live Zabbix Monitor.")
             return
 
+        self._enrich_redmine_graph_links(items, self._open_redmine_after_graph_lookup)
+
+    def _open_redmine_after_graph_lookup(self, items):
         redmine_url, warning = self._build_redmine_open_url(items)
         if not redmine_url:
             QMessageBox.warning(self, "Redmine", warning or "Не удалось собрать ссылку Redmine.")
@@ -1021,6 +1182,7 @@ class LiveZabbixMonitorWidget(QWidget):
 
     def cleanup(self):
         self.stop_monitor()
+        self._cleanup_redmine_graph_lookup_view()
         if self.view is not None:
             safe_delete_web_view(self.view, logger=self.logger, context="LiveZabbixMonitorWidget", load_handler=self._on_loaded)
             self._load_finished_connected = False
