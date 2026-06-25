@@ -862,22 +862,9 @@ class LiveZabbixMonitorWidget(QWidget):
                 return str(url or "")
         return ""
 
-    def _redmine_description(self, items):
-        items = self._unique_live_items(items)
-        hosts = self._unique_text_values(getattr(item, "host", "") for item in items)
-        host_text = hosts[0] if len(hosts) == 1 else "несколько узлов"
-
-        ips = self._unique_text_values(getattr(item, "host_ip", "") for item in items)
-        ip_text = ips[0] if len(ips) == 1 else (", ".join(ips) if ips else "не определён")
-
-        lines = [
-            f"Узел: {host_text}",
-            f"IP: {ip_text}",
-            "",
-            "Триггеры:",
-        ]
-
-        for index, item in enumerate(items, start=1):
+    def _redmine_trigger_description_lines(self, items):
+        lines = []
+        for index, item in enumerate(items or [], start=1):
             trigger_name = str(getattr(item, "trigger_name", "") or "Проблема Zabbix").strip()
             lines.append(f"{index}. {trigger_name}")
 
@@ -887,8 +874,63 @@ class LiveZabbixMonitorWidget(QWidget):
             else:
                 lines.append("Ссылка на график: не найдена")
 
+        return lines
+
+    def _redmine_group_items_by_host(self, items):
+        grouped = []
+        index_by_host = {}
+
+        for item in items or []:
+            host = str(getattr(item, "host", "") or "узел не определён").strip() or "узел не определён"
+            host_key = host.casefold()
+
+            if host_key not in index_by_host:
+                index_by_host[host_key] = len(grouped)
+                grouped.append((host, []))
+
+            grouped[index_by_host[host_key]][1].append(item)
+
+        return grouped
+
+    def _redmine_ip_text_for_items(self, items):
+        ips = self._unique_text_values(getattr(item, "host_ip", "") for item in items or [])
+        if len(ips) == 1:
+            return ips[0]
+        if ips:
+            return ", ".join(ips)
+        return "не определён"
+
+    def _redmine_description(self, items):
+        items = self._unique_live_items(items)
+        grouped_hosts = self._redmine_group_items_by_host(items)
+
+        if len(grouped_hosts) <= 1:
+            host_text = grouped_hosts[0][0] if grouped_hosts else "узел не определён"
+            ip_text = self._redmine_ip_text_for_items(items)
+
+            lines = [
+                f"Узел: {host_text}",
+                f"IP: {ip_text}",
+                "",
+                "Триггеры:",
+            ]
+
+            lines.extend(self._redmine_trigger_description_lines(items))
+            lines.append("")
+            lines.append("Просьба проверить.")
+            return "\n".join(lines).strip()
+
+        lines = []
+        for host_index, (host, host_items) in enumerate(grouped_hosts, start=1):
+            ip_text = self._redmine_ip_text_for_items(host_items)
+
+            lines.append(f"{host_index}. Узел: {host}")
+            lines.append(f"IP: {ip_text}")
+            lines.append("Триггеры:")
+            lines.extend(self._redmine_trigger_description_lines(host_items))
             lines.append("")
 
+        lines.append("Просьба проверить.")
         return "\n".join(lines).strip()
 
     def _combined_graph_urls(self, items):
