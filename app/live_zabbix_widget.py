@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import json
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLineEdit,
     QMessageBox,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -189,24 +190,34 @@ class LiveZabbixMonitorWidget(QWidget):
         self.table.setObjectName("LiveZabbixProblemsTable")
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(True)
+        self.table.setWordWrap(False)
+        self.table.verticalHeader().setVisible(False)
         self.table.setStyleSheet(
             """
             QTableWidget#LiveZabbixProblemsTable {
-                font-size: 10px;
-                gridline-color: rgba(128, 128, 128, 90);
-            }
-            QTableWidget#LiveZabbixProblemsTable::item {
-                padding: 1px 3px;
+                font-size: 11px;
+                border: 1px solid rgba(120, 150, 170, 80);
+                border-radius: 8px;
+                gridline-color: rgba(120, 150, 170, 42);
+                selection-background-color: palette(highlight);
+                selection-color: palette(highlighted-text);
+                outline: 0;
             }
             QHeaderView::section {
-                font-size: 10px;
-                padding: 2px 4px;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 6px 8px;
+                border: 0;
+                border-bottom: 1px solid rgba(120, 150, 170, 95);
             }
             """
         )
-        self.table.verticalHeader().setDefaultSectionSize(24)
-        self.table.verticalHeader().setMinimumSectionSize(18)
-        self.table.cellClicked.connect(self._on_table_cell_clicked)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.verticalHeader().setMinimumSectionSize(28)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
         self._configure_table_columns()
         root.addWidget(self.table, stretch=1)
 
@@ -214,7 +225,7 @@ class LiveZabbixMonitorWidget(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
-        defaults = [105, 82, 42, 145, 460, 76, 86, 120, 130]
+        defaults = [105, 110, 42, 145, 460, 76, 86, 120, 130]
         widths = self.settings.get("table_column_widths") or defaults
         self._restoring_column_widths = True
         for index, width in enumerate(defaults):
@@ -646,27 +657,148 @@ class LiveZabbixMonitorWidget(QWidget):
         if status_text:
             self.poll_status_label.setText(status_text)
 
-    def _clickable_cell_foreground(self) -> QColor:
+    def _is_light_theme(self) -> bool:
         theme_name = str((self.config.get("settings", {}) if isinstance(self.config, dict) else {}).get("theme") or "").casefold()
         light_themes = {"white_1", "light_standard"}
-        if theme_name in light_themes or theme_name.startswith("white") or "light" in theme_name or "свет" in theme_name:
-            return QColor("#000000")
-        return QColor("#ffffff")
+        return theme_name in light_themes or theme_name.startswith("white") or "light" in theme_name or "свет" in theme_name
+
+    def _clickable_cell_foreground(self) -> QColor:
+        return QColor("#000000") if self._is_light_theme() else QColor("#ffffff")
+
+    @staticmethod
+    def _month_name_ru(month_number):
+        months = (
+            "Январь",
+            "Февраль",
+            "Март",
+            "Апрель",
+            "Май",
+            "Июнь",
+            "Июль",
+            "Август",
+            "Сентябрь",
+            "Октябрь",
+            "Ноябрь",
+            "Декабрь",
+        )
+        try:
+            index = int(month_number) - 1
+        except (TypeError, ValueError):
+            return ""
+        if 0 <= index < len(months):
+            return months[index]
+        return ""
+
+    @staticmethod
+    def _parse_zabbix_started_at(value):
+        value = str(value or "").strip()
+        if not value:
+            return None
+
+        for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%y %H:%M:%S", "%d.%m.%y %H:%M"):
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                pass
+
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                parsed = datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+
+            now = datetime.now()
+            return now.replace(hour=parsed.hour, minute=parsed.minute, second=parsed.second, microsecond=0)
+
+        return None
+
+    def _timeline_separator_labels_for_item(self, item, state):
+        started_at = str(getattr(item, "started_at", "") or "").strip()
+        started_dt = self._parse_zabbix_started_at(started_at)
+        if started_dt is None:
+            return []
+
+        today = datetime.now().date()
+        yesterday = today - timedelta(days=1)
+        item_date = started_dt.date()
+        labels = []
+
+        if item_date == today:
+            if state.get("day") != item_date:
+                labels.append("Сегодня")
+                state["day"] = item_date
+                state["month"] = None
+                state["hour"] = None
+
+            hour_key = (item_date, started_dt.hour)
+            if state.get("hour") != hour_key:
+                labels.append(f"{started_dt.hour:02d}:00")
+                state["hour"] = hour_key
+
+            return labels
+
+        if item_date == yesterday:
+            if state.get("day") != item_date:
+                labels.append("Вчера")
+                state["day"] = item_date
+                state["month"] = None
+                state["hour"] = None
+            return labels
+
+        month_key = (item_date.year, item_date.month)
+        if state.get("month") != month_key:
+            month_label = self._month_name_ru(item_date.month)
+            if month_label:
+                labels.append(month_label)
+            state["month"] = month_key
+            state["day"] = None
+            state["hour"] = None
+
+        if state.get("day") != item_date:
+            labels.append(started_dt.strftime("%d.%m.%Y"))
+            state["day"] = item_date
+            state["hour"] = None
+
+        return labels
+
+    def _append_timeline_separator_row(self, row, text):
+        label = QTableWidgetItem(str(text or ""))
+        label.setTextAlignment(Qt.AlignCenter)
+        label.setFlags(Qt.ItemFlag.ItemIsEnabled)
+
+        font = label.font()
+        font.setBold(True)
+        font.setPointSize(max(font.pointSize(), 11))
+        label.setFont(font)
+
+        if self._is_light_theme():
+            bg = QColor("#dfeef6")
+            fg = QColor("#1f3440")
+        else:
+            bg = QColor("#163142")
+            fg = QColor("#e1f0f6")
+
+        label.setBackground(bg)
+        label.setForeground(fg)
+
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, label)
+        self.table.setSpan(row, 0, 1, self.table.columnCount())
+        self.table.setRowHeight(row, 30)
 
     def _render(self, diff, payload=None):
         all_items = diff.new + diff.active + diff.resolved + diff.processed
-        separator_rows = [row for row in self.last_separator_rows if str(row.get("text") or "").strip()]
-        self.table.setRowCount(len(all_items) + len(separator_rows))
+        self.table.setRowCount(0)
+
         table_row = 0
-        for separator in separator_rows:
-            label = QTableWidgetItem(str(separator.get("text") or ""))
-            label.setTextAlignment(Qt.AlignCenter)
-            label.setBackground(QColor("#263238"))
-            self.table.setItem(table_row, 0, label)
-            self.table.setSpan(table_row, 0, 1, self.table.columnCount())
-            table_row += 1
+        separator_state = {}
+
         for item in all_items:
-            row = table_row
+            for separator_label in self._timeline_separator_labels_for_item(item, separator_state):
+                self._append_timeline_separator_row(table_row, separator_label)
+                table_row += 1
+
+            self.table.insertRow(table_row)
             values = [
                 item.started_at,
                 item.severity,
@@ -675,42 +807,56 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.trigger_name,
                 item.duration,
                 item.ack_text or ("Да" if item.acknowledged else "Нет"),
-                item.actions_text,
+                item.actions_text or "—",
                 item.tags,
             ]
+
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value or ""))
                 cell.setData(Qt.UserRole + 1, item.key)
+
+                if column in {0, 1, 2, 5, 6}:
+                    cell.setTextAlignment(Qt.AlignCenter)
+
                 if column == 1:
                     color = self._severity_color(item.severity_level, item.severity_class, item.severity)
                     if color:
                         cell.setBackground(QColor(color))
-                    cell.setForeground(QColor("#000000"))
+                        cell.setForeground(QColor("#000000"))
+
                 if column == 6 and (item.ack_url or item.problem_url):
                     cell.setForeground(self._clickable_cell_foreground())
-                    font = cell.font()
-                    font.setUnderline(True)
-                    cell.setFont(font)
-                    cell.setToolTip("Открыть подтверждение Zabbix")
+                    cell.setToolTip("Правый клик: открыть подтверждение Zabbix")
                     cell.setData(Qt.UserRole, item.ack_url or item.problem_url)
+
+                if column == 6:
+                    ack_text = str(value or "").strip().casefold()
+                    if ack_text in {"да", "yes"}:
+                        cell.setForeground(QColor("#2e7d32"))
+                    elif ack_text in {"нет", "no"}:
+                        cell.setForeground(QColor("#c62828"))
+
                 if column == 3 and item.host_url:
                     cell.setForeground(self._clickable_cell_foreground())
-                    font = cell.font()
-                    font.setUnderline(True)
-                    cell.setFont(font)
-                    cell.setToolTip("Открыть узел")
+                    cell.setToolTip("Правый клик: открыть узел в Zabbix")
                     cell.setData(Qt.UserRole, item.host_url)
+
                 if column == 4 and (item.graph_urls or item.problem_url):
                     cell.setForeground(self._clickable_cell_foreground())
-                    font = cell.font()
-                    font.setUnderline(True)
-                    cell.setFont(font)
-                    cell.setToolTip("Открыть график/проблему")
+                    cell.setToolTip("Правый клик: открыть график/проблему")
                     cell.setData(Qt.UserRole, {"graph_urls": list(item.graph_urls), "problem_url": item.problem_url})
+
+                if column == 7 and str(value or "").strip() == "—":
+                    cell.setTextAlignment(Qt.AlignCenter)
+                    cell.setForeground(QColor("#8b9aa5"))
+
                 if column == 7 and item.actions_tooltip:
                     cell.setToolTip(item.actions_tooltip)
-                self.table.setItem(row, column, cell)
+
+                self.table.setItem(table_row, column, cell)
+
             table_row += 1
+
         self.counts_label.setText(f"Новые: {len(diff.new)} | Активные: {len(diff.active)} | Решённые: {len(diff.resolved)} | Обработанные: {len(diff.processed)} | Всего: {self.last_filter_counts.get('raw', len(all_items))} | Показано: {self.last_filter_counts.get('visible', len(all_items))} | Скрыто фильтром: {self.last_filter_counts.get('hidden', 0)}")
         self.updated_label.setText("Последнее обновление: " + datetime.now().strftime("%H:%M:%S"))
         if all_items:
@@ -726,18 +872,21 @@ class LiveZabbixMonitorWidget(QWidget):
     @staticmethod
     def _severity_color(level, severity_class="", severity_text=""):
         key = " ".join([str(level or ""), str(severity_class or ""), str(severity_text or "")]).casefold()
+
+        # Цвета важности должны оставаться независимыми от темы приложения:
+        # это смысловая индикация Zabbix, а не декоративный стиль таблицы.
         if "disaster" in key or "чрезвычай" in key:
             return "#e45959"
         if "high" in key or "высок" in key:
-            return "#ff8a65"
+            return "#e97659"
         if "average" in key or "средн" in key:
-            return "#ffb74d"
+            return "#ffa059"
         if "warning" in key or "предупр" in key:
-            return "#ffd54f"
+            return "#ffc859"
         if "info" in key or "информ" in key:
-            return "#64b5f6"
+            return "#7499ff"
         if "na-bg" in key or "not_classified" in key or "не классиф" in key:
-            return "#b0bec5"
+            return "#97aab3"
         return ""
 
     class _SafeTemplateValues(dict):
@@ -1596,30 +1745,80 @@ class LiveZabbixMonitorWidget(QWidget):
         if dialog in self.ack_dialogs:
             self.ack_dialogs.remove(dialog)
 
-    def _on_table_cell_clicked(self, row, column):
-        item = self.table.item(row, column)
-        payload = item.data(Qt.UserRole) if item is not None else ""
+    def _select_table_row_for_context_menu(self, row):
+        if row < 0:
+            return
+
+        selected_rows = {index.row() for index in self.table.selectionModel().selectedRows()}
+        if not selected_rows:
+            selected_rows = {index.row() for index in self.table.selectedIndexes()}
+
+        # Правый клик по уже выделенной строке не должен сбрасывать
+        # множественное выделение. Это важно для создания Redmine
+        # по нескольким выбранным проблемам.
+        if row in selected_rows:
+            self.table.setFocus()
+            return
+
+        self.table.clearSelection()
+        self.table.selectRow(row)
+        self.table.setFocus()
+
+    def _show_table_context_menu(self, position):
+        item = self.table.itemAt(position)
+        if item is None:
+            return
+
+        row = item.row()
+        column = item.column()
+        key = item.data(Qt.UserRole + 1)
+        if not key:
+            return
+
+        self._select_table_row_for_context_menu(row)
+
+        payload = item.data(Qt.UserRole)
+        menu = QMenu(self)
+
         if column == 3:
             if payload:
-                if QMessageBox.question(self, "Zabbix", "Открыть узел сети в Zabbix?", QMessageBox.Open | QMessageBox.Cancel) == QMessageBox.Open:
-                    QDesktopServices.openUrl(QUrl(str(payload)))
+                action = menu.addAction("Открыть узел сети в Zabbix")
+                action.triggered.connect(lambda _checked=False, url=str(payload): QDesktopServices.openUrl(QUrl(url)))
             else:
-                QMessageBox.information(self, "Zabbix", "Ссылка на узел не найдена.")
-            return
-        if column == 4:
+                action = menu.addAction("Ссылка на узел не найдена")
+                action.setEnabled(False)
+
+        elif column == 4:
             graph_urls = payload.get("graph_urls", []) if isinstance(payload, dict) else []
             problem_url = payload.get("problem_url", "") if isinstance(payload, dict) else ""
+
             if graph_urls:
-                if QMessageBox.question(self, "Zabbix", "Открыть график проблемы?", QMessageBox.Open | QMessageBox.Cancel) == QMessageBox.Open:
-                    self.open_graphs(graph_urls)
-            elif problem_url:
-                if QMessageBox.question(self, "Zabbix", "Открыть проблему в Zabbix?", QMessageBox.Open | QMessageBox.Cancel) == QMessageBox.Open:
-                    QDesktopServices.openUrl(QUrl(str(problem_url)))
+                action = menu.addAction("Открыть график проблемы")
+                action.triggered.connect(lambda _checked=False, urls=list(graph_urls): self.open_graphs(urls))
+
+            if problem_url:
+                action = menu.addAction("Открыть проблему в Zabbix")
+                action.triggered.connect(lambda _checked=False, url=str(problem_url): QDesktopServices.openUrl(QUrl(url)))
+
+            if not graph_urls and not problem_url:
+                action = menu.addAction("Ссылка на график/проблему не найдена")
+                action.setEnabled(False)
+
+        elif column == 6:
+            if payload:
+                action = menu.addAction("Открыть подтверждение Zabbix")
+                action.triggered.connect(lambda _checked=False, url=str(payload): self.open_acknowledgement(url))
             else:
-                QMessageBox.information(self, "Zabbix", "Ссылка на график/проблему не найдена.")
-            return
-        if column == 6 and payload:
-            self.open_acknowledgement(payload)
+                action = menu.addAction("Ссылка на подтверждение не найдена")
+                action.setEnabled(False)
+
+        if menu.actions():
+            menu.addSeparator()
+
+        redmine_action = menu.addAction("Создать Redmine по выбранным строкам")
+        redmine_action.triggered.connect(self.open_redmine_for_selected_row)
+
+        menu.exec(self.table.viewport().mapToGlobal(position))
 
     def open_graphs(self, urls):
         for url in urls or []:
