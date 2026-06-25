@@ -127,25 +127,41 @@ class LiveZabbixMonitorWidget(QWidget):
     def _build_ui(self):
         root = QVBoxLayout(self)
 
-        settings_form = QFormLayout()
+        # Служебные настройки Live Zabbix остаются в виджете для совместимости,
+        # но обычному пользователю не показываются. Управление ими вынесено в
+        # запароленный раздел “Режим разработчика”.
         self.url_input = QLineEdit(self.problems_url())
         self.url_input.setPlaceholderText("https://zabbix.example/zabbix.php?action=problem.view")
+        self.url_input.setVisible(False)
+
         self.interval_input = QSpinBox()
-        self.interval_input.setRange(5, 15)
-        self.interval_input.setValue(int(self.settings.get("poll_interval_seconds", 10)))
+        self.interval_input.setRange(60, 3600)
+        poll_interval = int(self.settings.get("poll_interval_seconds", 60) or 60)
+        poll_interval = max(60, poll_interval)
+        self.interval_input.setValue(poll_interval)
+        self.interval_input.setVisible(False)
+        self.settings["poll_interval_seconds"] = poll_interval
+
         self.zabbix_profile_combo = QComboBox()
         self._populate_profile_combo()
-        settings_form.addRow("URL Zabbix Problems:", self.url_input)
-        settings_form.addRow("Интервал опроса:", self.interval_input)
-        settings_form.addRow("WebEngine profile:", self.zabbix_profile_combo)
-        root.addLayout(settings_form)
+        profile_index = self.zabbix_profile_combo.findData(self.settings.get("zabbix_profile_id", "zbx_product_1"))
+        if profile_index < 0:
+            profile_index = self.zabbix_profile_combo.findData("zbx_product_1")
+        if profile_index >= 0:
+            self.zabbix_profile_combo.setCurrentIndex(profile_index)
+        self.zabbix_profile_combo.setVisible(False)
+
+        self.show_developer_tools = bool(
+            self.settings.get("show_developer_tools", False)
+            or self.settings.get("show_live_zabbix_diagnostics", False)
+        )
 
         controls = QHBoxLayout()
         self.start_button = QPushButton("Старт")
         self.stop_button = QPushButton("Стоп")
         self.check_dom_button = QPushButton("Проверить DOM")
         self.save_button = QPushButton("Сохранить")
-        self.open_url_button = QPushButton("Открыть URL в браузере")
+        self.open_url_button = QPushButton("Открыть Zabbix")
         self.show_webview_button = QPushButton("Показать WebView")
         self.open_redmine_button = QPushButton("Открыть Redmine")
         self.poll_status_label = QLabel("Остановлен")
@@ -161,8 +177,27 @@ class LiveZabbixMonitorWidget(QWidget):
         self.open_url_button.clicked.connect(self.open_configured_url)
         self.show_webview_button.clicked.connect(self.show_webview)
         self.open_redmine_button.clicked.connect(self.open_redmine_for_selected_row)
-        for widget in [self.start_button, self.stop_button, self.check_dom_button, self.save_button, self.open_url_button, self.show_webview_button, self.open_redmine_button, self.duty_filter_checkbox, self.poll_status_label, self.updated_label]:
+        normal_controls = [
+            self.start_button,
+            self.stop_button,
+            self.open_url_button,
+            self.open_redmine_button,
+            self.duty_filter_checkbox,
+            self.poll_status_label,
+            self.updated_label,
+        ]
+        developer_controls = [
+            self.save_button,
+            self.check_dom_button,
+            self.show_webview_button,
+        ]
+
+        for widget in normal_controls:
             controls.addWidget(widget)
+
+        if self.show_developer_tools:
+            for widget in developer_controls:
+                controls.addWidget(widget)
         controls.addStretch()
         controls.addWidget(self.counts_label)
         root.addLayout(controls)
@@ -171,8 +206,11 @@ class LiveZabbixMonitorWidget(QWidget):
         self.diagnostics_text.setReadOnly(True)
         self.diagnostics_text.setMaximumHeight(220)
         self.diagnostics_text.setPlaceholderText("Диагностика DOM")
-        root.addWidget(QLabel("Диагностика DOM"))
+        self.diagnostics_label = QLabel("Диагностика DOM")
+        root.addWidget(self.diagnostics_label)
         root.addWidget(self.diagnostics_text)
+        self.diagnostics_label.setVisible(self.show_developer_tools)
+        self.diagnostics_text.setVisible(self.show_developer_tools)
 
         self.table_columns = [
             "Время",
@@ -386,7 +424,7 @@ class LiveZabbixMonitorWidget(QWidget):
             self.view.loadFinished.connect(self._on_loaded)
             self._load_finished_connected = True
         self.view.load(QUrl(url))
-        self.timer.start(int(self.settings.get("poll_interval_seconds", 10)) * 1000)
+        self.timer.start(int(self.settings.get("poll_interval_seconds", 60)) * 1000)
 
     def stop_monitor(self):
         self.timer.stop()
