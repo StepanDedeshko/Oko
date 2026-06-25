@@ -1,4 +1,6 @@
 
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -133,6 +135,155 @@ def request_application_restart(parent=None, reason=None):
 # Старое имя оставлено для совместимости с уже написанными вызовами.
 def ask_restart_required(parent=None, reason=None):
     return request_application_restart(parent=parent, reason=reason)
+
+
+DEVELOPER_PASSWORD_HASH_KEY = "developer_mode_password_hash"
+DEVELOPER_PASSWORD_SALT_KEY = "developer_mode_password_salt"
+
+
+def _developer_password_digest(password, salt_hex):
+    password_bytes = str(password or "").encode("utf-8")
+    try:
+        salt = bytes.fromhex(str(salt_hex or ""))
+    except ValueError:
+        salt = b""
+
+    if not salt:
+        salt = os.urandom(16)
+
+    digest = hashlib.pbkdf2_hmac("sha256", password_bytes, salt, 120_000)
+    return salt.hex(), digest.hex()
+
+
+def _verify_developer_password(password, salt_hex, expected_digest):
+    if not expected_digest:
+        return False
+
+    _salt, digest = _developer_password_digest(password, salt_hex)
+    return hmac.compare_digest(str(digest), str(expected_digest))
+
+
+class DeveloperModeGateWidget(QWidget):
+    """
+    Локальная защита режима разработчика.
+
+    Пароль не хранится в открытом виде: в config сохраняются salt + PBKDF2 hash.
+    Это защита от случайного входа обычного пользователя в технические настройки.
+    """
+
+    def __init__(self, config, protected_widget, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.protected_widget = protected_widget
+
+        root = QVBoxLayout(self)
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack)
+
+        self.login_page = QWidget()
+        login_layout = QVBoxLayout(self.login_page)
+        login_layout.setContentsMargins(16, 16, 16, 16)
+        login_layout.setSpacing(10)
+
+        self.title_label = QLabel("Режим разработчика")
+        self.title_label.setObjectName("PageTitle")
+        self.hint_label = QLabel()
+        self.hint_label.setWordWrap(True)
+
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setPlaceholderText("Пароль режима разработчика")
+        self.password_input.returnPressed.connect(self._submit_password)
+
+        self.submit_button = QPushButton()
+        self.submit_button.clicked.connect(self._submit_password)
+
+        login_layout.addWidget(self.title_label)
+        login_layout.addWidget(self.hint_label)
+        login_layout.addWidget(self.password_input)
+        login_layout.addWidget(self.submit_button)
+        login_layout.addStretch(1)
+
+        self.unlocked_page = QWidget()
+        unlocked_layout = QVBoxLayout(self.unlocked_page)
+        unlocked_layout.setContentsMargins(0, 0, 0, 0)
+
+        top = QHBoxLayout()
+        unlocked_title = QLabel("Режим разработчика открыт")
+        unlocked_title.setObjectName("PageTitle")
+        lock_button = QPushButton("Заблокировать")
+        lock_button.clicked.connect(self._lock)
+        top.addWidget(unlocked_title)
+        top.addStretch(1)
+        top.addWidget(lock_button)
+
+        unlocked_layout.addLayout(top)
+        unlocked_layout.addWidget(self.protected_widget, stretch=1)
+
+        self.stack.addWidget(self.login_page)
+        self.stack.addWidget(self.unlocked_page)
+
+        self._refresh_login_text()
+        self._lock()
+
+    def _settings(self):
+        return self.config.setdefault("settings", {})
+
+    def _has_password(self):
+        settings = self._settings()
+        return bool(settings.get(DEVELOPER_PASSWORD_HASH_KEY) and settings.get(DEVELOPER_PASSWORD_SALT_KEY))
+
+    def _refresh_login_text(self):
+        if self._has_password():
+            self.hint_label.setText(
+                "Введите пароль, чтобы открыть диагностику и технические настройки. "
+                "Обычному пользователю этот раздел не нужен."
+            )
+            self.submit_button.setText("Войти")
+        else:
+            self.hint_label.setText(
+                "Пароль режима разработчика ещё не создан. "
+                "Введите новый пароль, чтобы защитить технические настройки."
+            )
+            self.submit_button.setText("Создать пароль и войти")
+
+    def _submit_password(self):
+        password = self.password_input.text()
+
+        if len(password) < 4:
+            QMessageBox.warning(self, "Режим разработчика", "Пароль должен быть не короче 4 символов.")
+            return
+
+        settings = self._settings()
+
+        if not self._has_password():
+            salt_hex, digest = _developer_password_digest(password, "")
+            settings[DEVELOPER_PASSWORD_SALT_KEY] = salt_hex
+            settings[DEVELOPER_PASSWORD_HASH_KEY] = digest
+            save_config(self.config)
+            QMessageBox.information(self, "Режим разработчика", "Пароль режима разработчика создан.")
+            self._unlock()
+            return
+
+        if _verify_developer_password(
+            password,
+            settings.get(DEVELOPER_PASSWORD_SALT_KEY, ""),
+            settings.get(DEVELOPER_PASSWORD_HASH_KEY, ""),
+        ):
+            self._unlock()
+            return
+
+        QMessageBox.warning(self, "Режим разработчика", "Неверный пароль.")
+
+    def _unlock(self):
+        self.password_input.clear()
+        self.stack.setCurrentWidget(self.unlocked_page)
+
+    def _lock(self):
+        self._refresh_login_text()
+        self.password_input.clear()
+        self.stack.setCurrentWidget(self.login_page)
+        self.password_input.setFocus()
 
 
 
@@ -1451,7 +1602,7 @@ class AppSettingsWidget(QWidget):
         self.add_section("Заметки", NotesWidget(self.config))
         self.update_widget = UpdateWidget(self.config, request_application_restart, show_title=False)
         self.add_section("Обновление", self.update_widget)
-        self.add_section("Режим разработчика", DiagnosticsWidget(self.config))
+        self.add_section("Режим разработчика", DeveloperModeGateWidget(self.config, DiagnosticsWidget(self.config)))
 
         self.open_section("Продукты и страницы")
 
