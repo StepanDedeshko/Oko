@@ -807,7 +807,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.trigger_name,
                 item.duration,
                 item.ack_text or ("Да" if item.acknowledged else "Нет"),
-                item.actions_text,
+                item.actions_text or "—",
                 item.tags,
             ]
 
@@ -815,8 +815,10 @@ class LiveZabbixMonitorWidget(QWidget):
                 cell = QTableWidgetItem(str(value or ""))
                 cell.setData(Qt.UserRole + 1, item.key)
 
-                if column == 1:
+                if column in {0, 1, 2, 5, 6}:
                     cell.setTextAlignment(Qt.AlignCenter)
+
+                if column == 1:
                     color = self._severity_color(item.severity_level, item.severity_class, item.severity)
                     if color:
                         cell.setBackground(QColor(color))
@@ -827,6 +829,13 @@ class LiveZabbixMonitorWidget(QWidget):
                     cell.setToolTip("Правый клик: открыть подтверждение Zabbix")
                     cell.setData(Qt.UserRole, item.ack_url or item.problem_url)
 
+                if column == 6:
+                    ack_text = str(value or "").strip().casefold()
+                    if ack_text in {"да", "yes"}:
+                        cell.setForeground(QColor("#2e7d32"))
+                    elif ack_text in {"нет", "no"}:
+                        cell.setForeground(QColor("#c62828"))
+
                 if column == 3 and item.host_url:
                     cell.setForeground(self._clickable_cell_foreground())
                     cell.setToolTip("Правый клик: открыть узел в Zabbix")
@@ -836,6 +845,10 @@ class LiveZabbixMonitorWidget(QWidget):
                     cell.setForeground(self._clickable_cell_foreground())
                     cell.setToolTip("Правый клик: открыть график/проблему")
                     cell.setData(Qt.UserRole, {"graph_urls": list(item.graph_urls), "problem_url": item.problem_url})
+
+                if column == 7 and str(value or "").strip() == "—":
+                    cell.setTextAlignment(Qt.AlignCenter)
+                    cell.setForeground(QColor("#8b9aa5"))
 
                 if column == 7 and item.actions_tooltip:
                     cell.setToolTip(item.actions_tooltip)
