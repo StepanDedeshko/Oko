@@ -658,6 +658,7 @@ class LiveZabbixMonitorWidget(QWidget):
                     color = self._severity_color(item.severity_level, item.severity_class, item.severity)
                     if color:
                         cell.setBackground(QColor(color))
+                    cell.setForeground(QColor("#000000"))
                 if column == 6 and (item.ack_url or item.problem_url):
                     cell.setForeground(QColor("#64b5f6"))
                     font = cell.font()

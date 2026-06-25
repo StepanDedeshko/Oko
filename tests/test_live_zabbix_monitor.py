@@ -198,6 +198,7 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
             "average",
             "warning",
             "not_classified",
+            'cell.setForeground(QColor("#000000"))',
             "Открыть подтверждение Zabbix",
             "Открыть узел сети в Zabbix",
             "Открыть график проблемы",
@@ -216,6 +217,17 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
         self.assertNotIn('"Графики",', source)
         self.assertNotIn('"Обработано",', source)
         self.assertNotIn("Создать Redmine", source)
+
+
+    def test_severity_cells_force_dark_foreground_for_dark_theme_readability(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        severity_block_start = source.index("if column == 1:")
+        severity_block_end = source.index("if column == 6", severity_block_start)
+        severity_block = source[severity_block_start:severity_block_end]
+        self.assertIn('cell.setForeground(QColor("#000000"))', severity_block)
+        self.assertIn("cell.setBackground(QColor(color))", severity_block)
+        self.assertNotIn("QApplication.palette", severity_block)
+        self.assertNotIn("palette().text", severity_block)
 
 class LiveZabbixMonitorAcknowledgeDetectionTests(unittest.TestCase):
     def test_ack_detection_is_exact_and_does_not_match_unacknowledged(self):
