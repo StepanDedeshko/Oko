@@ -43,6 +43,13 @@ WEBENGINE_JS_ERROR_MESSAGE = "Ошибка диагностики WebEngine: JS 
 JS_EMPTY_STRING_ERROR_MESSAGE = "Ошибка JS диагностики: runJavaScript вернул пустую строку. DOM-парсер не запускался корректно."
 ZERO_PROBLEMS_MESSAGE = "Страница загружена, но проблемы не найдены. Возможные причины: страница логина, таблица ещё не загрузилась, DOM Zabbix не распознан."
 ACKNOWLEDGE_PAGE_MESSAGE = "Открыта форма подтверждения Zabbix. Мониторинг страницы Problems не выполняется в этом WebView."
+REDMINE_WATCHER_USER_IDS = (
+    "10", "18", "24", "770", "882", "915", "916", "971", "976", "977",
+    "994", "1010", "1110", "1112", "1192", "1221", "1225", "1226",
+    "1235", "1264", "122", "973", "984", "1012", "1121", "1157",
+    "1162", "1165", "1190", "1198", "1204", "1216", "1253", "1261",
+    "1269",
+)
 
 
 class ZabbixAcknowledgeDialog(QDialog):
@@ -104,6 +111,10 @@ class LiveZabbixMonitorWidget(QWidget):
         self._redmine_graph_lookup_queue = []
         self._redmine_graph_lookup_items = []
         self._redmine_graph_lookup_callback = None
+        self._redmine_ip_lookup_queue = []
+        self._redmine_ip_lookup_items = []
+        self._redmine_ip_lookup_callback = None
+        self._redmine_ip_lookup_total = 0
         self.last_separator_rows = []
         self._parse_attempts = []
         self.timer = QTimer(self)
@@ -856,9 +867,12 @@ class LiveZabbixMonitorWidget(QWidget):
         hosts = self._unique_text_values(getattr(item, "host", "") for item in items)
         host_text = hosts[0] if len(hosts) == 1 else "несколько узлов"
 
+        ips = self._unique_text_values(getattr(item, "host_ip", "") for item in items)
+        ip_text = ips[0] if len(ips) == 1 else (", ".join(ips) if ips else "не определён")
+
         lines = [
             f"Узел: {host_text}",
-            "IP: не определён",
+            f"IP: {ip_text}",
             "",
             "Триггеры:",
         ]
@@ -890,6 +904,20 @@ class LiveZabbixMonitorWidget(QWidget):
         return urls
 
     @staticmethod
+    def _append_redmine_param_pairs(result_pairs, key, value):
+        if value is None or value == "":
+            return
+
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                if item is None or item == "":
+                    continue
+                result_pairs.append((key, str(item)))
+            return
+
+        result_pairs.append((key, str(value)))
+
+    @staticmethod
     def _merge_redmine_url_params(base_url, dynamic_params, default_params=None):
         parsed = urlparse(str(base_url or ""))
         existing_pairs = parse_qsl(parsed.query, keep_blank_values=True)
@@ -904,12 +932,11 @@ class LiveZabbixMonitorWidget(QWidget):
                 result_pairs.append((key, value))
 
         for key, value in default_params.items():
-            if value not in (None, "") and key not in existing_keys and key not in dynamic_keys:
-                result_pairs.append((key, str(value)))
+            if key not in existing_keys and key not in dynamic_keys:
+                LiveZabbixMonitorWidget._append_redmine_param_pairs(result_pairs, key, value)
 
         for key, value in dynamic_params.items():
-            if value not in (None, ""):
-                result_pairs.append((key, str(value)))
+            LiveZabbixMonitorWidget._append_redmine_param_pairs(result_pairs, key, value)
 
         query = urlencode(result_pairs, doseq=True)
         return urlunparse(parsed._replace(query=query))
@@ -933,6 +960,7 @@ class LiveZabbixMonitorWidget(QWidget):
             "issue[tracker_id]": str(template.get("tracker_id") or "32"),
             "issue[assigned_to_id]": str(template.get("assigned_to_id") or "1121"),
             "issue[custom_field_values][94]": str(template.get("custom_field_94") or "Применим"),
+            "issue[watcher_user_ids][]": REDMINE_WATCHER_USER_IDS,
         }
 
         if template.get("priority_id"):
@@ -1089,6 +1117,395 @@ class LiveZabbixMonitorWidget(QWidget):
 
         self._load_next_redmine_graph_lookup()
 
+    def _item_has_redmine_ip(self, item):
+        return bool(str(getattr(item, "host_ip", "") or "").strip())
+
+    def _items_need_ip_lookup(self, items):
+        result = []
+        seen_hosts = set()
+        for item in items or []:
+            if self._item_has_redmine_ip(item):
+                continue
+            host = str(getattr(item, "host", "") or "").strip()
+            if not host:
+                continue
+            host_key = host.casefold()
+            if host_key in seen_hosts:
+                continue
+            seen_hosts.add(host_key)
+            result.append(item)
+        return result
+
+    def _apply_redmine_host_ip(self, source_item, ip):
+        ip_text = str(ip or "").strip()
+        if not ip_text:
+            return
+
+        host_key = str(getattr(source_item, "host", "") or "").strip().casefold()
+        if not host_key:
+            return
+
+        for item in self._redmine_ip_lookup_items or []:
+            if str(getattr(item, "host", "") or "").strip().casefold() == host_key:
+                item.host_ip = ip_text
+
+    def _enrich_redmine_host_ips(self, items, callback):
+        items = self._unique_live_items(items)
+        queue = self._items_need_ip_lookup(items)
+        if not queue:
+            callback(items)
+            return
+
+        self._redmine_ip_lookup_items = items
+        self._redmine_ip_lookup_queue = list(queue)
+        self._redmine_ip_lookup_callback = callback
+        self._redmine_ip_lookup_total = len(queue)
+        self.poll_status_label.setText(f"Ищу IP узлов: 0/{len(queue)}")
+        self._load_next_redmine_ip_lookup()
+
+    def _load_next_redmine_ip_lookup(self):
+        if not self._redmine_ip_lookup_queue:
+            callback = self._redmine_ip_lookup_callback
+            items = self._redmine_ip_lookup_items
+            self._redmine_ip_lookup_callback = None
+            self._redmine_ip_lookup_total = 0
+            self.poll_status_label.setText("IP узлов обработаны")
+            if callback:
+                callback(items)
+            return
+
+        item = self._redmine_ip_lookup_queue.pop(0)
+        total = self._redmine_ip_lookup_total or len(self._redmine_ip_lookup_queue) + 1
+        done = total - len(self._redmine_ip_lookup_queue)
+        self.poll_status_label.setText(f"Ищу IP узла: {done}/{total}")
+
+        page = self.view.page() if self.view is not None and self.view.page() is not None else None
+        if page is None:
+            self.logger.warning("Redmine IP lookup skipped: Live Zabbix WebView page is not available")
+            self._load_next_redmine_ip_lookup()
+            return
+
+        page.runJavaScript(
+            self._host_ip_open_host_menu_script(item),
+            lambda result, current_item=item: self._on_redmine_ip_host_menu_result(result, current_item),
+        )
+
+    def _on_redmine_ip_host_menu_result(self, result, item):
+        payload, meta = self._decode_js_json_result(result)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            self.logger.info(
+                "Redmine IP lookup host menu not opened: host=%s trigger=%s meta=%s",
+                getattr(item, "host", ""),
+                getattr(item, "trigger_name", ""),
+                meta,
+            )
+            self._load_next_redmine_ip_lookup()
+            return
+
+        QTimer.singleShot(450, lambda current_item=item: self._click_redmine_traceroute_menu(current_item, 0))
+
+    def _click_redmine_traceroute_menu(self, item, attempt=0):
+        page = self.view.page() if self.view is not None and self.view.page() is not None else None
+        if page is None:
+            self._load_next_redmine_ip_lookup()
+            return
+
+        page.runJavaScript(
+            self._host_ip_click_traceroute_script(),
+            lambda result, current_item=item, current_attempt=attempt: self._on_redmine_traceroute_menu_result(result, current_item, current_attempt),
+        )
+
+    def _on_redmine_traceroute_menu_result(self, result, item, attempt):
+        payload, meta = self._decode_js_json_result(result)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            if attempt < 2:
+                QTimer.singleShot(500, lambda current_item=item, next_attempt=attempt + 1: self._click_redmine_traceroute_menu(current_item, next_attempt))
+                return
+
+            self.logger.info(
+                "Redmine IP lookup Traceroute menu item not found: host=%s trigger=%s meta=%s",
+                getattr(item, "host", ""),
+                getattr(item, "trigger_name", ""),
+                meta,
+            )
+            self._load_next_redmine_ip_lookup()
+            return
+
+        QTimer.singleShot(900, lambda current_item=item: self._extract_redmine_traceroute_ip(current_item, 0))
+
+    def _extract_redmine_traceroute_ip(self, item, attempt=0):
+        page = self.view.page() if self.view is not None and self.view.page() is not None else None
+        if page is None:
+            self._load_next_redmine_ip_lookup()
+            return
+
+        page.runJavaScript(
+            self._host_ip_extract_traceroute_script(),
+            lambda result, current_item=item, current_attempt=attempt: self._on_redmine_traceroute_ip_result(result, current_item, current_attempt),
+        )
+
+    def _on_redmine_traceroute_ip_result(self, result, item, attempt):
+        payload, meta = self._decode_js_json_result(result)
+        ip = ""
+        if isinstance(payload, dict):
+            ip = str(payload.get("ip") or "").strip()
+
+        if ip:
+            self._apply_redmine_host_ip(item, ip)
+            self.logger.info(
+                "Redmine IP lookup found: host=%s ip=%s",
+                getattr(item, "host", ""),
+                ip,
+            )
+            self._load_next_redmine_ip_lookup()
+            return
+
+        if attempt < 2:
+            QTimer.singleShot(700, lambda current_item=item, next_attempt=attempt + 1: self._extract_redmine_traceroute_ip(current_item, next_attempt))
+            return
+
+        self.logger.info(
+            "Redmine IP lookup IP not found: host=%s trigger=%s meta=%s",
+            getattr(item, "host", ""),
+            getattr(item, "trigger_name", ""),
+            meta,
+        )
+        self._load_next_redmine_ip_lookup()
+
+    def _host_ip_open_host_menu_script(self, item):
+        payload = json.dumps(
+            {
+                "host": str(getattr(item, "host", "") or ""),
+                "host_url": str(getattr(item, "host_url", "") or ""),
+                "trigger_name": str(getattr(item, "trigger_name", "") or ""),
+                "row_index": getattr(item, "row_index", None),
+            },
+            ensure_ascii=False,
+        )
+        return r"""
+(function() {
+  var target = __TARGET__;
+
+  function norm(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function rawText(element) {
+    return String(element ? (element.innerText || element.textContent || '') : '');
+  }
+
+  function text(element) {
+    return norm(rawText(element));
+  }
+
+  function abs(href) {
+    try { return new URL(href, document.location.href).href; }
+    catch(e) { return href || ''; }
+  }
+
+  function visible(element) {
+    if (!element) return false;
+    var rect = element.getBoundingClientRect();
+    return !!(rect.width || rect.height || element.getClientRects().length);
+  }
+
+  function clickElement(element) {
+    try { element.scrollIntoView({block: 'center', inline: 'center'}); } catch(e) {}
+    ['mouseover', 'mousedown', 'mouseup', 'click'].forEach(function(type) {
+      try {
+        element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+      } catch(e) {}
+    });
+  }
+
+  var host = norm(target.host);
+  var hostUrl = String(target.host_url || '');
+  var trigger = norm(target.trigger_name);
+  var targetRowIndex = Number(target.row_index);
+  var rows = Array.from(document.querySelectorAll('tr'));
+
+  function rowScore(row, index) {
+    var rowText = text(row);
+    var score = 0;
+
+    if (!isNaN(targetRowIndex) && index === targetRowIndex) score += 5;
+    if (host && rowText.indexOf(host) !== -1) score += 4;
+    if (trigger && rowText.indexOf(trigger) !== -1) score += 4;
+
+    var links = Array.from(row.querySelectorAll('a'));
+    if (links.some(function(a) { return host && text(a) === host; })) score += 5;
+    if (links.some(function(a) { return hostUrl && abs(a.getAttribute('href') || a.href || '') === hostUrl; })) score += 5;
+
+    return score;
+  }
+
+  var best = null;
+  var bestScore = 0;
+  rows.forEach(function(row, index) {
+    var score = rowScore(row, index);
+    if (score > bestScore) {
+      best = row;
+      bestScore = score;
+    }
+  });
+
+  if (!best || bestScore <= 0) {
+    return JSON.stringify({
+      ok: false,
+      reason: 'problem_row_not_found',
+      host: target.host || '',
+      trigger: target.trigger_name || '',
+      row_index: target.row_index
+    });
+  }
+
+  var links = Array.from(best.querySelectorAll('a')).filter(visible);
+  var hostLinks = links.filter(function(a) {
+    var linkText = text(a);
+    var href = abs(a.getAttribute('href') || a.href || '');
+    return (
+      (host && linkText === host) ||
+      (host && linkText.indexOf(host) !== -1) ||
+      (hostUrl && href === hostUrl)
+    );
+  });
+
+  var hostLink = hostLinks[0] || links.find(function(a) {
+    var href = String(a.getAttribute('href') || a.href || '');
+    return /host|hostid|hosts|zabbix\.php/i.test(href || '') && (!host || text(a).indexOf(host) !== -1);
+  });
+
+  if (!hostLink) {
+    return JSON.stringify({
+      ok: false,
+      reason: 'host_link_not_found',
+      host: target.host || '',
+      best_score: bestScore,
+      row_text: rawText(best).slice(0, 300)
+    });
+  }
+
+  clickElement(hostLink);
+
+  return JSON.stringify({
+    ok: true,
+    source: 'problems_page_host_link',
+    host: target.host || '',
+    link_text: rawText(hostLink).slice(0, 120),
+    href: abs(hostLink.getAttribute('href') || hostLink.href || '')
+  });
+})();
+""".replace("__TARGET__", payload)
+
+    @staticmethod
+    def _host_ip_click_traceroute_script():
+        return r"""
+(function() {
+  function text(element) {
+    return String(element ? (element.innerText || element.textContent || element.getAttribute('aria-label') || '') : '').replace(/\s+/g, ' ').trim();
+  }
+
+  function visible(element) {
+    if (!element) return false;
+    var rect = element.getBoundingClientRect();
+    return !!(rect.width || rect.height || element.getClientRects().length);
+  }
+
+  function clickElement(element) {
+    try { element.scrollIntoView({block: 'center', inline: 'center'}); } catch(e) {}
+    ['mouseover', 'mousedown', 'mouseup', 'click'].forEach(function(type) {
+      try {
+        element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+      } catch(e) {}
+    });
+  }
+
+  var candidates = Array.from(document.querySelectorAll(
+    'a.menu-popup-item, [role="menuitem"], .menu-popup-item, a, button'
+  )).filter(visible);
+
+  var traceroute = candidates.find(function(element) {
+    var label = String(element.getAttribute('aria-label') || '');
+    var value = text(element) + ' ' + label;
+    return /traceroute/i.test(value);
+  });
+
+  if (!traceroute) {
+    return JSON.stringify({
+      ok: false,
+      reason: 'traceroute_menu_item_not_found',
+      visible_items: candidates.slice(0, 20).map(function(element) {
+        return text(element).slice(0, 100) || String(element.getAttribute('aria-label') || '').slice(0, 100);
+      })
+    });
+  }
+
+  clickElement(traceroute);
+
+  return JSON.stringify({
+    ok: true,
+    source: 'traceroute_menu_item',
+    label: text(traceroute) || String(traceroute.getAttribute('aria-label') || '')
+  });
+})();
+"""
+
+    @staticmethod
+    def _host_ip_extract_traceroute_script():
+        return r"""
+(function() {
+  function text(element) {
+    return String(element ? (element.value || element.innerText || element.textContent || '') : '');
+  }
+
+  function clickElement(element) {
+    if (!element) return;
+    try {
+      element.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+    } catch(e) {
+      try { element.click(); } catch(e2) {}
+    }
+  }
+
+  var textarea =
+    document.querySelector('body > div > div.overlay-dialogue.modal.modal-popup.modal-popup-medium > div.overlay-dialogue-body > form > ul > li > div.table-forms-td-right > textarea') ||
+    document.querySelector('.overlay-dialogue textarea') ||
+    document.querySelector('.modal-popup textarea') ||
+    document.querySelector('textarea');
+
+  var value = text(textarea);
+  var ip = '';
+
+  var afterTraceroute = value.match(/traceroute\s+to\s+([^\s,(]+)/i);
+  if (afterTraceroute) {
+    ip = afterTraceroute[1];
+  }
+
+  var ipv4 = value.match(/((?:\d{1,3}\.){3}\d{1,3})/);
+  if (ipv4) {
+    ip = ipv4[1];
+  }
+
+  var closeButton =
+    document.querySelector('.overlay-dialogue .btn-overlay-close') ||
+    document.querySelector('.overlay-dialogue button[title*="Закрыть"]') ||
+    document.querySelector('.overlay-dialogue button[aria-label*="Закрыть"]') ||
+    document.querySelector('.overlay-dialogue .icon-close') ||
+    document.querySelector('.overlay-dialogue [data-action="close"]');
+
+  if (ip && closeButton) {
+    clickElement(closeButton);
+  }
+
+  return JSON.stringify({
+    ok: !!ip,
+    ip: ip,
+    has_textarea: !!textarea,
+    textarea_text: value.slice(0, 300)
+  });
+})();
+"""
+
     def open_redmine_for_selected_row(self):
         items = self._choose_redmine_items_for_selection()
         if not items:
@@ -1098,6 +1515,9 @@ class LiveZabbixMonitorWidget(QWidget):
         self._enrich_redmine_graph_links(items, self._open_redmine_after_graph_lookup)
 
     def _open_redmine_after_graph_lookup(self, items):
+        self._enrich_redmine_host_ips(items, self._open_redmine_after_ip_lookup)
+
+    def _open_redmine_after_ip_lookup(self, items):
         redmine_url, warning = self._build_redmine_open_url(items)
         if not redmine_url:
             QMessageBox.warning(self, "Redmine", warning or "Не удалось собрать ссылку Redmine.")
