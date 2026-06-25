@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import json
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -33,7 +34,8 @@ from PySide6.QtWidgets import (
 from app.config import save_config
 from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, SnapshotDiff, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
 from app.logger import get_logger
-from app.trigger_model import append_history_event, enrich_problem
+from app.templates import get_redmine_task_template
+from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 
 DOM_PARSER_SCRIPT = DOM_PARSER_SCRIPT_PLACEHOLDER
@@ -129,6 +131,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self.save_button = QPushButton("Сохранить")
         self.open_url_button = QPushButton("Открыть URL в браузере")
         self.show_webview_button = QPushButton("Показать WebView")
+        self.open_redmine_button = QPushButton("Открыть Redmine")
         self.poll_status_label = QLabel("Остановлен")
         self.updated_label = QLabel("Последнее обновление: —")
         self.duty_filter_checkbox = QCheckBox("Только интересующие")
@@ -141,7 +144,8 @@ class LiveZabbixMonitorWidget(QWidget):
         self.save_button.clicked.connect(self.save_monitor_settings)
         self.open_url_button.clicked.connect(self.open_configured_url)
         self.show_webview_button.clicked.connect(self.show_webview)
-        for widget in [self.start_button, self.stop_button, self.check_dom_button, self.save_button, self.open_url_button, self.show_webview_button, self.duty_filter_checkbox, self.poll_status_label, self.updated_label]:
+        self.open_redmine_button.clicked.connect(self.open_redmine_for_selected_row)
+        for widget in [self.start_button, self.stop_button, self.check_dom_button, self.save_button, self.open_url_button, self.show_webview_button, self.open_redmine_button, self.duty_filter_checkbox, self.poll_status_label, self.updated_label]:
             controls.addWidget(widget)
         controls.addStretch()
         controls.addWidget(self.counts_label)
@@ -168,6 +172,8 @@ class LiveZabbixMonitorWidget(QWidget):
         self.table = QTableWidget(0, len(self.table_columns))
         self.table.setHorizontalHeaderLabels(self.table_columns)
         self.table.setObjectName("LiveZabbixProblemsTable")
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setStyleSheet(
             """
             QTableWidget#LiveZabbixProblemsTable {
@@ -659,6 +665,7 @@ class LiveZabbixMonitorWidget(QWidget):
             ]
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value or ""))
+                cell.setData(Qt.UserRole + 1, item.key)
                 if column == 1:
                     color = self._severity_color(item.severity_level, item.severity_class, item.severity)
                     if color:
@@ -717,6 +724,241 @@ class LiveZabbixMonitorWidget(QWidget):
         if "na-bg" in key or "not_classified" in key or "не классиф" in key:
             return "#b0bec5"
         return ""
+
+    class _SafeTemplateValues(dict):
+        def __missing__(self, key):
+            return "{" + str(key) + "}"
+
+    def _unique_live_items(self, items):
+        result = []
+        seen = set()
+        for item in items or []:
+            key = getattr(item, "key", "") or str(id(item))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        return result
+
+    def _selected_live_problem_items(self):
+        rows = sorted({cell.row() for cell in self.table.selectedItems() if cell is not None})
+        if not rows:
+            row = self.table.currentRow()
+            if row >= 0:
+                rows = [row]
+
+        result = []
+        for row in rows:
+            key = ""
+            for column in range(self.table.columnCount()):
+                cell = self.table.item(row, column)
+                if cell is None:
+                    continue
+                key = cell.data(Qt.UserRole + 1)
+                if key:
+                    break
+            if key and key in self.current_snapshot:
+                result.append(self.current_snapshot[key])
+            elif key and key in self.all_snapshot:
+                result.append(self.all_snapshot[key])
+        return self._unique_live_items(result)
+
+    def _same_host_visible_items(self, host):
+        host_key = str(host or "").strip().casefold()
+        if not host_key:
+            return []
+        return self._unique_live_items(
+            item
+            for item in self.current_snapshot.values()
+            if str(item.host or "").strip().casefold() == host_key
+        )
+
+    def _choose_redmine_items_for_selection(self):
+        items = self._selected_live_problem_items()
+        if not items:
+            return []
+
+        if len(items) == 1:
+            same_host_items = self._same_host_visible_items(items[0].host)
+            if len(same_host_items) > 1:
+                host = str(items[0].host or "узел сети")
+                answer = QMessageBox.question(
+                    self,
+                    "Redmine",
+                    f"По узлу «{host}» найдено проблем: {len(same_host_items)}.\n\n"
+                    "Создать одну задачу по всем проблемам этого узла?\n\n"
+                    "Да — все проблемы узла.\n"
+                    "Нет — только выбранная строка.",
+                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                    QMessageBox.Yes,
+                )
+                if answer == QMessageBox.Cancel:
+                    return []
+                if answer == QMessageBox.Yes:
+                    return same_host_items
+
+        return items
+
+    @staticmethod
+    def _unique_text_values(values):
+        result = []
+        seen = set()
+        for value in values or []:
+            text = str(value or "").strip()
+            key = text.casefold()
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            result.append(text)
+        return result
+
+    def _redmine_subject(self, items):
+        items = self._unique_live_items(items)
+        hosts = self._unique_text_values(getattr(item, "host", "") for item in items)
+        triggers = self._unique_text_values(getattr(item, "trigger_name", "") for item in items)
+
+        if len(items) == 1:
+            host = hosts[0] if hosts else "узле сети"
+            trigger = triggers[0] if triggers else "Zabbix"
+            return f"На {host} наблюдается триггер {trigger}"
+
+        if len(hosts) == 1:
+            return f"На {hosts[0]} наблюдаются триггеры"
+
+        return "На нескольких узлах наблюдаются триггеры"
+
+    def _redmine_graph_link_for_item(self, item):
+        graph_urls = list(getattr(item, "graph_urls", []) or [])
+        if graph_urls:
+            return str(graph_urls[0] or "")
+        return str(getattr(item, "problem_url", "") or "")
+
+    def _redmine_description(self, items):
+        items = self._unique_live_items(items)
+        hosts = self._unique_text_values(getattr(item, "host", "") for item in items)
+        host_text = hosts[0] if len(hosts) == 1 else "несколько узлов"
+
+        lines = [
+            f"Узел: {host_text}",
+            "IP: не определён",
+            "",
+            "Триггеры:",
+        ]
+
+        for index, item in enumerate(items, start=1):
+            trigger_name = str(getattr(item, "trigger_name", "") or "Проблема Zabbix").strip()
+            lines.append(f"{index}. {trigger_name}")
+
+            graph_link = self._redmine_graph_link_for_item(item)
+            if graph_link:
+                lines.append(f"Ссылка на график: {graph_link}")
+            else:
+                lines.append("Ссылка на график: не найдена")
+
+            lines.append("")
+
+        return "\n".join(lines).strip()
+
+    def _combined_graph_urls(self, items):
+        urls = []
+        seen = set()
+        for item in items or []:
+            for url in getattr(item, "graph_urls", []) or []:
+                text = str(url or "").strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                urls.append(text)
+        return urls
+
+    @staticmethod
+    def _merge_redmine_url_params(base_url, dynamic_params, default_params=None):
+        parsed = urlparse(str(base_url or ""))
+        existing_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        dynamic_keys = set(dynamic_params)
+        default_params = default_params or {}
+
+        result_pairs = []
+        existing_keys = set()
+        for key, value in existing_pairs:
+            existing_keys.add(key)
+            if key not in dynamic_keys:
+                result_pairs.append((key, value))
+
+        for key, value in default_params.items():
+            if value not in (None, "") and key not in existing_keys and key not in dynamic_keys:
+                result_pairs.append((key, str(value)))
+
+        for key, value in dynamic_params.items():
+            if value not in (None, ""):
+                result_pairs.append((key, str(value)))
+
+        query = urlencode(result_pairs, doseq=True)
+        return urlunparse(parsed._replace(query=query))
+
+    def _build_redmine_open_url(self, items):
+        items = self._unique_live_items(items)
+        if not items:
+            return "", "Проблемы для Redmine не выбраны."
+
+        is_special = any(str(getattr(item, "trigger_kind", "") or "").casefold() == SPECIAL_TRIGGER_KIND for item in items)
+        template = get_redmine_task_template(self.config, special=is_special)
+
+        create_url = str(template.get("create_url") or "").strip()
+        if not create_url:
+            return "", "URL создания задачи Redmine не задан в настройках шаблона."
+
+        subject = self._redmine_subject(items)
+        description = self._redmine_description(items)
+
+        default_params = {
+            "issue[tracker_id]": str(template.get("tracker_id") or "32"),
+            "issue[assigned_to_id]": str(template.get("assigned_to_id") or "1121"),
+            "issue[custom_field_values][94]": str(template.get("custom_field_94") or "Применим"),
+        }
+
+        if template.get("priority_id"):
+            default_params["issue[priority_id]"] = str(template.get("priority_id"))
+
+        dynamic_params = {
+            "issue[subject]": subject,
+            "issue[description]": description,
+        }
+
+        redmine_url = self._merge_redmine_url_params(create_url, dynamic_params, default_params)
+        if len(redmine_url) > 6500:
+            return redmine_url, f"Redmine-ссылка всё ещё длинная: {len(redmine_url)} символов. Лучше выбрать меньше строк."
+
+        return redmine_url, ""
+
+    def open_redmine_for_selected_row(self):
+        items = self._choose_redmine_items_for_selection()
+        if not items:
+            QMessageBox.information(self, "Redmine", "Выберите одну или несколько строк проблемы в Live Zabbix Monitor.")
+            return
+
+        redmine_url, warning = self._build_redmine_open_url(items)
+        if not redmine_url:
+            QMessageBox.warning(self, "Redmine", warning or "Не удалось собрать ссылку Redmine.")
+            return
+
+        if warning:
+            QMessageBox.warning(self, "Redmine", warning)
+
+        is_special = any(str(getattr(item, "trigger_kind", "") or "").casefold() == SPECIAL_TRIGGER_KIND for item in items)
+        graph_urls = self._combined_graph_urls(items)
+        if is_special and graph_urls:
+            if QMessageBox.question(
+                self,
+                "Redmine",
+                "Среди выбранных проблем есть специальный триггер. Открыть связанные графики для ручной проверки?",
+                QMessageBox.Open | QMessageBox.Cancel,
+            ) == QMessageBox.Open:
+                self.open_graphs(graph_urls)
+
+        opened = QDesktopServices.openUrl(QUrl(redmine_url))
+        if not opened:
+            QMessageBox.warning(self, "Redmine", "Не удалось открыть Redmine-ссылку в браузере.")
 
     def open_acknowledgement(self, url):
         if not url:
