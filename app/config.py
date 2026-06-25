@@ -6,6 +6,9 @@ from pathlib import Path
 
 from app.logger import get_logger
 from app.service_checks import default_service_checks_config
+from app.redmine_triggers import default_special_redmine_triggers_config, ensure_special_redmine_triggers_defaults
+from app.trigger_model import default_trigger_catalog_config, ensure_trigger_catalog_defaults
+from app.live_zabbix import default_live_monitor_config, ensure_live_monitor_defaults
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 CONFIG_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "config.example.json"
@@ -138,6 +141,9 @@ def ensure_duty_mode_defaults(config):
     settings.setdefault("otrs_password", "")
     settings.setdefault("otrs_auto_submit_login", False)
     settings.setdefault("graph_ids", [])
+    ensure_trigger_catalog_defaults(config)
+    ensure_special_redmine_triggers_defaults(config)
+    ensure_live_monitor_defaults(config)
     settings.setdefault("otrs", {})
     settings["otrs"].setdefault("create_url", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentNewTicketForm;NewTicketFormID=6")
     settings["otrs"].setdefault("note_url_base", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=")
@@ -194,6 +200,9 @@ def _default_config():
             "expected_service_checks_ticket_subject": "Дежурная проверка сервисов",
         },
         "duty_triggers": default_duty_triggers_config(),
+        "zabbix_trigger_definitions": default_trigger_catalog_config(),
+        "special_redmine_triggers": default_special_redmine_triggers_config(),
+        "live_zabbix_monitor": default_live_monitor_config(),
         "service_checks": default_service_checks_config(),
         "zabbix_trigger_catalog": {"version": 1, "triggers": []},
         "app": {"name": "Око"},
@@ -226,6 +235,7 @@ EXPORTABLE_CONFIG_KEYS = (
     "mode_pages",
     "duty_mode",
     "duty_triggers",
+    "special_redmine_triggers",
     "service_checks",
     "templates",
     "zabbix_trigger_catalog",

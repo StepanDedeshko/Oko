@@ -37,6 +37,7 @@ from app.templates import (
     OTRS_GRAPH_CHECK_TEMPLATE_KEY,
     OTRS_SERVICE_CHECK_TEMPLATE_KEY,
     REDMINE_TASK_TEMPLATE_KEY,
+    REDMINE_SPECIAL_TASK_TEMPLATE_KEY,
     OTRS_TEMPLATE_EXAMPLE,
     REDMINE_ALL_GRAPHS_EXAMPLE,
     REDMINE_COLLAPSE_EXAMPLE,
@@ -50,6 +51,7 @@ from app.templates import (
     preview_otrs_template,
     preview_redmine_template,
     reset_redmine_task_template,
+    reset_redmine_special_task_template,
     variable_details_text,
 )
 from app.credentials import OTRS_CREDENTIALS_KEY, LEGACY_OTRS_CREDENTIALS_KEY, load_otrs_credentials, load_saved_credentials, save_credentials
@@ -1198,6 +1200,7 @@ class TemplatesWidget(QWidget):
         layout = QVBoxLayout(page)
         templates = ensure_templates_defaults(self.config)
         current = templates[REDMINE_TASK_TEMPLATE_KEY]
+        special = templates[REDMINE_SPECIAL_TASK_TEMPLATE_KEY]
 
         form = QFormLayout()
         self.redmine_create_url_input = QLineEdit(current.get("create_url", ""))
@@ -1208,6 +1211,10 @@ class TemplatesWidget(QWidget):
         self.redmine_tracker_input = QLineEdit(str(current.get("tracker_id", "")))
         self.redmine_priority_input = QLineEdit(str(current.get("priority_id", "")))
         self.redmine_project_input = QLineEdit(current.get("project", ""))
+        self.redmine_special_subject_input = QLineEdit(special.get("subject_template", ""))
+        self.redmine_special_description_input = QTextEdit()
+        self.redmine_special_description_input.setPlainText(special.get("description_template", ""))
+        self.redmine_special_description_input.setMinimumHeight(180)
 
         form.addRow("URL создания задачи Redmine:", self.redmine_create_url_input)
         form.addRow("Шаблон темы:", self.redmine_subject_input)
@@ -1215,6 +1222,8 @@ class TemplatesWidget(QWidget):
         form.addRow("tracker_id:", self.redmine_tracker_input)
         form.addRow("priority_id:", self.redmine_priority_input)
         form.addRow("project identifier/project URL:", self.redmine_project_input)
+        form.addRow("Тема спец. триггеров:", self.redmine_special_subject_input)
+        form.addRow("Описание спец. триггеров:", self.redmine_special_description_input)
         layout.addLayout(form)
 
         actions = QHBoxLayout()
@@ -1232,7 +1241,7 @@ class TemplatesWidget(QWidget):
         layout.addLayout(actions)
 
         layout.addWidget(self._readonly_box("Доступные переменные", variable_details_text(REDMINE_GRAPH_VARIABLE_DETAILS), minimum_height=260))
-        redmine_warning = QLabel("Изображение вида !filename.png! отобразится в Redmine только если файл с таким именем прикреплён к задаче.")
+        redmine_warning = QLabel("Для специальных триггеров используйте обычные ссылки ({special_graph_links}); inline-картинки вида !url! не вставляются автоматически.")
         redmine_warning.setWordWrap(True)
         layout.addWidget(redmine_warning)
         layout.addWidget(self._readonly_box("Примеры вставки графиков", REDMINE_COLLAPSE_EXAMPLE + "\n" + REDMINE_ALL_GRAPHS_EXAMPLE))
@@ -1247,7 +1256,7 @@ class TemplatesWidget(QWidget):
         layout.addWidget(self._readonly_box("Переменные заметки ОТРС", variable_details_text(OTRS_VARIABLE_DETAILS), minimum_height=260))
         layout.addWidget(self._readonly_box("Переменные проверки сервисов", variable_details_text(SERVICE_CHECK_VARIABLE_DETAILS), minimum_height=260))
         layout.addWidget(self._readonly_box("Переменные Redmine для графиков", variable_details_text(REDMINE_GRAPH_VARIABLE_DETAILS), minimum_height=300))
-        redmine_warning = QLabel("Изображение вида !filename.png! отобразится в Redmine только если файл с таким именем прикреплён к задаче.")
+        redmine_warning = QLabel("Для специальных триггеров используйте обычные ссылки ({special_graph_links}); inline-картинки вида !url! не вставляются автоматически.")
         redmine_warning.setWordWrap(True)
         layout.addWidget(redmine_warning)
         layout.addStretch(1)
@@ -1354,11 +1363,22 @@ class TemplatesWidget(QWidget):
     def save_redmine_template(self):
         templates = ensure_templates_defaults(self.config)
         current = templates[REDMINE_TASK_TEMPLATE_KEY]
+        special = templates[REDMINE_SPECIAL_TASK_TEMPLATE_KEY]
         current.update({
             "name": "Задача Redmine",
             "create_url": self.redmine_create_url_input.text().strip(),
             "subject_template": self.redmine_subject_input.text().strip(),
             "description_template": self.redmine_description_input.toPlainText(),
+            "tracker_id": self.redmine_tracker_input.text().strip(),
+            "priority_id": self.redmine_priority_input.text().strip(),
+            "project": self.redmine_project_input.text().strip(),
+        })
+        special = templates[REDMINE_SPECIAL_TASK_TEMPLATE_KEY]
+        special.update({
+            "name": "Задача Redmine: специальные триггеры с графиками",
+            "create_url": self.redmine_create_url_input.text().strip(),
+            "subject_template": self.redmine_special_subject_input.text().strip(),
+            "description_template": self.redmine_special_description_input.toPlainText(),
             "tracker_id": self.redmine_tracker_input.text().strip(),
             "priority_id": self.redmine_priority_input.text().strip(),
             "project": self.redmine_project_input.text().strip(),
@@ -1370,12 +1390,15 @@ class TemplatesWidget(QWidget):
         if not self.confirm_template_reset():
             return
         template = reset_redmine_task_template(self.config)
+        special = reset_redmine_special_task_template(self.config)
         self.redmine_create_url_input.setText(template.get("create_url", ""))
         self.redmine_subject_input.setText(template.get("subject_template", ""))
         self.redmine_description_input.setPlainText(template.get("description_template", ""))
         self.redmine_tracker_input.setText(str(template.get("tracker_id", "")))
         self.redmine_priority_input.setText(str(template.get("priority_id", "")))
         self.redmine_project_input.setText(template.get("project", ""))
+        self.redmine_special_subject_input.setText(special.get("subject_template", ""))
+        self.redmine_special_description_input.setPlainText(special.get("description_template", ""))
         save_config(self.config)
         QMessageBox.information(self, "Шаблоны", "Шаблон задачи Redmine сброшен по умолчанию.")
 

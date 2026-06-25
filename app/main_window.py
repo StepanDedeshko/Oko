@@ -25,6 +25,7 @@ from app.home_config import AppSettingsWidget, HomePageWidget
 from app.config import save_config
 from app.dashboard_widgets import GraphsDashboard, ProblemPageDashboard, SimplePageDashboard, ModePagesDashboard
 from app.hotkeys_widget import HotkeysWidget
+from app.live_zabbix_widget import LiveZabbixMonitorWidget
 from app.system_info_widget import SystemInfoWidget
 from app.zabbix_profile import create_profile
 from app.system_metrics import SystemMetricsProvider
@@ -63,6 +64,7 @@ class MainWindow(QMainWindow):
         self.dashboard_widgets = []
         self.graph_dashboards = []
         self.duty_mode_widget = None
+        self.live_zabbix_monitor_widget = None
         self.home_page_widget = None
         self.home_page_index = None
         self.page_has_time_buttons = {}
@@ -457,6 +459,15 @@ class MainWindow(QMainWindow):
         self.dashboard_widgets.append(self.duty_mode_widget)
         self.page_has_time_buttons[index] = False
 
+        self.live_zabbix_monitor_widget = LiveZabbixMonitorWidget(
+            config=self.config,
+            profiles=self.profiles,
+            credentials=self.credentials,
+        )
+        live_index = self.stack.addWidget(self.live_zabbix_monitor_widget)
+        self.dashboard_widgets.append(self.live_zabbix_monitor_widget)
+        self.page_has_time_buttons[live_index] = False
+
         product_name = "Дежурство"
         self.product_dashboard_indexes[product_name] = [{
             "name": "Режим дежурства",
@@ -464,6 +475,12 @@ class MainWindow(QMainWindow):
             "has_time": False,
             "type": "duty_mode",
             "widget": self.duty_mode_widget,
+        }, {
+            "name": "Live Zabbix Monitor",
+            "index": live_index,
+            "has_time": False,
+            "type": "live_zabbix_monitor",
+            "widget": self.live_zabbix_monitor_widget,
         }]
 
     @staticmethod
