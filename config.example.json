@@ -206,6 +206,7 @@
     "zabbix_id": "",
     "problems_url": "",
     "poll_interval_seconds": 10,
-    "history_path": "data/live_zabbix_history.jsonl"
+    "history_path": "data/live_zabbix_history.jsonl",
+    "duty_filter_enabled": true
   }
 }

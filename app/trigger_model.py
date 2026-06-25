@@ -64,6 +64,7 @@ class ZabbixProblemSnapshotItem:
     graph_urls: list[str] = field(default_factory=list)
     trigger_kind: str = STANDARD_TRIGGER_KIND
     processed: bool = False
+    row_index: int = -1
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +89,7 @@ class ZabbixProblemSnapshotItem:
             "graph_urls": list(self.graph_urls),
             "trigger_kind": self.trigger_kind,
             "processed": bool(self.processed),
+            "row_index": int(self.row_index),
         }
 
 
@@ -258,6 +260,7 @@ def enrich_problem(config: dict, problem: dict, time_range="1h", processed_keys:
         graph_urls=graph_urls,
         trigger_kind=kind,
         processed=key in (processed_keys or set()),
+        row_index=int(problem.get("row_index", -1) if str(problem.get("row_index", -1)).lstrip("-").isdigit() else -1),
     )
 
 

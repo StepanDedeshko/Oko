@@ -8,12 +8,18 @@ from pathlib import Path
 import json
 
 from app.trigger_model import ZabbixProblemSnapshotItem, build_problem_key
+from app.duty_zabbix import (
+    annotate_zabbix_problems_with_trigger_catalog,
+    load_zabbix_trigger_catalog,
+    problem_matches_keywords,
+    zabbix_problem_visible_by_trigger_filters,
+)
 
 LIVE_MONITOR_CONFIG_KEY = "live_zabbix_monitor"
 
 
 def default_live_monitor_config() -> dict:
-    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 10, "history_path": "data/live_zabbix_history.jsonl"}
+    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 10, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True}
 
 
 def ensure_live_monitor_defaults(config: dict) -> dict:
@@ -26,6 +32,48 @@ def ensure_live_monitor_defaults(config: dict) -> dict:
     except (TypeError, ValueError):
         settings["poll_interval_seconds"] = 10
     return settings
+
+
+def problem_to_duty_filter_row(problem: ZabbixProblemSnapshotItem | dict) -> dict:
+    """Convert a live-monitor problem into the row shape used by duty mode filters."""
+    payload = problem.to_dict() if isinstance(problem, ZabbixProblemSnapshotItem) else dict(problem or {})
+    return {
+        "time": str(payload.get("started_at") or payload.get("time") or ""),
+        "severity": str(payload.get("severity") or ""),
+        "host": str(payload.get("host") or ""),
+        "problem": str(payload.get("trigger_name") or payload.get("problem") or ""),
+        "tags": str(payload.get("tags") or ""),
+        "raw_text": " ".join(str(payload.get(key) or "") for key in ("started_at", "severity", "host", "trigger_name", "tags", "info", "actions_text")),
+    }
+
+
+def split_items_by_duty_filter(config: dict, items, filter_enabled=True):
+    """Split live problems with the same keyword/catalog rules that duty mode uses."""
+    items = list(items or [])
+    if not filter_enabled:
+        return items, []
+    settings = (config or {}).get("duty_mode", {}) if isinstance(config, dict) else {}
+    keywords = settings.get("zabbix_problem_keywords", [])
+    excludes = settings.get("zabbix_problem_exclude_keywords", [])
+    rows = []
+    row_to_item = []
+    for item in items:
+        row = problem_to_duty_filter_row(item)
+        if not problem_matches_keywords(row, keywords=keywords, exclude_keywords=excludes):
+            continue
+        rows.append(row)
+        row_to_item.append((row, item))
+    catalog = load_zabbix_trigger_catalog(config=config)
+    annotate_zabbix_problems_with_trigger_catalog(rows, catalog)
+    visible = []
+    keyword_matched_item_ids = {id(item) for _row, item in row_to_item}
+    hidden = [item for item in items if id(item) not in keyword_matched_item_ids]
+    for row, item in row_to_item:
+        if zabbix_problem_visible_by_trigger_filters(row):
+            visible.append(item)
+        else:
+            hidden.append(item)
+    return visible, hidden
 
 
 @dataclass
@@ -42,7 +90,7 @@ def normalize_snapshot(items) -> dict[str, ZabbixProblemSnapshotItem]:
         if isinstance(item, ZabbixProblemSnapshotItem):
             snapshot_item = item
         else:
-            snapshot_item = ZabbixProblemSnapshotItem(key=build_problem_key(item), **{k: v for k, v in dict(item or {}).items() if k in {"trigger_name", "host", "host_url", "severity", "started_at", "status", "info", "duration", "acknowledged", "ack_text", "ack_url", "actions_text", "tags", "severity_class", "severity_level", "event_id", "problem_url", "graph_urls", "trigger_kind", "processed"}})
+            snapshot_item = ZabbixProblemSnapshotItem(key=build_problem_key(item), **{k: v for k, v in dict(item or {}).items() if k in {"trigger_name", "host", "host_url", "severity", "started_at", "status", "info", "duration", "acknowledged", "ack_text", "ack_url", "actions_text", "tags", "severity_class", "severity_level", "event_id", "problem_url", "graph_urls", "trigger_kind", "processed", "row_index"}})
         if snapshot_item.key:
             result[snapshot_item.key] = snapshot_item
     return result
@@ -251,12 +299,12 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
   }) || null;
   if (problemTable && !Object.keys(headerMap).filter(function(key) { return key.indexOf('__') !== 0; }).length) headerMap = buildHeaderMap(problemTable);
   var dataRows = problemTable ? directChildRows(problemTable).filter(function(row) { return row.closest('table') === problemTable && directCells(row).some(function(cell) { return cell.tagName === 'TD'; }); }) : [];
-  dataRows.forEach(function(row) {
+  dataRows.forEach(function(row, rowIndex) {
     if (problemTable && row.closest('table') !== problemTable) { rememberSkipped(row, 'nested'); return; }
     var rowText = text(row);
     var cellsRaw = directCells(row);
     var cells = cellsRaw.map(text);
-    if (isSeparatorRow(row, cellsRaw)) { separators.push({row_type: 'separator', text: rowText}); return; }
+    if (isSeparatorRow(row, cellsRaw)) { separators.push({row_type: 'separator', text: rowText, row_index: rowIndex}); return; }
     if (!rowText || cellsRaw.length < 2 || cellsRaw.some(function(cell) { return cell.hasAttribute('colspan'); })) { rememberSkipped(row, 'invalid', cellsRaw); return; }
     if (isHistoryRow(cellsRaw)) { rememberSkipped(row, 'history', cellsRaw); return; }
     var links = Array.from(row.querySelectorAll('a[href]'));
@@ -298,7 +346,8 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
       tags: text(cellAt(cellsRaw, headerMap, 'tags', 8)),
       status: 'active',
       problem_url: problemLink ? abs(problemLink.getAttribute('href')) : '',
-      graph_urls: graphLink ? [abs(graphLink.getAttribute('href'))] : []
+      graph_urls: graphLink ? [abs(graphLink.getAttribute('href'))] : [],
+      row_index: rowIndex
     });
   });
   var sampleRows = candidates.slice(0, 5).map(function(row) {

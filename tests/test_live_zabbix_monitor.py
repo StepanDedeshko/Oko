@@ -258,3 +258,70 @@ class LiveZabbixMonitorNestedRowsTests(unittest.TestCase):
             self.assertIn(marker, source)
         self.assertNotIn("problemTable.querySelectorAll('tbody > tr')", source)
         self.assertNotIn('problemTable.querySelectorAll("tr")', source)
+
+class LiveZabbixMonitorDutyFilterTests(unittest.TestCase):
+    def test_live_monitor_uses_duty_keywords_and_catalog_source(self):
+        from app.live_zabbix import split_items_by_duty_filter
+        config = {
+            "duty_mode": {"zabbix_problem_keywords": ["db"], "zabbix_problem_exclude_keywords": ["ignore"]},
+            "zabbix_trigger_catalog": {
+                "version": 1,
+                "triggers": [
+                    {"id": "db", "enabled": True, "name": "DB down", "description": "", "category": "", "source_sheets": [], "match_type": "exact"},
+                    {"id": "cpu", "enabled": False, "name": "CPU high", "description": "", "category": "", "source_sheets": [], "match_type": "exact"},
+                ],
+            },
+        }
+        db = enrich_problem({}, {"event_id": "1", "host": "db-01", "trigger_name": "DB down", "row_index": 1})
+        cpu = enrich_problem({}, {"event_id": "2", "host": "cpu-01", "trigger_name": "CPU high", "row_index": 2})
+        ignored = enrich_problem({}, {"event_id": "3", "host": "db-02", "trigger_name": "DB down ignore", "row_index": 3})
+
+        visible, hidden = split_items_by_duty_filter(config, [db, cpu, ignored], filter_enabled=True)
+        self.assertEqual([item.key for item in visible], ["1"])
+        self.assertEqual({item.key for item in hidden}, {"2", "3"})
+
+        all_visible, all_hidden = split_items_by_duty_filter(config, [db, cpu, ignored], filter_enabled=False)
+        self.assertEqual([item.key for item in all_visible], ["1", "2", "3"])
+        self.assertEqual(all_hidden, [])
+
+    def test_hidden_items_do_not_enter_snapshot_diff(self):
+        visible = [enrich_problem({}, {"event_id": "visible", "trigger_name": "DB down"})]
+        hidden = [enrich_problem({}, {"event_id": "hidden", "trigger_name": "Noise"})]
+        diff = diff_snapshots([], visible)
+        self.assertEqual([item.key for item in diff.new], ["visible"])
+        self.assertNotIn("hidden", [item.key for item in diff.new + diff.active + diff.resolved])
+        self.assertEqual([item.key for item in hidden], ["hidden"])
+
+    def test_duty_filter_ui_diagnostics_and_separator_logic_are_present(self):
+        widget_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        live_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix.py").read_text(encoding="utf-8")
+        trigger_source = (Path(__file__).resolve().parents[1] / "app" / "trigger_model.py").read_text(encoding="utf-8")
+        config_example = (Path(__file__).resolve().parents[1] / "config.example.json").read_text(encoding="utf-8")
+        for marker in [
+            "Только интересующие",
+            "duty_filter_enabled",
+            "raw_problem_count",
+            "visible_problem_count",
+            "hidden_by_filter_count",
+            "Всего:",
+            "Показано:",
+            "Скрыто фильтром:",
+            "_filter_separators_for_visible_items",
+            "split_items_by_duty_filter",
+            "cellClicked.connect",
+            "Открыть узел сети в Zabbix",
+            "Открыть график проблемы",
+            "Открыть подтверждение Zabbix",
+        ]:
+            self.assertIn(marker, widget_source)
+        for marker in [
+            "problem_matches_keywords",
+            "load_zabbix_trigger_catalog",
+            "annotate_zabbix_problems_with_trigger_catalog",
+            "zabbix_problem_visible_by_trigger_filters",
+            "problem_to_duty_filter_row",
+            "split_items_by_duty_filter",
+        ]:
+            self.assertIn(marker, live_source)
+        self.assertIn("row_index", trigger_source)
+        self.assertIn('"duty_filter_enabled": true', config_example)

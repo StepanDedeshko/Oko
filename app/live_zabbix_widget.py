@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -30,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, SnapshotDiff, diff_snapshots, ensure_live_monitor_defaults
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, SnapshotDiff, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
 from app.logger import get_logger
 from app.trigger_model import append_history_event, enrich_problem
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
@@ -80,6 +81,9 @@ class LiveZabbixMonitorWidget(QWidget):
         self.logger = get_logger()
         self.previous_snapshot = {}
         self.current_snapshot = {}
+        self.all_snapshot = {}
+        self.hidden_snapshot = {}
+        self.last_filter_counts = {"raw": 0, "visible": 0, "hidden": 0}
         self.processed_keys = set()
         self.last_diff = SnapshotDiff()
         self.view = None
@@ -127,14 +131,17 @@ class LiveZabbixMonitorWidget(QWidget):
         self.show_webview_button = QPushButton("Показать WebView")
         self.poll_status_label = QLabel("Остановлен")
         self.updated_label = QLabel("Последнее обновление: —")
-        self.counts_label = QLabel("Новые: 0 | Активные: 0 | Решённые: 0 | Обработанные: 0")
+        self.duty_filter_checkbox = QCheckBox("Только интересующие")
+        self.duty_filter_checkbox.setChecked(bool(self.settings.get("duty_filter_enabled", True)))
+        self.duty_filter_checkbox.toggled.connect(self._on_duty_filter_toggled)
+        self.counts_label = QLabel("Новые: 0 | Активные: 0 | Решённые: 0 | Обработанные: 0 | Всего: 0 | Показано: 0 | Скрыто фильтром: 0")
         self.start_button.clicked.connect(self.start_monitor)
         self.stop_button.clicked.connect(self.stop_monitor)
         self.check_dom_button.clicked.connect(self.check_dom_now)
         self.save_button.clicked.connect(self.save_monitor_settings)
         self.open_url_button.clicked.connect(self.open_configured_url)
         self.show_webview_button.clicked.connect(self.show_webview)
-        for widget in [self.start_button, self.stop_button, self.check_dom_button, self.save_button, self.open_url_button, self.show_webview_button, self.poll_status_label, self.updated_label]:
+        for widget in [self.start_button, self.stop_button, self.check_dom_button, self.save_button, self.open_url_button, self.show_webview_button, self.duty_filter_checkbox, self.poll_status_label, self.updated_label]:
             controls.addWidget(widget)
         controls.addStretch()
         controls.addWidget(self.counts_label)
@@ -285,9 +292,44 @@ class LiveZabbixMonitorWidget(QWidget):
         self.settings["problems_url"] = self.url_input.text().strip()
         self.settings["poll_interval_seconds"] = int(self.interval_input.value())
         self.settings["zabbix_id"] = str(self.zabbix_profile_combo.currentData() or "")
+        self.settings["duty_filter_enabled"] = bool(self.duty_filter_checkbox.isChecked())
         save_config(self.config)
         self._recreate_web_view_if_needed()
         self._update_diagnostics({"safe_debug": {}, "items": []}, status_text="Настройки сохранены")
+
+    def _on_duty_filter_toggled(self, checked):
+        self.settings["duty_filter_enabled"] = bool(checked)
+        save_config(self.config)
+        if self.all_snapshot:
+            visible, hidden = split_items_by_duty_filter(self.config, self.all_snapshot.values(), filter_enabled=bool(checked))
+            self.hidden_snapshot = {item.key: item for item in hidden}
+            self.current_snapshot = {item.key: item for item in visible}
+            self.last_filter_counts = {"raw": len(self.all_snapshot), "visible": len(visible), "hidden": len(hidden)}
+            diff = diff_snapshots(self.previous_snapshot.values(), visible, self.processed_keys)
+            self.last_diff = diff
+            self.previous_snapshot = dict(self.current_snapshot)
+            self._render(diff, {"items": [item.to_dict() for item in visible], "safe_debug": {}})
+
+    def _filter_separators_for_visible_items(self, separators, visible_items):
+        separators = [row for row in (separators or []) if str(row.get("text") or "").strip()]
+        if not separators or not visible_items:
+            return []
+        visible_indexes = sorted(index for index in (getattr(item, "row_index", -1) for item in visible_items) if index >= 0)
+        if not visible_indexes:
+            return separators
+        result = []
+        for index, separator in enumerate(separators):
+            try:
+                start = int(separator.get("row_index", -1))
+            except (TypeError, ValueError):
+                start = -1
+            try:
+                end = int(separators[index + 1].get("row_index", 10**9)) if index + 1 < len(separators) else 10**9
+            except (TypeError, ValueError):
+                end = 10**9
+            if any(start < item_index < end for item_index in visible_indexes):
+                result.append(separator)
+        return result
 
     def open_configured_url(self):
         url = self.url_input.text().strip()
@@ -429,22 +471,39 @@ class LiveZabbixMonitorWidget(QWidget):
             self._update_diagnostics(payload, status_text=self._js_error_status(meta))
             return
         raw_items = payload.get("items") or []
-        self.last_separator_rows = payload.get("separators") or []
+        raw_separators = payload.get("separators") or []
         self._parse_attempts.append(payload)
         if not force and not raw_items and len(self._parse_attempts) < 3:
             self._update_diagnostics(payload, status_text="Страница загружена, ждём таблицу Zabbix Problems…")
             return
         if not force and raw_items:
             self._parse_attempts = []
-        items = []
+        all_items = []
         for raw in raw_items:
             item = enrich_problem(self.config, raw or {}, processed_keys=self.processed_keys)
             if raw.get("graph_urls") and not item.graph_urls:
                 item.graph_urls = [url for url in raw.get("graph_urls", []) if url]
-            items.append(item)
-        diff = diff_snapshots(self.previous_snapshot.values(), items, self.processed_keys)
+            all_items.append(item)
+        filter_enabled = bool(self.settings.get("duty_filter_enabled", True))
+        visible_items, hidden_items = split_items_by_duty_filter(self.config, all_items, filter_enabled=filter_enabled)
+        self.last_filter_counts = {"raw": len(all_items), "visible": len(visible_items), "hidden": len(hidden_items)}
+        self.last_separator_rows = self._filter_separators_for_visible_items(raw_separators, visible_items)
+        payload["raw_problem_count"] = len(all_items)
+        payload["visible_problem_count"] = len(visible_items)
+        payload["hidden_by_filter_count"] = len(hidden_items)
+        payload["duty_filter_enabled"] = filter_enabled
+        payload.setdefault("safe_debug", {})
+        payload["safe_debug"].update({
+            "raw_problem_count": len(all_items),
+            "visible_problem_count": len(visible_items),
+            "hidden_by_filter_count": len(hidden_items),
+            "duty_filter_enabled": filter_enabled,
+        })
+        diff = diff_snapshots(self.previous_snapshot.values(), visible_items, self.processed_keys)
         self.last_diff = diff
-        self.current_snapshot = {item.key: item for item in items}
+        self.all_snapshot = {item.key: item for item in all_items}
+        self.hidden_snapshot = {item.key: item for item in hidden_items}
+        self.current_snapshot = {item.key: item for item in visible_items}
         self._write_history(diff)
         self.previous_snapshot = dict(self.current_snapshot)
         self._render(diff, payload)
@@ -540,6 +599,10 @@ class LiveZabbixMonitorWidget(QWidget):
             "history_rows_skipped": int((payload or {}).get("history_rows_skipped") or safe_debug.get("history_rows_skipped") or 0),
             "sample_skipped_rows": (payload or {}).get("sample_skipped_rows") or safe_debug.get("sample_skipped_rows") or [],
             "problem_count": int((payload or {}).get("problem_count") or safe_debug.get("problem_count") or len((payload or {}).get("items") or [])),
+            "raw_problem_count": int((payload or {}).get("raw_problem_count") or safe_debug.get("raw_problem_count") or self.last_filter_counts.get("raw", 0)),
+            "visible_problem_count": int((payload or {}).get("visible_problem_count") or safe_debug.get("visible_problem_count") or self.last_filter_counts.get("visible", 0)),
+            "hidden_by_filter_count": int((payload or {}).get("hidden_by_filter_count") or safe_debug.get("hidden_by_filter_count") or self.last_filter_counts.get("hidden", 0)),
+            "duty_filter_enabled": bool((payload or {}).get("duty_filter_enabled", safe_debug.get("duty_filter_enabled", self.settings.get("duty_filter_enabled", True)))),
             "zero_reason": (payload or {}).get("zero_reason") or safe_debug.get("zero_reason") or "",
             "acknowledge_detected_reason": (payload or {}).get("acknowledge_detected_reason") or safe_debug.get("acknowledge_detected_reason") or "",
         })
@@ -618,10 +681,12 @@ class LiveZabbixMonitorWidget(QWidget):
                     cell.setData(Qt.UserRole, {"graph_urls": list(item.graph_urls), "problem_url": item.problem_url})
                 self.table.setItem(row, column, cell)
             table_row += 1
-        self.counts_label.setText(f"Новые: {len(diff.new)} | Активные: {len(diff.active)} | Решённые: {len(diff.resolved)} | Обработанные: {len(diff.processed)}")
+        self.counts_label.setText(f"Новые: {len(diff.new)} | Активные: {len(diff.active)} | Решённые: {len(diff.resolved)} | Обработанные: {len(diff.processed)} | Всего: {self.last_filter_counts.get('raw', len(all_items))} | Показано: {self.last_filter_counts.get('visible', len(all_items))} | Скрыто фильтром: {self.last_filter_counts.get('hidden', 0)}")
         self.updated_label.setText("Последнее обновление: " + datetime.now().strftime("%H:%M:%S"))
         if all_items:
             self.poll_status_label.setText(f"ОК: проблем {len(all_items)}")
+        elif self.last_filter_counts.get("raw", 0) and self.last_filter_counts.get("hidden", 0):
+            self.poll_status_label.setText(f"ОК: показано 0, скрыто фильтром {self.last_filter_counts.get('hidden', 0)}")
         elif (payload or {}).get("safe_debug", {}).get("zero_reason") == "JS diagnostic returned None / invalid result":
             self.poll_status_label.setText(WEBENGINE_JS_ERROR_MESSAGE)
         else:
