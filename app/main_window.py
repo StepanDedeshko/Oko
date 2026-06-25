@@ -222,12 +222,20 @@ class MainWindow(QMainWindow):
         self.toolbar.addWidget(self.home_button)
         self.toolbar.addSeparator()
 
-        self.toolbar.addWidget(QLabel("Продукт: "))
-        self.toolbar.addWidget(self.product_combo)
-        self.toolbar.addSeparator()
+        self.product_label_action = self.toolbar.addWidget(QLabel("Продукт: "))
+        self.product_combo_action = self.toolbar.addWidget(self.product_combo)
+        self.product_separator_action = self.toolbar.addSeparator()
 
-        self.toolbar.addWidget(QLabel("Раздел: "))
-        self.toolbar.addWidget(self.section_combo)
+        self.section_label_action = self.toolbar.addWidget(QLabel("Раздел: "))
+        self.section_combo_action = self.toolbar.addWidget(self.section_combo)
+        self.section_separator_action = self.toolbar.addSeparator()
+
+        self.duty_section_switch_button = QPushButton("Zabbix")
+        self.duty_section_switch_button.setMinimumWidth(150)
+        self.duty_section_switch_button.setToolTip("Переключить Дежурство между Zabbix и Сервисы/Графики")
+        self.duty_section_switch_button.clicked.connect(self.toggle_duty_section)
+        self.duty_section_switch_action = self.toolbar.addWidget(self.duty_section_switch_button)
+        self.duty_section_switch_action.setVisible(False)
         self.toolbar.addSeparator()
 
         self.time_label_action = self.toolbar.addWidget(QLabel("Период: "))
@@ -435,6 +443,7 @@ class MainWindow(QMainWindow):
         if self.home_page_index is not None:
             self.stack.setCurrentIndex(self.home_page_index)
             self.set_time_selector_visible(False)
+            self.update_duty_section_switch(None)
             self.pause_inactive_web_dashboards()
             self.log_memory_status()
 
@@ -566,8 +575,56 @@ class MainWindow(QMainWindow):
         index = section["index"]
         self.stack.setCurrentIndex(index)
         self.update_toolbar_for_current_page(index)
+        self.update_duty_section_switch(section)
         self.pause_inactive_web_dashboards()
         self.log_memory_status()
+
+    def _current_duty_section_type(self):
+        section = self.section_combo.currentData() if hasattr(self, "section_combo") else None
+        if isinstance(section, dict):
+            return section.get("type", "")
+        return ""
+
+    def update_duty_section_switch(self, section=None):
+        product_name = self.product_combo.currentData() if hasattr(self, "product_combo") else ""
+        is_duty = product_name == "Дежурство"
+
+        if hasattr(self, "section_label_action"):
+            self.section_label_action.setVisible(not is_duty)
+        if hasattr(self, "section_combo_action"):
+            self.section_combo_action.setVisible(not is_duty)
+        if hasattr(self, "section_separator_action"):
+            self.section_separator_action.setVisible(not is_duty)
+        if hasattr(self, "duty_section_switch_action"):
+            self.duty_section_switch_action.setVisible(is_duty)
+
+        if not is_duty or not hasattr(self, "duty_section_switch_button"):
+            return
+
+        current_type = ""
+        if isinstance(section, dict):
+            current_type = section.get("type", "")
+        else:
+            current_type = self._current_duty_section_type()
+
+        if current_type == "live_zabbix_monitor":
+            self.duty_section_switch_button.setText("Сервисы/Графики")
+        else:
+            self.duty_section_switch_button.setText("Zabbix")
+
+    def toggle_duty_section(self):
+        if self.product_combo.currentData() != "Дежурство":
+            return
+
+        current_type = self._current_duty_section_type()
+        target_type = "duty_mode" if current_type == "live_zabbix_monitor" else "live_zabbix_monitor"
+
+        for index in range(self.section_combo.count()):
+            section = self.section_combo.itemData(index)
+            if isinstance(section, dict) and section.get("type") == target_type:
+                self.section_combo.setCurrentIndex(index)
+                self.on_section_changed()
+                return
 
 
     def on_time_changed(self):
@@ -611,6 +668,7 @@ class MainWindow(QMainWindow):
                 widget.open_section(section_name)
             self.stack.setCurrentIndex(self.settings_page_index)
             self.set_time_selector_visible(False)
+            self.update_duty_section_switch(None)
             self.pause_inactive_web_dashboards()
 
     def check_for_updates_from_settings(self, interactive=False, auto_start_install=False):

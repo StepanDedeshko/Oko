@@ -89,11 +89,13 @@ class LiveZabbixMonitorDiagnosticsTests(unittest.TestCase):
         self.assertIn("Проверить DOM", text)
         self.assertIn("Страница загружена, но проблемы не найдены", text)
         self.assertIn("URL Zabbix Problems", text)
-        self.assertIn("Интервал опроса", text)
-        self.assertIn("Открыть URL в браузере", text)
+        home_text = (Path(__file__).resolve().parents[1] / "app" / "home_config.py").read_text(encoding="utf-8")
+        self.assertIn("Интервал опроса", home_text)
+        self.assertIn("LiveZabbixDeveloperSettingsWidget", home_text)
+        self.assertIn("Открыть Zabbix", text)
         self.assertIn("Обработанные", text)
         self.assertIn("QTimer.singleShot(delay_ms", text)
-        self.assertNotIn("Создать Redmine", text)
+        self.assertIn("Создать Redmine по выбранным строкам", text)
 
 class LiveZabbixMonitorWebEngineDiagnosticsTests(unittest.TestCase):
     def test_health_check_and_qwebengine_diagnostics_are_present(self):
@@ -189,9 +191,10 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
             "QHeaderView.Interactive",
             "QHeaderView.Stretch",
             "table_column_widths",
-            "font-size: 10px",
-            "setDefaultSectionSize(24)",
-            "cellClicked.connect",
+            "font-size: 11px",
+            "setDefaultSectionSize(32)",
+            "customContextMenuRequested.connect",
+            "_show_table_context_menu",
             "_severity_color",
             "disaster",
             "high",
@@ -222,7 +225,7 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
         self.assertNotIn('"Графики",', source)
         self.assertNotIn('"Обработано",', source)
         self.assertNotIn('"Статус Око",', source)
-        self.assertNotIn("Создать Redmine", source)
+        self.assertIn("Создать Redmine по выбранным строкам", source)
         self.assertNotIn('cell.setForeground(QColor("#64b5f6"))', source)
 
 
@@ -361,7 +364,7 @@ class LiveZabbixMonitorDutyFilterTests(unittest.TestCase):
             "Скрыто фильтром:",
             "_filter_separators_for_visible_items",
             "split_items_by_duty_filter",
-            "cellClicked.connect",
+            "customContextMenuRequested.connect",
             "Открыть узел сети в Zabbix",
             "Открыть график проблемы",
             "Открыть подтверждение Zabbix",

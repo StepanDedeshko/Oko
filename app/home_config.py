@@ -1,4 +1,6 @@
 
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QScrollArea,
+    QSpinBox,
     QSizePolicy,
     QPushButton,
     QStackedWidget,
@@ -63,6 +66,7 @@ from app.duty_settings import DutyModeSettingsWidget
 from app.service_checks_widget import ServiceChecksSettingsWidget
 from app.safe_widgets import NoWheelComboBox
 from app.service_checks import ensure_service_checks_defaults
+from app.live_zabbix import ensure_live_monitor_defaults
 
 
 def clone(value):
@@ -133,6 +137,253 @@ def request_application_restart(parent=None, reason=None):
 # Старое имя оставлено для совместимости с уже написанными вызовами.
 def ask_restart_required(parent=None, reason=None):
     return request_application_restart(parent=parent, reason=reason)
+
+
+DEVELOPER_PASSWORD_HASH_KEY = "developer_mode_password_hash"
+DEVELOPER_PASSWORD_SALT_KEY = "developer_mode_password_salt"
+
+
+def _developer_password_digest(password, salt_hex):
+    password_bytes = str(password or "").encode("utf-8")
+    try:
+        salt = bytes.fromhex(str(salt_hex or ""))
+    except ValueError:
+        salt = b""
+
+    if not salt:
+        salt = os.urandom(16)
+
+    digest = hashlib.pbkdf2_hmac("sha256", password_bytes, salt, 120_000)
+    return salt.hex(), digest.hex()
+
+
+def _verify_developer_password(password, salt_hex, expected_digest):
+    if not expected_digest:
+        return False
+
+    _salt, digest = _developer_password_digest(password, salt_hex)
+    return hmac.compare_digest(str(digest), str(expected_digest))
+
+
+class LiveZabbixDeveloperSettingsWidget(QGroupBox):
+    def __init__(self, config, parent=None):
+        super().__init__("Live Zabbix Monitor", parent)
+        self.config = config
+        self.settings = ensure_live_monitor_defaults(self.config)
+
+        root = QVBoxLayout(self)
+
+        hint = QLabel(
+            "Технические настройки Live Zabbix Monitor. "
+            "Обычному пользователю они скрыты, чтобы случайно не сломать мониторинг."
+        )
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        form = QFormLayout()
+
+        self.url_input = QLineEdit(
+            self.settings.get("problems_url")
+            or self.settings.get("url")
+            or ""
+        )
+        self.url_input.setPlaceholderText("URL страницы Zabbix Problems")
+
+        self.interval_input = QSpinBox()
+        self.interval_input.setRange(60, 3600)
+        self.interval_input.setSuffix(" сек")
+        interval = int(self.settings.get("poll_interval_seconds", 60) or 60)
+        self.interval_input.setValue(max(60, interval))
+
+        self.profile_input = QLineEdit(
+            self.settings.get("zabbix_profile_id")
+            or self.settings.get("profile_id")
+            or "zbx_product_1"
+        )
+        self.profile_input.setPlaceholderText("zbx_product_1")
+
+        self.show_diagnostics_checkbox = QCheckBox(
+            "Показывать в Live Zabbix кнопки DOM/WebView и JSON-диагностику"
+        )
+        self.show_diagnostics_checkbox.setChecked(
+            bool(
+                self.settings.get("show_live_zabbix_diagnostics", False)
+                or self.settings.get("show_developer_tools", False)
+            )
+        )
+
+        form.addRow("URL Zabbix Problems:", self.url_input)
+        form.addRow("Интервал опроса:", self.interval_input)
+        form.addRow("Профиль Zabbix:", self.profile_input)
+        form.addRow("", self.show_diagnostics_checkbox)
+
+        root.addLayout(form)
+
+        buttons = QHBoxLayout()
+        save_button = QPushButton("Сохранить настройки Live Zabbix")
+        save_button.clicked.connect(self.save_settings)
+        buttons.addWidget(save_button)
+        buttons.addStretch(1)
+        root.addLayout(buttons)
+
+    def save_settings(self):
+        url = self.url_input.text().strip()
+        profile_id = self.profile_input.text().strip() or "zbx_product_1"
+        interval = max(60, int(self.interval_input.value()))
+
+        self.settings["problems_url"] = url
+        self.settings["url"] = url
+        self.settings["poll_interval_seconds"] = interval
+        self.settings["zabbix_profile_id"] = profile_id
+        self.settings["profile_id"] = profile_id
+        self.settings["show_live_zabbix_diagnostics"] = self.show_diagnostics_checkbox.isChecked()
+
+        save_config(self.config)
+
+        QMessageBox.information(
+            self,
+            "Live Zabbix Monitor",
+            "Настройки Live Zabbix сохранены. Для полного применения перезапустите приложение."
+        )
+
+
+class DeveloperToolsWidget(QWidget):
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = config
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(12)
+
+        self.live_zabbix_settings = LiveZabbixDeveloperSettingsWidget(self.config, self)
+        root.addWidget(self.live_zabbix_settings)
+
+        self.diagnostics = DiagnosticsWidget(self.config)
+        root.addWidget(self.diagnostics, stretch=1)
+
+
+class DeveloperModeGateWidget(QWidget):
+    """
+    Локальная защита режима разработчика.
+
+    Пароль не хранится в открытом виде: в config сохраняются salt + PBKDF2 hash.
+    Это защита от случайного входа обычного пользователя в технические настройки.
+    """
+
+    def __init__(self, config, protected_widget, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.protected_widget = protected_widget
+
+        root = QVBoxLayout(self)
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack)
+
+        self.login_page = QWidget()
+        login_layout = QVBoxLayout(self.login_page)
+        login_layout.setContentsMargins(16, 16, 16, 16)
+        login_layout.setSpacing(10)
+
+        self.title_label = QLabel("Режим разработчика")
+        self.title_label.setObjectName("PageTitle")
+        self.hint_label = QLabel()
+        self.hint_label.setWordWrap(True)
+
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setPlaceholderText("Пароль режима разработчика")
+        self.password_input.returnPressed.connect(self._submit_password)
+
+        self.submit_button = QPushButton()
+        self.submit_button.clicked.connect(self._submit_password)
+
+        login_layout.addWidget(self.title_label)
+        login_layout.addWidget(self.hint_label)
+        login_layout.addWidget(self.password_input)
+        login_layout.addWidget(self.submit_button)
+        login_layout.addStretch(1)
+
+        self.unlocked_page = QWidget()
+        unlocked_layout = QVBoxLayout(self.unlocked_page)
+        unlocked_layout.setContentsMargins(0, 0, 0, 0)
+
+        top = QHBoxLayout()
+        unlocked_title = QLabel("Режим разработчика открыт")
+        unlocked_title.setObjectName("PageTitle")
+        lock_button = QPushButton("Заблокировать")
+        lock_button.clicked.connect(self._lock)
+        top.addWidget(unlocked_title)
+        top.addStretch(1)
+        top.addWidget(lock_button)
+
+        unlocked_layout.addLayout(top)
+        unlocked_layout.addWidget(self.protected_widget, stretch=1)
+
+        self.stack.addWidget(self.login_page)
+        self.stack.addWidget(self.unlocked_page)
+
+        self._refresh_login_text()
+        self._lock()
+
+    def _settings(self):
+        return self.config.setdefault("settings", {})
+
+    def _has_password(self):
+        settings = self._settings()
+        return bool(settings.get(DEVELOPER_PASSWORD_HASH_KEY) and settings.get(DEVELOPER_PASSWORD_SALT_KEY))
+
+    def _refresh_login_text(self):
+        if self._has_password():
+            self.hint_label.setText(
+                "Введите пароль, чтобы открыть диагностику и технические настройки. "
+                "Обычному пользователю этот раздел не нужен."
+            )
+            self.submit_button.setText("Войти")
+        else:
+            self.hint_label.setText(
+                "Пароль режима разработчика ещё не создан. "
+                "Введите новый пароль, чтобы защитить технические настройки."
+            )
+            self.submit_button.setText("Создать пароль и войти")
+
+    def _submit_password(self):
+        password = self.password_input.text()
+
+        if len(password) < 4:
+            QMessageBox.warning(self, "Режим разработчика", "Пароль должен быть не короче 4 символов.")
+            return
+
+        settings = self._settings()
+
+        if not self._has_password():
+            salt_hex, digest = _developer_password_digest(password, "")
+            settings[DEVELOPER_PASSWORD_SALT_KEY] = salt_hex
+            settings[DEVELOPER_PASSWORD_HASH_KEY] = digest
+            save_config(self.config)
+            QMessageBox.information(self, "Режим разработчика", "Пароль режима разработчика создан.")
+            self._unlock()
+            return
+
+        if _verify_developer_password(
+            password,
+            settings.get(DEVELOPER_PASSWORD_SALT_KEY, ""),
+            settings.get(DEVELOPER_PASSWORD_HASH_KEY, ""),
+        ):
+            self._unlock()
+            return
+
+        QMessageBox.warning(self, "Режим разработчика", "Неверный пароль.")
+
+    def _unlock(self):
+        self.password_input.clear()
+        self.stack.setCurrentWidget(self.unlocked_page)
+
+    def _lock(self):
+        self._refresh_login_text()
+        self.password_input.clear()
+        self.stack.setCurrentWidget(self.login_page)
+        self.password_input.setFocus()
 
 
 
@@ -1451,7 +1702,7 @@ class AppSettingsWidget(QWidget):
         self.add_section("Заметки", NotesWidget(self.config))
         self.update_widget = UpdateWidget(self.config, request_application_restart, show_title=False)
         self.add_section("Обновление", self.update_widget)
-        self.add_section("Режим разработчика", DiagnosticsWidget(self.config))
+        self.add_section("Режим разработчика", DeveloperModeGateWidget(self.config, DeveloperToolsWidget(self.config)))
 
         self.open_section("Продукты и страницы")
 
