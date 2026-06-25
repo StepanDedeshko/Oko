@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLineEdit,
     QMessageBox,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -206,7 +207,8 @@ class LiveZabbixMonitorWidget(QWidget):
         )
         self.table.verticalHeader().setDefaultSectionSize(24)
         self.table.verticalHeader().setMinimumSectionSize(18)
-        self.table.cellClicked.connect(self._on_table_cell_clicked)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
         self._configure_table_columns()
         root.addWidget(self.table, stretch=1)
 
@@ -688,24 +690,15 @@ class LiveZabbixMonitorWidget(QWidget):
                     cell.setForeground(QColor("#000000"))
                 if column == 6 and (item.ack_url or item.problem_url):
                     cell.setForeground(self._clickable_cell_foreground())
-                    font = cell.font()
-                    font.setUnderline(True)
-                    cell.setFont(font)
-                    cell.setToolTip("Открыть подтверждение Zabbix")
+                    cell.setToolTip("Правый клик: открыть подтверждение Zabbix")
                     cell.setData(Qt.UserRole, item.ack_url or item.problem_url)
                 if column == 3 and item.host_url:
                     cell.setForeground(self._clickable_cell_foreground())
-                    font = cell.font()
-                    font.setUnderline(True)
-                    cell.setFont(font)
-                    cell.setToolTip("Открыть узел")
+                    cell.setToolTip("Правый клик: открыть узел в Zabbix")
                     cell.setData(Qt.UserRole, item.host_url)
                 if column == 4 and (item.graph_urls or item.problem_url):
                     cell.setForeground(self._clickable_cell_foreground())
-                    font = cell.font()
-                    font.setUnderline(True)
-                    cell.setFont(font)
-                    cell.setToolTip("Открыть график/проблему")
+                    cell.setToolTip("Правый клик: открыть график/проблему")
                     cell.setData(Qt.UserRole, {"graph_urls": list(item.graph_urls), "problem_url": item.problem_url})
                 if column == 7 and item.actions_tooltip:
                     cell.setToolTip(item.actions_tooltip)
@@ -1596,30 +1589,80 @@ class LiveZabbixMonitorWidget(QWidget):
         if dialog in self.ack_dialogs:
             self.ack_dialogs.remove(dialog)
 
-    def _on_table_cell_clicked(self, row, column):
-        item = self.table.item(row, column)
-        payload = item.data(Qt.UserRole) if item is not None else ""
+    def _select_table_row_for_context_menu(self, row):
+        if row < 0:
+            return
+
+        selected_rows = {index.row() for index in self.table.selectionModel().selectedRows()}
+        if not selected_rows:
+            selected_rows = {index.row() for index in self.table.selectedIndexes()}
+
+        # Правый клик по уже выделенной строке не должен сбрасывать
+        # множественное выделение. Это важно для создания Redmine
+        # по нескольким выбранным проблемам.
+        if row in selected_rows:
+            self.table.setFocus()
+            return
+
+        self.table.clearSelection()
+        self.table.selectRow(row)
+        self.table.setFocus()
+
+    def _show_table_context_menu(self, position):
+        item = self.table.itemAt(position)
+        if item is None:
+            return
+
+        row = item.row()
+        column = item.column()
+        key = item.data(Qt.UserRole + 1)
+        if not key:
+            return
+
+        self._select_table_row_for_context_menu(row)
+
+        payload = item.data(Qt.UserRole)
+        menu = QMenu(self)
+
         if column == 3:
             if payload:
-                if QMessageBox.question(self, "Zabbix", "Открыть узел сети в Zabbix?", QMessageBox.Open | QMessageBox.Cancel) == QMessageBox.Open:
-                    QDesktopServices.openUrl(QUrl(str(payload)))
+                action = menu.addAction("Открыть узел сети в Zabbix")
+                action.triggered.connect(lambda _checked=False, url=str(payload): QDesktopServices.openUrl(QUrl(url)))
             else:
-                QMessageBox.information(self, "Zabbix", "Ссылка на узел не найдена.")
-            return
-        if column == 4:
+                action = menu.addAction("Ссылка на узел не найдена")
+                action.setEnabled(False)
+
+        elif column == 4:
             graph_urls = payload.get("graph_urls", []) if isinstance(payload, dict) else []
             problem_url = payload.get("problem_url", "") if isinstance(payload, dict) else ""
+
             if graph_urls:
-                if QMessageBox.question(self, "Zabbix", "Открыть график проблемы?", QMessageBox.Open | QMessageBox.Cancel) == QMessageBox.Open:
-                    self.open_graphs(graph_urls)
-            elif problem_url:
-                if QMessageBox.question(self, "Zabbix", "Открыть проблему в Zabbix?", QMessageBox.Open | QMessageBox.Cancel) == QMessageBox.Open:
-                    QDesktopServices.openUrl(QUrl(str(problem_url)))
+                action = menu.addAction("Открыть график проблемы")
+                action.triggered.connect(lambda _checked=False, urls=list(graph_urls): self.open_graphs(urls))
+
+            if problem_url:
+                action = menu.addAction("Открыть проблему в Zabbix")
+                action.triggered.connect(lambda _checked=False, url=str(problem_url): QDesktopServices.openUrl(QUrl(url)))
+
+            if not graph_urls and not problem_url:
+                action = menu.addAction("Ссылка на график/проблему не найдена")
+                action.setEnabled(False)
+
+        elif column == 6:
+            if payload:
+                action = menu.addAction("Открыть подтверждение Zabbix")
+                action.triggered.connect(lambda _checked=False, url=str(payload): self.open_acknowledgement(url))
             else:
-                QMessageBox.information(self, "Zabbix", "Ссылка на график/проблему не найдена.")
-            return
-        if column == 6 and payload:
-            self.open_acknowledgement(payload)
+                action = menu.addAction("Ссылка на подтверждение не найдена")
+                action.setEnabled(False)
+
+        if menu.actions():
+            menu.addSeparator()
+
+        redmine_action = menu.addAction("Создать Redmine по выбранным строкам")
+        redmine_action.triggered.connect(self.open_redmine_for_selected_row)
+
+        menu.exec(self.table.viewport().mapToGlobal(position))
 
     def open_graphs(self, urls):
         for url in urls or []:
