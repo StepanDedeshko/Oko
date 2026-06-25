@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import json
@@ -657,27 +657,148 @@ class LiveZabbixMonitorWidget(QWidget):
         if status_text:
             self.poll_status_label.setText(status_text)
 
-    def _clickable_cell_foreground(self) -> QColor:
+    def _is_light_theme(self) -> bool:
         theme_name = str((self.config.get("settings", {}) if isinstance(self.config, dict) else {}).get("theme") or "").casefold()
         light_themes = {"white_1", "light_standard"}
-        if theme_name in light_themes or theme_name.startswith("white") or "light" in theme_name or "свет" in theme_name:
-            return QColor("#000000")
-        return QColor("#ffffff")
+        return theme_name in light_themes or theme_name.startswith("white") or "light" in theme_name or "свет" in theme_name
+
+    def _clickable_cell_foreground(self) -> QColor:
+        return QColor("#000000") if self._is_light_theme() else QColor("#ffffff")
+
+    @staticmethod
+    def _month_name_ru(month_number):
+        months = (
+            "Январь",
+            "Февраль",
+            "Март",
+            "Апрель",
+            "Май",
+            "Июнь",
+            "Июль",
+            "Август",
+            "Сентябрь",
+            "Октябрь",
+            "Ноябрь",
+            "Декабрь",
+        )
+        try:
+            index = int(month_number) - 1
+        except (TypeError, ValueError):
+            return ""
+        if 0 <= index < len(months):
+            return months[index]
+        return ""
+
+    @staticmethod
+    def _parse_zabbix_started_at(value):
+        value = str(value or "").strip()
+        if not value:
+            return None
+
+        for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%y %H:%M:%S", "%d.%m.%y %H:%M"):
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                pass
+
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                parsed = datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+
+            now = datetime.now()
+            return now.replace(hour=parsed.hour, minute=parsed.minute, second=parsed.second, microsecond=0)
+
+        return None
+
+    def _timeline_separator_labels_for_item(self, item, state):
+        started_at = str(getattr(item, "started_at", "") or "").strip()
+        started_dt = self._parse_zabbix_started_at(started_at)
+        if started_dt is None:
+            return []
+
+        today = datetime.now().date()
+        yesterday = today - timedelta(days=1)
+        item_date = started_dt.date()
+        labels = []
+
+        if item_date == today:
+            if state.get("day") != item_date:
+                labels.append("Сегодня")
+                state["day"] = item_date
+                state["month"] = None
+                state["hour"] = None
+
+            hour_key = (item_date, started_dt.hour)
+            if state.get("hour") != hour_key:
+                labels.append(f"{started_dt.hour:02d}:00")
+                state["hour"] = hour_key
+
+            return labels
+
+        if item_date == yesterday:
+            if state.get("day") != item_date:
+                labels.append("Вчера")
+                state["day"] = item_date
+                state["month"] = None
+                state["hour"] = None
+            return labels
+
+        month_key = (item_date.year, item_date.month)
+        if state.get("month") != month_key:
+            month_label = self._month_name_ru(item_date.month)
+            if month_label:
+                labels.append(month_label)
+            state["month"] = month_key
+            state["day"] = None
+            state["hour"] = None
+
+        if state.get("day") != item_date:
+            labels.append(started_dt.strftime("%d.%m.%Y"))
+            state["day"] = item_date
+            state["hour"] = None
+
+        return labels
+
+    def _append_timeline_separator_row(self, row, text):
+        label = QTableWidgetItem(str(text or ""))
+        label.setTextAlignment(Qt.AlignCenter)
+        label.setFlags(Qt.ItemFlag.ItemIsEnabled)
+
+        font = label.font()
+        font.setBold(True)
+        font.setPointSize(max(font.pointSize(), 11))
+        label.setFont(font)
+
+        if self._is_light_theme():
+            bg = QColor("#dfeef6")
+            fg = QColor("#1f3440")
+        else:
+            bg = QColor("#163142")
+            fg = QColor("#e1f0f6")
+
+        label.setBackground(bg)
+        label.setForeground(fg)
+
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, label)
+        self.table.setSpan(row, 0, 1, self.table.columnCount())
+        self.table.setRowHeight(row, 30)
 
     def _render(self, diff, payload=None):
         all_items = diff.new + diff.active + diff.resolved + diff.processed
-        separator_rows = [row for row in self.last_separator_rows if str(row.get("text") or "").strip()]
-        self.table.setRowCount(len(all_items) + len(separator_rows))
+        self.table.setRowCount(0)
+
         table_row = 0
-        for separator in separator_rows:
-            label = QTableWidgetItem(str(separator.get("text") or ""))
-            label.setTextAlignment(Qt.AlignCenter)
-            label.setBackground(QColor("#263238"))
-            self.table.setItem(table_row, 0, label)
-            self.table.setSpan(table_row, 0, 1, self.table.columnCount())
-            table_row += 1
+        separator_state = {}
+
         for item in all_items:
-            row = table_row
+            for separator_label in self._timeline_separator_labels_for_item(item, separator_state):
+                self._append_timeline_separator_row(table_row, separator_label)
+                table_row += 1
+
+            self.table.insertRow(table_row)
             values = [
                 item.started_at,
                 item.severity,
@@ -689,31 +810,40 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.actions_text,
                 item.tags,
             ]
+
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value or ""))
                 cell.setData(Qt.UserRole + 1, item.key)
+
                 if column == 1:
                     cell.setTextAlignment(Qt.AlignCenter)
                     color = self._severity_color(item.severity_level, item.severity_class, item.severity)
                     if color:
                         cell.setBackground(QColor(color))
                         cell.setForeground(QColor("#000000"))
+
                 if column == 6 and (item.ack_url or item.problem_url):
                     cell.setForeground(self._clickable_cell_foreground())
                     cell.setToolTip("Правый клик: открыть подтверждение Zabbix")
                     cell.setData(Qt.UserRole, item.ack_url or item.problem_url)
+
                 if column == 3 and item.host_url:
                     cell.setForeground(self._clickable_cell_foreground())
                     cell.setToolTip("Правый клик: открыть узел в Zabbix")
                     cell.setData(Qt.UserRole, item.host_url)
+
                 if column == 4 and (item.graph_urls or item.problem_url):
                     cell.setForeground(self._clickable_cell_foreground())
                     cell.setToolTip("Правый клик: открыть график/проблему")
                     cell.setData(Qt.UserRole, {"graph_urls": list(item.graph_urls), "problem_url": item.problem_url})
+
                 if column == 7 and item.actions_tooltip:
                     cell.setToolTip(item.actions_tooltip)
-                self.table.setItem(row, column, cell)
+
+                self.table.setItem(table_row, column, cell)
+
             table_row += 1
+
         self.counts_label.setText(f"Новые: {len(diff.new)} | Активные: {len(diff.active)} | Решённые: {len(diff.resolved)} | Обработанные: {len(diff.processed)} | Всего: {self.last_filter_counts.get('raw', len(all_items))} | Показано: {self.last_filter_counts.get('visible', len(all_items))} | Скрыто фильтром: {self.last_filter_counts.get('hidden', 0)}")
         self.updated_label.setText("Последнее обновление: " + datetime.now().strftime("%H:%M:%S"))
         if all_items:
