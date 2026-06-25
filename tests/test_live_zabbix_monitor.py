@@ -232,3 +232,29 @@ class LiveZabbixMonitorAcknowledgeDetectionTests(unittest.TestCase):
         self.assertIn("Problems page loaded, but Problems table not found", parser_source)
         self.assertIn("_load_finished_connected", widget_source)
         self.assertNotIn("loadFinished.disconnect(self._on_loaded)", widget_source)
+
+class LiveZabbixMonitorNestedRowsTests(unittest.TestCase):
+    def test_parser_uses_direct_problem_rows_and_skips_history_rows(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix.py").read_text(encoding="utf-8")
+        for marker in [
+            "directChildRows",
+            "child.closest('table') === table",
+            "row.closest('table') !== problemTable",
+            "requiredProblemHeaders",
+            "hasValidSeverity",
+            "isHistoryRow",
+            "redmine",
+            "nestedRowsSkipped",
+            "invalidProblemRowsSkipped",
+            "historyRowsSkipped",
+            "sampleSkippedRows",
+            "problem_table_found",
+            "direct_problem_rows_count",
+            "nested_rows_skipped",
+            "invalid_problem_rows_skipped",
+            "history_rows_skipped",
+            "sample_skipped_rows",
+        ]:
+            self.assertIn(marker, source)
+        self.assertNotIn("problemTable.querySelectorAll('tbody > tr')", source)
+        self.assertNotIn('problemTable.querySelectorAll("tr")', source)

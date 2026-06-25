@@ -133,8 +133,7 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
   };
   function buildHeaderMap(table) {
     var map = {};
-    var headerRows = Array.from(table.querySelectorAll('thead tr'));
-    if (!headerRows.length) headerRows = Array.from(table.querySelectorAll('tr')).slice(0, 2);
+    var headerRows = directHeaderRows(table);
     headerRows.forEach(function(row) {
       directCells(row).filter(function(cell) { return cell.tagName === 'TH'; }).forEach(function(th, index) {
         var header = normalizeHeader(text(th));
@@ -197,34 +196,73 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     var ackDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: false, table_count: 0, tr_count: 0, header_map: {}, candidate_count: 0, problem_count: 0, acknowledge_detected_reason: acknowledgeReason, zero_reason: 'Открыта форма подтверждения Zabbix. Мониторинг страницы Problems не выполняется в этом WebView.', sample_rows: []};
     return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: false, table_count: 0, tr_count: 0, header_map: {}, candidate_count: 0, problem_count: 0, acknowledge_detected_reason: acknowledgeReason, items: [], separators: [], safe_debug: ackDebug, zero_reason: ackDebug.zero_reason});
   }
-  var tables = Array.from(document.querySelectorAll('table')).filter(function(table) { return !table.closest('.overlay-dialogue, .modal, .modal-popup, #acknowledge_form, .table-forms'); });
-  var rows = Array.from(document.querySelectorAll('tr'));
+  function directChildRows(table) {
+    var bodies = Array.from(table.children).filter(function(child) { return child.tagName === 'TBODY'; });
+    var source = bodies.length ? bodies : [table];
+    var result = [];
+    source.forEach(function(parent) {
+      Array.from(parent.children).forEach(function(child) {
+        if (child.tagName === 'TR' && child.closest('table') === table) result.push(child);
+      });
+    });
+    return result;
+  }
+  function directHeaderRows(table) {
+    var heads = Array.from(table.children).filter(function(child) { return child.tagName === 'THEAD'; });
+    var result = [];
+    heads.forEach(function(parent) {
+      Array.from(parent.children).forEach(function(child) { if (child.tagName === 'TR' && child.closest('table') === table) result.push(child); });
+    });
+    if (!result.length) result = directChildRows(table).slice(0, 2);
+    return result;
+  }
+  var tables = Array.from(document.querySelectorAll('table')).filter(function(table) { return !table.closest('.overlay-dialogue, .modal, .modal-popup, #acknowledge_form, .table-forms, td'); });
+  var rows = Array.from(document.getElementsByTagName('tr'));
   var loginDetected = !!document.querySelector('input[type=password], input[name*=password i], form[action*=login i]') || /login|sign[ -]?in|вход/i.test(document.title || '');
   var items = [];
   var separators = [];
   var candidates = [];
+  var nestedRowsSkipped = 0;
+  var invalidProblemRowsSkipped = 0;
+  var historyRowsSkipped = 0;
+  var sampleSkippedRows = [];
+  function rememberSkipped(row, reason, cellsRaw) {
+    if (reason === 'nested') nestedRowsSkipped += 1;
+    else if (reason === 'history') historyRowsSkipped += 1;
+    else invalidProblemRowsSkipped += 1;
+    if (sampleSkippedRows.length < 5) sampleSkippedRows.push({reason: reason, classes: String(row.className || '').slice(0, 160), cell_count: cellsRaw ? cellsRaw.length : directCells(row).length, text_length: text(row).length});
+  }
+  function isHistoryRow(cellsRaw) {
+    if (cellsRaw.length < 3 || cellsRaw.length > 4) return false;
+    var joined = cellsRaw.map(text).join(' ');
+    return /\d{2}\.\d{2}\.\d{4}/.test(joined) && /https?:\/\/[^ ]*redmine/i.test(joined);
+  }
+  function hasValidSeverity(value, className) { return !!severityLevel(value, className); }
   var headerMap = {};
+  var requiredProblemHeaders = ['started_at', 'severity', 'host', 'trigger_name'];
   var problemTable = tables.find(function(table) {
     var map = buildHeaderMap(table);
-    if (Object.prototype.hasOwnProperty.call(map, 'trigger_name') && Object.prototype.hasOwnProperty.call(map, 'host')) {
+    var mappedFields = Object.keys(map).filter(function(key) { return key.indexOf('__') !== 0; });
+    if (requiredProblemHeaders.every(function(field) { return mappedFields.indexOf(field) !== -1; })) {
       headerMap = map;
       return true;
     }
     return false;
-  }) || tables[0] || null;
+  }) || null;
   if (problemTable && !Object.keys(headerMap).filter(function(key) { return key.indexOf('__') !== 0; }).length) headerMap = buildHeaderMap(problemTable);
-  var dataRows = problemTable ? Array.from(problemTable.querySelectorAll('tbody > tr')).filter(function(row) { return directCells(row).some(function(cell) { return cell.tagName === 'TD'; }); }) : rows;
+  var dataRows = problemTable ? directChildRows(problemTable).filter(function(row) { return row.closest('table') === problemTable && directCells(row).some(function(cell) { return cell.tagName === 'TD'; }); }) : [];
   dataRows.forEach(function(row) {
+    if (problemTable && row.closest('table') !== problemTable) { rememberSkipped(row, 'nested'); return; }
     var rowText = text(row);
     var cellsRaw = directCells(row);
     var cells = cellsRaw.map(text);
     if (isSeparatorRow(row, cellsRaw)) { separators.push({row_type: 'separator', text: rowText}); return; }
-    if (!rowText || cellsRaw.length < 2 || cellsRaw.some(function(cell) { return cell.hasAttribute('colspan'); })) return;
+    if (!rowText || cellsRaw.length < 2 || cellsRaw.some(function(cell) { return cell.hasAttribute('colspan'); })) { rememberSkipped(row, 'invalid', cellsRaw); return; }
+    if (isHistoryRow(cellsRaw)) { rememberSkipped(row, 'history', cellsRaw); return; }
     var links = Array.from(row.querySelectorAll('a[href]'));
     var hasHeaderMap = Object.keys(headerMap).filter(function(key) { return key.indexOf('__') !== 0; }).length > 0;
     var looksLikeProblem = hasHeaderMap || links.some(function(a) { return /event|problem|tr_events|trigger|zabbix\.php/i.test(a.href || ''); }) || row.hasAttribute('data-eventid') || row.hasAttribute('data-problemid') || /problem|event|trigger/i.test(row.className || '');
-    if (!looksLikeProblem && cellsRaw.length < 4) return;
-    candidates.push(row);
+    if (!looksLikeProblem && cellsRaw.length < 4) { rememberSkipped(row, 'invalid', cellsRaw); return; }
     var severityCell = cellAt(cellsRaw, headerMap, 'severity', 1);
     var ackCell = cellAt(cellsRaw, headerMap, 'acknowledged', 6);
     var actionsCell = cellAt(cellsRaw, headerMap, 'actions_text', 7);
@@ -239,6 +277,8 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     var severityClass = severityCell ? String(severityCell.className || '') : '';
     var ackText = text(ackCell);
     var acknowledged = /да|yes|acknowledged|подтвержден/i.test(ackText) && !/нет|no|unack/i.test(ackText);
+    if (!hasValidSeverity(severityText, severityClass) || !text(problemCell) || (!text(hostCell) && !problemLink && !eventId)) { rememberSkipped(row, 'invalid', cellsRaw); return; }
+    candidates.push(row);
     items.push({
       id: eventId || row.id || '',
       event_id: eventId,
@@ -273,7 +313,7 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     else if (candidates.length === 0) reason = 'DOM Zabbix не распознан: строки таблиц не похожи на проблемы.';
     else reason = 'Кандидаты найдены, но не удалось извлечь проблемы из DOM.';
   }
-  var safeDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, header_map: headerMap, acknowledge_detected_reason: '', separator_count: separators.length, candidate_count: candidates.length, problem_count: items.length, zero_reason: reason, sample_rows: sampleRows};
-  return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, header_map: headerMap, acknowledge_detected_reason: '', candidate_count: candidates.length, problem_count: items.length, separators: separators, items: items, safe_debug: safeDebug, zero_reason: reason});
+  var safeDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, problem_table_found: !!problemTable, direct_problem_rows_count: dataRows.length, nested_rows_skipped: nestedRowsSkipped, invalid_problem_rows_skipped: invalidProblemRowsSkipped, history_rows_skipped: historyRowsSkipped, sample_skipped_rows: sampleSkippedRows, header_map: headerMap, acknowledge_detected_reason: '', separator_count: separators.length, candidate_count: candidates.length, problem_count: items.length, zero_reason: reason, sample_rows: sampleRows};
+  return JSON.stringify({ok: true, url: document.location.href, title: document.title || '', login_detected: loginDetected, table_count: tables.length, tr_count: rows.length, problem_table_found: !!problemTable, direct_problem_rows_count: dataRows.length, nested_rows_skipped: nestedRowsSkipped, invalid_problem_rows_skipped: invalidProblemRowsSkipped, history_rows_skipped: historyRowsSkipped, sample_skipped_rows: sampleSkippedRows, header_map: headerMap, acknowledge_detected_reason: '', candidate_count: candidates.length, problem_count: items.length, separators: separators, items: items, safe_debug: safeDebug, zero_reason: reason});
 })();
 """
