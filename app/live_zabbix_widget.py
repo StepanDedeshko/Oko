@@ -190,23 +190,32 @@ class LiveZabbixMonitorWidget(QWidget):
         self.table.setObjectName("LiveZabbixProblemsTable")
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(True)
+        self.table.setWordWrap(False)
+        self.table.verticalHeader().setVisible(False)
         self.table.setStyleSheet(
             """
             QTableWidget#LiveZabbixProblemsTable {
-                font-size: 10px;
-                gridline-color: rgba(128, 128, 128, 90);
-            }
-            QTableWidget#LiveZabbixProblemsTable::item {
-                padding: 1px 3px;
+                font-size: 11px;
+                border: 1px solid rgba(120, 150, 170, 80);
+                border-radius: 8px;
+                gridline-color: rgba(120, 150, 170, 42);
+                selection-background-color: palette(highlight);
+                selection-color: palette(highlighted-text);
+                outline: 0;
             }
             QHeaderView::section {
-                font-size: 10px;
-                padding: 2px 4px;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 6px 8px;
+                border: 0;
+                border-bottom: 1px solid rgba(120, 150, 170, 95);
             }
             """
         )
-        self.table.verticalHeader().setDefaultSectionSize(24)
-        self.table.verticalHeader().setMinimumSectionSize(18)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.verticalHeader().setMinimumSectionSize(28)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_table_context_menu)
         self._configure_table_columns()
@@ -216,7 +225,7 @@ class LiveZabbixMonitorWidget(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
-        defaults = [105, 82, 42, 145, 460, 76, 86, 120, 130]
+        defaults = [105, 110, 42, 145, 460, 76, 86, 120, 130]
         widths = self.settings.get("table_column_widths") or defaults
         self._restoring_column_widths = True
         for index, width in enumerate(defaults):
@@ -684,10 +693,11 @@ class LiveZabbixMonitorWidget(QWidget):
                 cell = QTableWidgetItem(str(value or ""))
                 cell.setData(Qt.UserRole + 1, item.key)
                 if column == 1:
+                    cell.setTextAlignment(Qt.AlignCenter)
                     color = self._severity_color(item.severity_level, item.severity_class, item.severity)
                     if color:
                         cell.setBackground(QColor(color))
-                    cell.setForeground(QColor("#000000"))
+                        cell.setForeground(QColor("#000000"))
                 if column == 6 and (item.ack_url or item.problem_url):
                     cell.setForeground(self._clickable_cell_foreground())
                     cell.setToolTip("Правый клик: открыть подтверждение Zabbix")
@@ -719,18 +729,21 @@ class LiveZabbixMonitorWidget(QWidget):
     @staticmethod
     def _severity_color(level, severity_class="", severity_text=""):
         key = " ".join([str(level or ""), str(severity_class or ""), str(severity_text or "")]).casefold()
+
+        # Цвета важности должны оставаться независимыми от темы приложения:
+        # это смысловая индикация Zabbix, а не декоративный стиль таблицы.
         if "disaster" in key or "чрезвычай" in key:
             return "#e45959"
         if "high" in key or "высок" in key:
-            return "#ff8a65"
+            return "#e97659"
         if "average" in key or "средн" in key:
-            return "#ffb74d"
+            return "#ffa059"
         if "warning" in key or "предупр" in key:
-            return "#ffd54f"
+            return "#ffc859"
         if "info" in key or "информ" in key:
-            return "#64b5f6"
+            return "#7499ff"
         if "na-bg" in key or "not_classified" in key or "не классиф" in key:
-            return "#b0bec5"
+            return "#97aab3"
         return ""
 
     class _SafeTemplateValues(dict):
