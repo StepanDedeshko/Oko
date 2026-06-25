@@ -164,7 +164,6 @@ class LiveZabbixMonitorWidget(QWidget):
             "Подтверждено",
             "Действия",
             "Теги",
-            "Статус Око",
         ]
         self.table = QTableWidget(0, len(self.table_columns))
         self.table.setHorizontalHeaderLabels(self.table_columns)
@@ -194,7 +193,7 @@ class LiveZabbixMonitorWidget(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
-        defaults = [105, 82, 42, 145, 460, 76, 86, 72, 130, 80]
+        defaults = [105, 82, 42, 145, 460, 76, 86, 120, 130]
         widths = self.settings.get("table_column_widths") or defaults
         self._restoring_column_widths = True
         for index, width in enumerate(defaults):
@@ -626,6 +625,13 @@ class LiveZabbixMonitorWidget(QWidget):
         if status_text:
             self.poll_status_label.setText(status_text)
 
+    def _clickable_cell_foreground(self) -> QColor:
+        theme_name = str((self.config.get("settings", {}) if isinstance(self.config, dict) else {}).get("theme") or "").casefold()
+        light_themes = {"white_1", "light_standard"}
+        if theme_name in light_themes or theme_name.startswith("white") or "light" in theme_name or "свет" in theme_name:
+            return QColor("#000000")
+        return QColor("#ffffff")
+
     def _render(self, diff, payload=None):
         all_items = diff.new + diff.active + diff.resolved + diff.processed
         separator_rows = [row for row in self.last_separator_rows if str(row.get("text") or "").strip()]
@@ -650,7 +656,6 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.ack_text or ("Да" if item.acknowledged else "Нет"),
                 item.actions_text,
                 item.tags,
-                item.status,
             ]
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value or ""))
@@ -660,26 +665,28 @@ class LiveZabbixMonitorWidget(QWidget):
                         cell.setBackground(QColor(color))
                     cell.setForeground(QColor("#000000"))
                 if column == 6 and (item.ack_url or item.problem_url):
-                    cell.setForeground(QColor("#64b5f6"))
+                    cell.setForeground(self._clickable_cell_foreground())
                     font = cell.font()
                     font.setUnderline(True)
                     cell.setFont(font)
                     cell.setToolTip("Открыть подтверждение Zabbix")
                     cell.setData(Qt.UserRole, item.ack_url or item.problem_url)
                 if column == 3 and item.host_url:
-                    cell.setForeground(QColor("#64b5f6"))
+                    cell.setForeground(self._clickable_cell_foreground())
                     font = cell.font()
                     font.setUnderline(True)
                     cell.setFont(font)
                     cell.setToolTip("Открыть узел")
                     cell.setData(Qt.UserRole, item.host_url)
                 if column == 4 and (item.graph_urls or item.problem_url):
-                    cell.setForeground(QColor("#64b5f6"))
+                    cell.setForeground(self._clickable_cell_foreground())
                     font = cell.font()
                     font.setUnderline(True)
                     cell.setFont(font)
                     cell.setToolTip("Открыть график/проблему")
                     cell.setData(Qt.UserRole, {"graph_urls": list(item.graph_urls), "problem_url": item.problem_url})
+                if column == 7 and item.actions_tooltip:
+                    cell.setToolTip(item.actions_tooltip)
                 self.table.setItem(row, column, cell)
             table_row += 1
         self.counts_label.setText(f"Новые: {len(diff.new)} | Активные: {len(diff.active)} | Решённые: {len(diff.resolved)} | Обработанные: {len(diff.processed)} | Всего: {self.last_filter_counts.get('raw', len(all_items))} | Показано: {self.last_filter_counts.get('visible', len(all_items))} | Скрыто фильтром: {self.last_filter_counts.get('hidden', 0)}")

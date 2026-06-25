@@ -90,7 +90,7 @@ def normalize_snapshot(items) -> dict[str, ZabbixProblemSnapshotItem]:
         if isinstance(item, ZabbixProblemSnapshotItem):
             snapshot_item = item
         else:
-            snapshot_item = ZabbixProblemSnapshotItem(key=build_problem_key(item), **{k: v for k, v in dict(item or {}).items() if k in {"trigger_name", "host", "host_url", "severity", "started_at", "status", "info", "duration", "acknowledged", "ack_text", "ack_url", "actions_text", "tags", "severity_class", "severity_level", "event_id", "problem_url", "graph_urls", "trigger_kind", "processed", "row_index"}})
+            snapshot_item = ZabbixProblemSnapshotItem(key=build_problem_key(item), **{k: v for k, v in dict(item or {}).items() if k in {"trigger_name", "host", "host_url", "severity", "started_at", "status", "info", "duration", "acknowledged", "ack_text", "ack_url", "actions_text", "actions_tooltip", "tags", "severity_class", "severity_level", "event_id", "problem_url", "graph_urls", "trigger_kind", "processed", "row_index"}})
         if snapshot_item.key:
             result[snapshot_item.key] = snapshot_item
     return result
@@ -285,6 +285,23 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     var joined = cellsRaw.map(text).join(' ');
     return /\d{2}\.\d{2}\.\d{4}/.test(joined) && /https?:\/\/[^ ]*redmine/i.test(joined);
   }
+  function compactText(value, limit) {
+    value = String(value || '').replace(/\s+/g, ' ').trim();
+    limit = limit || 160;
+    return value.length > limit ? value.slice(0, limit - 1) + '…' : value;
+  }
+  function actionMessageInfo(actionsCell) {
+    if (!actionsCell) return {short_text: '', full_text: ''};
+    var nestedRows = Array.from(actionsCell.querySelectorAll('table tr')).filter(function(row) { return row.closest('td') === actionsCell || actionsCell.contains(row); });
+    var messages = [];
+    nestedRows.forEach(function(row) {
+      var cells = directCells(row).map(text).filter(Boolean);
+      if (cells.length >= 3) messages.push(cells[0] + ' — ' + cells[1] + ': ' + cells.slice(2).join(' '));
+      else if (cells.length) messages.push(cells.join(' — '));
+    });
+    var full = messages.length ? messages[messages.length - 1] : text(actionsCell);
+    return {short_text: compactText(full, 140), full_text: full};
+  }
   function hasValidSeverity(value, className) { return !!severityLevel(value, className); }
   var headerMap = {};
   var requiredProblemHeaders = ['started_at', 'severity', 'host', 'trigger_name'];
@@ -321,6 +338,7 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
     var graphLink = links.find(function(a) { return /chart|graph|history|graphs/i.test(a.href || ''); });
     var ackLink = (ackCell ? Array.from(ackCell.querySelectorAll('a[href]')) : links).find(function(a) { return /acknowledge|eventid|problem/i.test(a.href || '') || /подтверд|ack/i.test(text(a)); });
     var eventId = eventIdFromRow(row);
+    var actionsInfo = actionMessageInfo(actionsCell);
     var severityText = text(severityCell) || cells[1] || '';
     var severityClass = severityCell ? String(severityCell.className || '') : '';
     var ackText = text(ackCell);
@@ -342,7 +360,8 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
       acknowledged: acknowledged,
       ack_text: ackText,
       ack_url: ackLink ? abs(ackLink.getAttribute('href')) : (problemLink ? abs(problemLink.getAttribute('href')) : ''),
-      actions_text: text(actionsCell),
+      actions_text: actionsInfo.short_text,
+      actions_tooltip: actionsInfo.full_text,
       tags: text(cellAt(cellsRaw, headerMap, 'tags', 8)),
       status: 'active',
       problem_url: problemLink ? abs(problemLink.getAttribute('href')) : '',

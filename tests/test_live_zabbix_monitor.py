@@ -164,6 +164,7 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
             "ack_text",
             "ack_url",
             "actions_text",
+            "actions_tooltip",
             "tags",
             "severity_class",
             "severity_level",
@@ -185,7 +186,6 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
             '"Подтверждено"',
             '"Действия"',
             '"Теги"',
-            '"Статус Око"',
             "QHeaderView.Interactive",
             "QHeaderView.Stretch",
             "table_column_widths",
@@ -211,13 +211,54 @@ class LiveZabbixMonitorProblemTableTests(unittest.TestCase):
             ".table-forms",
             "isSeparatorRow",
             "separators",
+            "_clickable_cell_foreground",
+            'return QColor("#ffffff")',
+            'return QColor("#000000")',
+            "actionMessageInfo",
+            "actions_tooltip",
         ]:
             self.assertIn(marker, combined_source)
         self.assertNotIn('QPushButton("Открыть подтверждение")', source)
         self.assertNotIn('"Графики",', source)
         self.assertNotIn('"Обработано",', source)
+        self.assertNotIn('"Статус Око",', source)
         self.assertNotIn("Создать Redmine", source)
+        self.assertNotIn('cell.setForeground(QColor("#64b5f6"))', source)
 
+
+
+    def test_live_monitor_columns_exclude_oko_status_and_clickable_text_uses_theme_colors(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        columns_start = source.index("self.table_columns = [")
+        columns_end = source.index("]", columns_start)
+        columns_block = source[columns_start:columns_end]
+        self.assertLess(columns_block.index('"Время"'), columns_block.index('"Важность"'))
+        self.assertLess(columns_block.index('"Проблема"'), columns_block.index('"Подтверждено"'))
+        self.assertLess(columns_block.index('"Подтверждено"'), columns_block.index('"Действия"'))
+        self.assertNotIn('"Статус Око"', columns_block)
+        clickable_start = source.index("def _clickable_cell_foreground")
+        clickable_end = source.index("def _render", clickable_start)
+        clickable_block = source[clickable_start:clickable_end]
+        self.assertIn('return QColor("#000000")', clickable_block)
+        self.assertIn('return QColor("#ffffff")', clickable_block)
+        self.assertNotIn("#64b5f6", clickable_block)
+        self.assertIn("cell.setForeground(self._clickable_cell_foreground())", source)
+
+    def test_actions_column_extracts_nested_comment_text_and_keeps_nested_rows_out_of_items(self):
+        parser_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix.py").read_text(encoding="utf-8")
+        widget_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        for marker in [
+            "actionMessageInfo",
+            "actionsCell.querySelectorAll('table tr')",
+            "messages[messages.length - 1]",
+            "compactText(full, 140)",
+            "actions_tooltip",
+            "directChildRows(problemTable)",
+            "row.closest('table') !== problemTable",
+        ]:
+            self.assertIn(marker, parser_source)
+        self.assertIn("if column == 7 and item.actions_tooltip", widget_source)
+        self.assertIn("cell.setToolTip(item.actions_tooltip)", widget_source)
 
     def test_severity_cells_force_dark_foreground_for_dark_theme_readability(self):
         source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")

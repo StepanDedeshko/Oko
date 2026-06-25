@@ -56,6 +56,7 @@ class ZabbixProblemSnapshotItem:
     ack_text: str = ""
     ack_url: str = ""
     actions_text: str = ""
+    actions_tooltip: str = ""
     tags: str = ""
     severity_class: str = ""
     severity_level: str = ""
@@ -81,6 +82,7 @@ class ZabbixProblemSnapshotItem:
             "ack_text": self.ack_text,
             "ack_url": self.ack_url,
             "actions_text": self.actions_text,
+            "actions_tooltip": self.actions_tooltip,
             "tags": self.tags,
             "severity_class": self.severity_class,
             "severity_level": self.severity_level,
@@ -252,6 +254,7 @@ def enrich_problem(config: dict, problem: dict, time_range="1h", processed_keys:
         ack_text=str(problem.get("ack_text") or ""),
         ack_url=str(problem.get("ack_url") or ""),
         actions_text=str(problem.get("actions_text") or problem.get("actions") or ""),
+        actions_tooltip=str(problem.get("actions_tooltip") or problem.get("actions_full_text") or ""),
         tags=str(problem.get("tags") or ""),
         severity_class=str(problem.get("severity_class") or ""),
         severity_level=str(problem.get("severity_level") or ""),
