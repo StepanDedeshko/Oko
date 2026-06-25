@@ -19,7 +19,7 @@ LIVE_MONITOR_CONFIG_KEY = "live_zabbix_monitor"
 
 
 def default_live_monitor_config() -> dict:
-    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 10, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True}
+    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 60, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True}
 
 
 def ensure_live_monitor_defaults(config: dict) -> dict:
@@ -28,9 +28,9 @@ def ensure_live_monitor_defaults(config: dict) -> dict:
     for key, value in defaults.items():
         settings.setdefault(key, value)
     try:
-        settings["poll_interval_seconds"] = max(5, min(15, int(settings.get("poll_interval_seconds", 10))))
+        settings["poll_interval_seconds"] = max(60, min(3600, int(settings.get("poll_interval_seconds", 60))))
     except (TypeError, ValueError):
-        settings["poll_interval_seconds"] = 10
+        settings["poll_interval_seconds"] = 60
     return settings
 
 

@@ -701,7 +701,9 @@ class LiveZabbixMonitorWidget(QWidget):
         return theme_name in light_themes or theme_name.startswith("white") or "light" in theme_name or "свет" in theme_name
 
     def _clickable_cell_foreground(self) -> QColor:
-        return QColor("#000000") if self._is_light_theme() else QColor("#ffffff")
+        if self._is_light_theme():
+            return QColor("#000000")
+        return QColor("#ffffff")
 
     @staticmethod
     def _month_name_ru(month_number):
