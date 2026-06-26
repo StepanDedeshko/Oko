@@ -1043,10 +1043,10 @@ class ProductsWidget(QWidget):
 
 
 class ProfileWidget(QWidget):
-    def __init__(self, config, parent=None):
+    def __init__(self, config, logout_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
-        self.logout_callback = self.config.get("_logout_callback")
+        self.logout_callback = logout_callback
         self.saved_credentials = load_saved_credentials()
         self.saved_zabbix_credentials = self.saved_credentials
         self.zabbix_inputs = {}
@@ -2146,9 +2146,10 @@ class AdministrationWidget(QWidget):
         QMessageBox.information(self, "Администрирование", "Пароль обновлён.")
 
 class AppSettingsWidget(QWidget):
-    def __init__(self, config, parent=None):
+    def __init__(self, config, logout_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
+        self.logout_callback = logout_callback
         self.section_indexes = {}
 
         root = QVBoxLayout(self)
@@ -2159,7 +2160,7 @@ class AppSettingsWidget(QWidget):
         self.stack = QStackedWidget()
         root.addWidget(self.stack, stretch=1)
 
-        self.add_section("Профиль", ProfileWidget(self.config))
+        self.add_section("Профиль", ProfileWidget(self.config, logout_callback=self.logout_callback))
         if is_admin_user(self.config.get("_current_user")):
             self.add_section("Администрирование", AdministrationWidget(self.config))
         self.add_section("Продукты и страницы", ProductsWidget(self.config))
@@ -2184,7 +2185,7 @@ class AppSettingsWidget(QWidget):
         if index is None:
             return
         old_widget = self.stack.widget(index)
-        new_widget = ProfileWidget(self.config)
+        new_widget = ProfileWidget(self.config, logout_callback=self.logout_callback)
         self.stack.removeWidget(old_widget)
         old_widget.deleteLater()
         self.section_indexes["Профиль"] = self.stack.insertWidget(index, new_widget)

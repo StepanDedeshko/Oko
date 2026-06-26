@@ -58,7 +58,6 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.config = config
-        self.config["_logout_callback"] = self.logout_user
         self.credentials = credentials
         self.settings = config.get("settings", {})
         self.current_time_range = self.settings.get("default_time_range", "1h")
@@ -329,7 +328,7 @@ class MainWindow(QMainWindow):
         self.page_has_time_buttons[self.auth_page_index] = False
 
     def create_settings_page(self):
-        settings_widget = AppSettingsWidget(config=self.config)
+        settings_widget = AppSettingsWidget(config=self.config, logout_callback=self.logout_user)
 
         self.settings_page_index = self.stack.addWidget(settings_widget)
         self.page_has_time_buttons[self.settings_page_index] = False
