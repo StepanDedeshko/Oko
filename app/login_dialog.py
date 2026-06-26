@@ -1,8 +1,6 @@
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -10,32 +8,30 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QVBoxLayout,
-    QWidget,
 )
 
 from app.app_info import APP_NAME
-from app.config import CONFIG_PATH, enabled_zabbix_instances, import_config_file, save_config
-from app.screen_utils import center_widget_on_screen
-from app.credentials import OTRS_CREDENTIALS_KEY, LEGACY_OTRS_CREDENTIALS_KEY, load_otrs_credentials, load_saved_credentials, save_credentials
+from app.app_users import authenticate_user, create_user, has_users
+from app.credentials import load_saved_credentials
 from app.logger import get_logger
+from app.screen_utils import center_widget_on_screen
+
 
 FIRST_SETUP_MESSAGE = (
-    "Первичная настройка не завершена.\n"
-    "В конфигурации нет включённых Zabbix-серверов.\n\n"
-    "Для работы приложения импортируйте готовый config.json\n"
-    "или настройте подключение вручную."
+    "Первичная настройка Око.\n"
+    "Создайте первого администратора приложения."
 )
-FIRST_SETUP_SHORT_MESSAGE = "Первичная настройка не завершена: нет включённых Zabbix-серверов."
+FIRST_SETUP_SHORT_MESSAGE = "Создайте первого администратора Око."
 GITHUB_RELEASES_URL = "https://github.com/StepanDedeshko/Oko/releases"
 
 
 class LoginDialog(QDialog):
     """
-    Упрощённое окно входа:
-    - логин/пароль Zabbix;
-    - логин/пароль ОТРС.
+    Окно входа в Око.
+
+    Здесь вводятся только логин и пароль приложения Око.
+    Доступы Zabbix, ОТРС и сервисов настраиваются в разделе «Профиль».
     """
 
     def __init__(self, config, preferred_screen=None):
@@ -43,105 +39,70 @@ class LoginDialog(QDialog):
 
         self.config = config
         self.preferred_screen = preferred_screen
-        self.credentials = {}
-        self.saved_credentials = load_saved_credentials()
+        self.credentials = load_saved_credentials()
+        self.current_user = None
         self.theme_name = self.config.get("settings", {}).get("theme", "mass_effect")
         self.logger = get_logger()
+        self.first_owner_setup = not has_users()
 
         self.setWindowTitle(f"Вход в {APP_NAME}")
-        self.resize(620, 560)
+        self.resize(440, 260)
 
         root = QVBoxLayout(self)
-
-        is_first_run = not bool(self.saved_credentials)
+        root.setSpacing(12)
 
         title_text = (
-            "Для первого запуска просьба ввести логин и пароль"
-            if is_first_run
-            else "Введите логин и пароль"
+            "Первый запуск: создайте администратора Око"
+            if self.first_owner_setup
+            else "Вход в Око"
         )
-
         title = QLabel(title_text)
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 18px; font-weight: bold;")
         root.addWidget(title)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        root.addWidget(scroll, stretch=1)
+        hint = QLabel(
+            "Учётки Zabbix, ОТРС и сервисов вводятся после входа в разделе «Профиль»."
+            if not self.first_owner_setup
+            else "Первый пользователь получит роль владельца/администратора."
+        )
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignCenter)
+        root.addWidget(hint)
 
-        container = QWidget()
-        form_layout = QVBoxLayout(container)
-        scroll.setWidget(container)
+        account_box = QGroupBox("Учётная запись Око")
+        form = QFormLayout(account_box)
 
-        self.inputs = {}
+        self.login_input = QLineEdit()
+        self.login_input.setPlaceholderText("Логин")
 
-        # Zabbix
-        zabbix_box = QGroupBox("Zabbix")
-        zabbix_layout = QVBoxLayout(zabbix_box)
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText("Пароль")
+        self.password_input.setEchoMode(QLineEdit.Password)
 
-        for instance in enabled_zabbix_instances(self.config):
-            zabbix_id = instance.get("id")
-            name = instance.get("name", zabbix_id)
-            saved = self.saved_credentials.get(zabbix_id, {})
+        form.addRow("Логин:", self.login_input)
+        form.addRow("Пароль:", self.password_input)
 
-            group = QGroupBox(name)
-            form = QFormLayout(group)
+        self.confirm_password_input = None
+        if self.first_owner_setup:
+            self.confirm_password_input = QLineEdit()
+            self.confirm_password_input.setPlaceholderText("Повторите пароль")
+            self.confirm_password_input.setEchoMode(QLineEdit.Password)
+            form.addRow("Повтор пароля:", self.confirm_password_input)
 
-            login_input = QLineEdit()
-            login_input.setPlaceholderText("Логин Zabbix")
-            login_input.setText(saved.get("login", ""))
-
-            password_input = QLineEdit()
-            password_input.setPlaceholderText("Пароль Zabbix")
-            password_input.setEchoMode(QLineEdit.Password)
-            password_input.setText(saved.get("password", ""))
-
-            form.addRow("Логин:", login_input)
-            form.addRow("Пароль:", password_input)
-
-            self.inputs[zabbix_id] = {
-                "login": login_input,
-                "password": password_input,
-                "name": name
-            }
-
-            zabbix_layout.addWidget(group)
-
-        if not self.inputs:
-            self.logger.info("Первый запуск/первичная настройка: нет включённых Zabbix-серверов")
-            zabbix_layout.addWidget(self.create_first_setup_widget())
-
-        form_layout.addWidget(zabbix_box)
-
-        # ОТРС
-        duty = self.config.setdefault("duty_mode", {})
-        otrs_credentials = load_otrs_credentials(self.config)
-
-        otrs_box = QGroupBox("ОТРС")
-        otrs_form = QFormLayout(otrs_box)
-
-        self.otrs_login = QLineEdit()
-        self.otrs_login.setPlaceholderText("Логин ОТРС")
-        self.otrs_login.setText(otrs_credentials.get("login", ""))
-
-        self.otrs_password = QLineEdit()
-        self.otrs_password.setPlaceholderText("Пароль ОТРС")
-        self.otrs_password.setEchoMode(QLineEdit.Password)
-        self.otrs_password.setText(otrs_credentials.get("password", ""))
-
-        otrs_form.addRow("Логин:", self.otrs_login)
-        otrs_form.addRow("Пароль:", self.otrs_password)
-
-        form_layout.addWidget(otrs_box)
-        form_layout.addStretch(1)
+        root.addWidget(account_box)
 
         buttons = QHBoxLayout()
-        login_button = QPushButton("Войти")
+        login_button = QPushButton("Создать администратора" if self.first_owner_setup else "Войти")
         cancel_button = QPushButton("Отмена")
 
+        login_button.setDefault(True)
         login_button.clicked.connect(self.accept_login)
         cancel_button.clicked.connect(self.reject)
+        self.login_input.returnPressed.connect(self.accept_login)
+        self.password_input.returnPressed.connect(self.accept_login)
+        if self.confirm_password_input is not None:
+            self.confirm_password_input.returnPressed.connect(self.accept_login)
 
         buttons.addStretch()
         buttons.addWidget(login_button)
@@ -150,35 +111,6 @@ class LoginDialog(QDialog):
 
         center_widget_on_screen(self, self.preferred_screen)
         self.apply_theme_style()
-
-    def create_first_setup_widget(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 4, 0, 4)
-        layout.setSpacing(10)
-
-        message = QLabel(FIRST_SETUP_MESSAGE)
-        message.setObjectName("firstSetupMessage")
-        message.setWordWrap(True)
-        message.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        message.setStyleSheet("font-size: 14px; font-weight: 600; line-height: 140%;")
-        layout.addWidget(message)
-
-        actions = QHBoxLayout()
-        import_button = QPushButton("Импортировать config.json")
-        open_folder_button = QPushButton("Открыть папку приложения")
-        instruction_button = QPushButton("Открыть инструкцию")
-
-        import_button.clicked.connect(self.import_config)
-        open_folder_button.clicked.connect(self.open_app_folder)
-        instruction_button.clicked.connect(self.open_instruction)
-
-        actions.addWidget(import_button)
-        actions.addWidget(open_folder_button)
-        actions.addWidget(instruction_button)
-        layout.addLayout(actions)
-
-        return widget
 
     def apply_theme_style(self):
         if self.theme_name != "light_standard":
@@ -210,85 +142,44 @@ class LoginDialog(QDialog):
                 color: #111827;
             }
             QPushButton:hover { border-color: #93c5fd; }
-            QScrollArea { border: 1px solid #d1d5db; background-color: #ffffff; }
         """)
 
-    def import_config(self):
-        self.logger.info("Открыт импорт config.json")
-        selected_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Импортировать config.json",
-            str(CONFIG_PATH.parent),
-            "JSON (*.json);;Все файлы (*)",
-        )
-        if not selected_path:
-            return
-
-        try:
-            import_config_file(selected_path)
-            QMessageBox.information(
-                self,
-                "Импорт config.json",
-                "config.json импортирован. Перезапустите приложение.",
-            )
-        except Exception as exc:
-            QMessageBox.warning(
-                self,
-                "Ошибка импорта config.json",
-                f"Не удалось импортировать config.json:\n{exc}",
-            )
-
-    def open_app_folder(self):
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(CONFIG_PATH.parent)))
-
-    def open_instruction(self):
-        instruction_path = CONFIG_PATH.parent / "README_ПЕРВАЯ_УСТАНОВКА_LINUX.md"
-        if instruction_path.exists():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(instruction_path)))
-            return
-
-        if not QDesktopServices.openUrl(QUrl(GITHUB_RELEASES_URL)):
-            QMessageBox.information(
-                self,
-                "Первичная настройка",
-                FIRST_SETUP_MESSAGE,
-            )
-
     def accept_login(self):
-        if not self.inputs:
-            QMessageBox.warning(self, "Первичная настройка", FIRST_SETUP_SHORT_MESSAGE)
+        login = self.login_input.text().strip()
+        password = self.password_input.text()
+
+        if not login:
+            QMessageBox.warning(self, "Вход в Око", "Введите логин.")
             return
 
-        for zabbix_id, widgets in self.inputs.items():
-            login = widgets["login"].text().strip()
-            password = widgets["password"].text()
+        if not password:
+            QMessageBox.warning(self, "Вход в Око", "Введите пароль.")
+            return
 
-            if not login or not password:
-                QMessageBox.warning(
-                    self,
-                    "Ошибка",
-                    f"Заполните логин и пароль для {widgets['name']}."
-                )
+        if self.first_owner_setup:
+            confirm_password = self.confirm_password_input.text() if self.confirm_password_input is not None else ""
+            if password != confirm_password:
+                QMessageBox.warning(self, "Первичная настройка", "Пароли не совпадают.")
                 return
 
-            self.credentials[zabbix_id] = {
-                "login": login,
-                "password": password
-            }
+            try:
+                self.current_user = create_user(login, password, role="owner", display_name=login)
+            except Exception as exc:
+                QMessageBox.warning(self, "Первичная настройка", str(exc))
+                return
 
-        duty = self.config.setdefault("duty_mode", {})
-        duty["otrs_login_enabled"] = True
-        for legacy_key in ("otrs_" + "login", "otrs_" + "password"):
-            duty.pop(legacy_key, None)
+            self.config["_current_user"] = self.current_user
+            self.logger.info("Oko first owner created: login=%s role=%s", self.current_user.get("login"), self.current_user.get("role"))
+            self.accept()
+            return
 
-        credentials = load_saved_credentials()
-        credentials.update(self.credentials)
-        credentials.pop(LEGACY_OTRS_CREDENTIALS_KEY, None)
-        credentials[OTRS_CREDENTIALS_KEY] = {
-            "login": self.otrs_login.text().strip(),
-            "password": self.otrs_password.text(),
-        }
-        save_credentials(credentials)
-        save_config(self.config)
+        user = authenticate_user(login, password)
+        if not user:
+            QMessageBox.warning(self, "Вход в Око", "Неверный логин или пароль.")
+            return
 
+        self.current_user = user
+        self.config["_current_user"] = self.current_user
+        self.credentials = load_saved_credentials()
+        self.logger.info("Oko user logged in: login=%s role=%s", user.get("login"), user.get("role"))
         self.accept()

@@ -16,3 +16,9 @@ config.json
 *.tgz
 
 logs/
+users.local.json
+credentials.local.enc
+*.okoenc
+config.backup*
+data/
+web_profiles/
