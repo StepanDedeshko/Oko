@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QGroupBox,
+    QInputDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -68,7 +69,7 @@ from app.diagnostics_widget import DiagnosticsWidget
 from app.duty_settings import DutyModeSettingsWidget
 from app.service_checks_widget import ServiceChecksSettingsWidget
 from app.credentials import load_service_group_credentials, save_service_group_credentials, save_service_credentials
-from app.credentials import default_profile_export_filename, export_profile_credentials_file, import_profile_credentials_file
+from app.credentials import default_encrypted_profile_export_filename, export_profile_credentials_encrypted_file, import_profile_credentials_encrypted_file
 from app.safe_widgets import NoWheelComboBox
 from app.service_checks import ensure_service_checks_defaults
 from app.live_zabbix import ensure_live_monitor_defaults
@@ -1441,32 +1442,56 @@ class SettingsTransferWidget(QWidget):
             )
 
     def export_profile(self):
-        default_path = CONFIG_PATH.parent / default_profile_export_filename()
+        default_path = CONFIG_PATH.parent / default_encrypted_profile_export_filename()
         selected_path, _ = QFileDialog.getSaveFileName(
             self,
             "Экспорт моего профиля",
             str(default_path),
-            "Профиль Око (*.oko-profile.json);;JSON (*.json);;Все файлы (*)",
+            "Защищённый профиль Око (*.okoenc);;Все файлы (*)",
         )
         if not selected_path:
             return
 
+        password, ok = QInputDialog.getText(
+            self,
+            "Пароль профиля",
+            "Задайте пароль для файла .okoenc:",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return
+        if not password:
+            QMessageBox.warning(self, "Экспорт моего профиля", "Пароль файла профиля не может быть пустым.")
+            return
+
+        confirm, ok = QInputDialog.getText(
+            self,
+            "Повтор пароля",
+            "Повторите пароль для файла .okoenc:",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return
+        if password != confirm:
+            QMessageBox.warning(self, "Экспорт моего профиля", "Пароли не совпадают.")
+            return
+
         try:
-            destination = export_profile_credentials_file(selected_path)
+            destination = export_profile_credentials_encrypted_file(selected_path, password)
             QMessageBox.information(
                 self,
                 "Экспорт моего профиля",
-                f"Личный профиль экспортирован:\n{destination}\n\nФайл содержит личные доступы. Храните его как секретный.",
+                f"Личный профиль экспортирован:\\n{destination}\\n\\nДля импорта потребуется заданный пароль.",
             )
         except Exception as exc:
-            QMessageBox.warning(self, "Ошибка экспорта профиля", f"Не удалось экспортировать профиль:\n{exc}")
+            QMessageBox.warning(self, "Ошибка экспорта профиля", f"Не удалось экспортировать профиль:\\n{exc}")
 
     def import_profile(self):
         selected_path, _ = QFileDialog.getOpenFileName(
             self,
             "Импорт моего профиля",
             str(CONFIG_PATH.parent),
-            "Профиль Око (*.oko-profile.json);;JSON (*.json);;Все файлы (*)",
+            "Защищённый профиль Око (*.okoenc);;Все файлы (*)",
         )
         if not selected_path:
             return
@@ -1474,9 +1499,9 @@ class SettingsTransferWidget(QWidget):
         answer = QMessageBox.question(
             self,
             "Импорт моего профиля",
-            "Будут импортированы только личные доступы.\n"
-            "Продукты, селекторы, признаки входа, дежурка, шаблоны и общие настройки не изменятся.\n"
-            "Существующие доступы с такими же ключами будут заменены.\n"
+            "Будут импортированы только личные доступы.\\n"
+            "Продукты, селекторы, признаки входа, дежурка, шаблоны и общие настройки не изменятся.\\n"
+            "Существующие доступы с такими же ключами будут заменены.\\n"
             "Продолжить?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -1484,21 +1509,32 @@ class SettingsTransferWidget(QWidget):
         if answer != QMessageBox.Yes:
             return
 
+        password, ok = QInputDialog.getText(
+            self,
+            "Пароль профиля",
+            "Введите пароль от файла .okoenc:",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return
+        if not password:
+            QMessageBox.warning(self, "Импорт моего профиля", "Пароль файла профиля не может быть пустым.")
+            return
+
         try:
-            count = import_profile_credentials_file(selected_path)
+            count = import_profile_credentials_encrypted_file(selected_path, password)
             QMessageBox.information(
                 self,
                 "Импорт моего профиля",
-                f"Личный профиль импортирован. Обновлено записей доступов: {count}.\n"
+                f"Личный профиль импортирован. Обновлено записей доступов: {count}.\\n"
                 "Для применения в уже открытых вкладках перезапустите приложение.",
             )
         except Exception:
             QMessageBox.warning(
                 self,
                 "Ошибка импорта профиля",
-                "Ошибка импорта профиля: файл повреждён или имеет неподдерживаемый формат.",
+                "Не удалось импортировать профиль. Проверьте пароль или выберите корректный файл .okoenc.",
             )
-
 
 
 class TemplatesWidget(QWidget):

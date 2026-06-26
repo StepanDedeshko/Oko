@@ -141,6 +141,11 @@ def default_profile_export_filename():
     return f"oko_profile_{timestamp}.oko-profile.json"
 
 
+def default_encrypted_profile_export_filename():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"oko_profile_{timestamp}.okoenc"
+
+
 def make_profile_credentials_export(credentials=None) -> dict:
     credentials = load_saved_credentials() if credentials is None else credentials
     raw_credentials = {}
@@ -210,6 +215,57 @@ def export_profile_credentials_file(destination_path, credentials=None):
 
 def import_profile_credentials_file(source_path):
     imported_credentials = load_profile_credentials_export(source_path)
+    credentials = load_saved_credentials()
+    credentials.update(imported_credentials)
+    save_credentials(credentials)
+    return len(imported_credentials)
+
+
+def export_profile_credentials_encrypted_file(destination_path, password: str, credentials=None):
+    from app.profile_crypto import encrypt_profile_payload
+
+    path = Path(destination_path)
+    payload = make_profile_credentials_export(credentials)
+    encrypted_payload = encrypt_profile_payload(payload, password)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(encrypted_payload, file, ensure_ascii=False, indent=2)
+
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+    return path
+
+
+def import_profile_credentials_encrypted_file(source_path, password: str):
+    from app.profile_crypto import decrypt_profile_payload
+
+    path = Path(source_path)
+    with path.open("r", encoding="utf-8") as file:
+        encrypted_payload = json.load(file)
+
+    payload = decrypt_profile_payload(encrypted_payload, password)
+
+    if payload.get("type") != PROFILE_EXPORT_TYPE:
+        raise ValueError("Unsupported profile export type")
+
+    raw_credentials = payload.get("credentials")
+    if not isinstance(raw_credentials, dict):
+        raise ValueError("Invalid profile credentials payload")
+
+    imported_credentials = {}
+    for key, data in raw_credentials.items():
+        if not isinstance(data, dict):
+            continue
+
+        imported_credentials[str(key)] = {
+            "login": _decode(data.get("login", "")),
+            "password": _decode(data.get("password", "")),
+        }
+
     credentials = load_saved_credentials()
     credentials.update(imported_credentials)
     save_credentials(credentials)
