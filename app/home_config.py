@@ -1,3 +1,4 @@
+from app.app_users import ROLE_ADMIN, ROLE_OWNER, ROLE_USER, create_user, load_users, set_user_password, update_user
 
 import hashlib
 import hmac
@@ -8,11 +9,14 @@ import sys
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
+    QInputDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -64,6 +68,8 @@ from app.update_widget import UpdateWidget
 from app.diagnostics_widget import DiagnosticsWidget
 from app.duty_settings import DutyModeSettingsWidget
 from app.service_checks_widget import ServiceChecksSettingsWidget
+from app.credentials import load_service_group_credentials, save_service_group_credentials, save_service_credentials
+from app.credentials import default_encrypted_profile_export_filename, export_profile_credentials_encrypted_file, import_profile_credentials_encrypted_file
 from app.safe_widgets import NoWheelComboBox
 from app.service_checks import ensure_service_checks_defaults
 from app.live_zabbix import ensure_live_monitor_defaults
@@ -216,6 +222,10 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         form.addRow("Интервал опроса:", self.interval_input)
         form.addRow("Профиль Zabbix:", self.profile_input)
         form.addRow("", self.show_diagnostics_checkbox)
+        self.mm_otrs_create_url_input = QLineEdit()
+        self.mm_otrs_create_url_input.setText(str(self.settings.get("mm_otrs_create_url", "") or ""))
+        self.mm_otrs_create_url_input.setPlaceholderText("https://itsm... URL создания задачи ОТРС ММ")
+        form.addRow("URL создания задачи ОТРС ММ:", self.mm_otrs_create_url_input)
 
         root.addLayout(form)
 
@@ -237,6 +247,7 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         self.settings["zabbix_profile_id"] = profile_id
         self.settings["profile_id"] = profile_id
         self.settings["show_live_zabbix_diagnostics"] = self.show_diagnostics_checkbox.isChecked()
+        self.settings["mm_otrs_create_url"] = self.mm_otrs_create_url_input.text().strip()
 
         save_config(self.config)
 
@@ -1037,88 +1048,164 @@ class ProductsWidget(QWidget):
 
 
 class ProfileWidget(QWidget):
-    def __init__(self, config, parent=None):
+    def __init__(self, config, logout_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
+        self.logout_callback = logout_callback
         self.saved_credentials = load_saved_credentials()
         self.saved_zabbix_credentials = self.saved_credentials
         self.zabbix_inputs = {}
+        self.service_group_inputs = {}
 
         duty = self.config.setdefault("duty_mode", {})
         otrs_credentials = load_otrs_credentials(self.config)
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
-        otrs_box = QGroupBox("ОТРС")
-        otrs_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        otrs_layout = QFormLayout(otrs_box)
+        account_actions = QGroupBox("Аккаунт Око")
+        account_actions_layout = QVBoxLayout(account_actions)
+
+        logout_hint = QLabel("Выход удалит сохранённый вход на этом компьютере. Остальные настройки и доступы не удаляются.")
+        logout_hint.setWordWrap(True)
+        account_actions_layout.addWidget(logout_hint)
+
+        self.logout_button = QPushButton("Выйти из аккаунта Око")
+        self.logout_button.setObjectName("DangerAction")
+        self.logout_button.clicked.connect(self.logout_from_profile)
+        account_actions_layout.addWidget(self.logout_button)
+
+        root.addWidget(account_actions)
+
+        def add_section_title(title_text):
+            label = QLabel(title_text)
+            label.setStyleSheet("font-size: 17px; font-weight: 700; margin-top: 12px;")
+            root.addWidget(label)
+            return label
+
+        def add_caption(text):
+            label = QLabel(text)
+            label.setWordWrap(True)
+            label.setStyleSheet("font-size: 14px; font-weight: 700; padding-top: 8px; border: none;")
+            root.addWidget(label)
+            return label
+
+        def add_labeled_password_pair(login_value="", password_value="", login_placeholder="Введите логин", password_placeholder="Введите пароль"):
+            login_row = QHBoxLayout()
+            login_row.setSpacing(10)
+
+            login_label = QLabel("Логин:")
+            login_label.setMinimumWidth(90)
+            login_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+            login_input = QLineEdit(login_value)
+            login_input.setPlaceholderText(login_placeholder)
+            login_input.setMinimumHeight(40)
+            login_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            login_row.addWidget(login_label)
+            login_row.addWidget(login_input, stretch=1)
+            root.addLayout(login_row)
+
+            password_row = QHBoxLayout()
+            password_row.setSpacing(10)
+
+            password_label = QLabel("Пароль:")
+            password_label.setMinimumWidth(90)
+            password_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+            password_input = QLineEdit(password_value)
+            password_input.setEchoMode(QLineEdit.Password)
+            password_input.setPlaceholderText(password_placeholder)
+            password_input.setMinimumHeight(40)
+            password_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            password_row.addWidget(password_label)
+            password_row.addWidget(password_input, stretch=1)
+            root.addLayout(password_row)
+
+            return login_input, password_input
+
+        add_section_title("ОТРС")
 
         self.enabled = QCheckBox("Подставлять сохранённые доступы ОТРС")
         self.enabled.setChecked(duty.get("otrs_login_enabled", False))
+        root.addWidget(self.enabled)
 
-        self.login = QLineEdit(otrs_credentials.get("login", ""))
-        self.login.setPlaceholderText("Логин ОТРС")
-        self.password = QLineEdit(otrs_credentials.get("password", ""))
-        self.password.setEchoMode(QLineEdit.Password)
-        self.password.setPlaceholderText("Пароль ОТРС")
+        self.login, self.password = add_labeled_password_pair(
+            otrs_credentials.get("login", ""),
+            otrs_credentials.get("password", ""),
+            "Логин ОТРС",
+            "Пароль ОТРС",
+        )
 
-        otrs_hint = QLabel("Поведенческие настройки ОТРС (URL, тема задачи, автоотправка) находятся в разделе «Настройки дежурки».")
-        otrs_hint.setWordWrap(True)
+        add_section_title("Zabbix")
 
-        otrs_layout.addRow("", self.enabled)
-        otrs_layout.addRow("Логин ОТРС:", self.login)
-        otrs_layout.addRow("Пароль ОТРС:", self.password)
-        otrs_layout.addRow("", otrs_hint)
+        enabled_zabbix_instances = [
+            instance
+            for instance in self.config.get("zabbix_instances", [])
+            if instance.get("enabled", True)
+        ]
 
-        root.addWidget(otrs_box)
+        first_saved_zabbix = {}
+        for instance in enabled_zabbix_instances:
+            saved = self.saved_zabbix_credentials.get(instance.get("id"), {})
+            if saved.get("login") or saved.get("password"):
+                first_saved_zabbix = saved
+                break
 
-        zbx_box = QGroupBox("Zabbix")
-        zbx_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        zbx_layout = QVBoxLayout(zbx_box)
+        self.zabbix_common_login, self.zabbix_common_password = add_labeled_password_pair(
+            first_saved_zabbix.get("login", ""),
+            first_saved_zabbix.get("password", ""),
+            "Логин Zabbix",
+            "Пароль Zabbix",
+        )
 
-        zbx_hint = QLabel("Сохранённые доступы Zabbix.")
-        zbx_hint.setWordWrap(True)
-        zbx_hint.setMaximumHeight(34)
-        zbx_layout.addWidget(zbx_hint)
-
-        for instance in self.config.get("zabbix_instances", []):
-            if not instance.get("enabled", True):
-                continue
-
-            zabbix_id = instance.get("id")
-            name = instance.get("name", zabbix_id)
-            saved = self.saved_zabbix_credentials.get(zabbix_id, {})
-
-            group = QGroupBox(name)
-            group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-            form = QFormLayout(group)
-
-            login_input = QLineEdit(saved.get("login", ""))
-            login_input.setPlaceholderText("Логин Zabbix")
-
-            password_input = QLineEdit(saved.get("password", ""))
-            password_input.setEchoMode(QLineEdit.Password)
-            password_input.setPlaceholderText("Пароль Zabbix")
-
-            form.addRow("URL:", QLabel(instance.get("base_url", "")))
-            form.addRow("Логин:", login_input)
-            form.addRow("Пароль:", password_input)
-
-            self.zabbix_inputs[zabbix_id] = {
-                "login": login_input,
-                "password": password_input,
-                "name": name,
+        self.zabbix_inputs = {
+            instance.get("id"): {
+                "login": self.zabbix_common_login,
+                "password": self.zabbix_common_password,
+                "name": instance.get("name", instance.get("id")),
             }
-
-            zbx_layout.addWidget(group)
+            for instance in enabled_zabbix_instances
+            if instance.get("id")
+        }
 
         if not self.zabbix_inputs:
             empty = QLabel("В config.json нет включённых Zabbix-инстансов.")
             empty.setWordWrap(True)
-            zbx_layout.addWidget(empty)
+            root.addWidget(empty)
 
-        root.addWidget(zbx_box)
+        add_section_title("Сервисы")
+
+        service_settings = ensure_service_checks_defaults(self.config)
+        service_groups = service_settings.get("credential_groups", [])
+
+        for group in service_groups:
+            group_id = group.get("id", "")
+            group_name = group.get("name", group_id)
+            creds = load_service_group_credentials(group_id)
+
+            add_caption(group_name)
+
+            login_input, password_input = add_labeled_password_pair(
+                creds.get("login", ""),
+                creds.get("password", ""),
+                "Введите логин",
+                "Введите пароль",
+            )
+
+            self.service_group_inputs[group_id] = {
+                "login": login_input,
+                "password": password_input,
+                "name": group_name,
+            }
+
+        if not service_groups:
+            empty = QLabel("Сервисы для отдельного доступа ещё не настроены администратором.")
+            empty.setWordWrap(True)
+            root.addWidget(empty)
 
         buttons = QHBoxLayout()
 
@@ -1155,6 +1242,25 @@ class ProfileWidget(QWidget):
             }
 
         save_credentials(credentials)
+
+        service_settings = ensure_service_checks_defaults(self.config)
+        service_ids_by_group = {
+            group.get("id", ""): list(group.get("service_ids", []) or [])
+            for group in service_settings.get("credential_groups", [])
+        }
+
+        for group_id, widgets in self.service_group_inputs.items():
+            group_login = widgets["login"].text().strip()
+            group_password = widgets["password"].text()
+
+            save_service_group_credentials(group_id, group_login, group_password)
+
+            # Безопасная совместимость:
+            # движок проверки сервисов остаётся старым и берёт service_check::<service_id>.
+            # Профиль только раскладывает логин/пароль группы по сервисам этой группы.
+            for service_id in service_ids_by_group.get(group_id, []):
+                save_service_credentials(service_id, group_login, group_password)
+
         save_config(self.config)
         QMessageBox.information(self, "Профиль", "Доступы сохранены.")
 
@@ -1172,6 +1278,15 @@ class ProfileWidget(QWidget):
 
         QMessageBox.information(self, "Профиль", "Сохранённые Zabbix-пароли удалены.")
 
+    def logout_from_profile(self):
+        if self.logout_callback:
+            self.logout_callback()
+        else:
+            QMessageBox.warning(
+                self,
+                "Выход из аккаунта",
+                "Обработчик выхода не подключён. Перезапустите приложение и попробуйте снова.",
+            )
 
 
 class ThemeWidget(QWidget):
@@ -1237,41 +1352,65 @@ class NotesWidget(QWidget):
 
 
 class SettingsTransferWidget(QWidget):
-    """Export/import safe user settings without credentials."""
+    """Export/import common app settings and personal credentials separately."""
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
 
         root = QVBoxLayout(self)
-        group = QGroupBox("Перенос настроек")
-        layout = QVBoxLayout(group)
 
-        hint = QLabel(
+        settings_group = QGroupBox("Общие настройки приложения")
+        settings_layout = QVBoxLayout(settings_group)
+
+        settings_hint = QLabel(
             "Экспорт переносит продукты, страницы, графики, duty triggers, шаблоны и тему. "
             "Логины, пароли, токены, cookie, session и другие auth-данные не сохраняются."
         )
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        settings_hint.setWordWrap(True)
+        settings_layout.addWidget(settings_hint)
 
-        actions = QHBoxLayout()
-        export_button = QPushButton("Экспорт настроек")
+        settings_actions = QHBoxLayout()
+        export_button = QPushButton("Экспорт общих настроек")
         export_button.clicked.connect(self.export_settings)
-        import_button = QPushButton("Импорт настроек")
+        import_button = QPushButton("Импорт общих настроек")
         import_button.clicked.connect(self.import_settings)
-        actions.addWidget(export_button)
-        actions.addWidget(import_button)
-        actions.addStretch(1)
-        layout.addLayout(actions)
+        settings_actions.addWidget(export_button)
+        settings_actions.addWidget(import_button)
+        settings_actions.addStretch(1)
+        settings_layout.addLayout(settings_actions)
 
-        root.addWidget(group)
+        profile_group = QGroupBox("Личный профиль / доступы")
+        profile_layout = QVBoxLayout(profile_group)
+
+        profile_hint = QLabel(
+            "Экспорт профиля переносит только ваши сохранённые доступы: ОТРС, Zabbix, "
+            "отдельные доступы сервисов и группы сервисов. Он не меняет продукты, селекторы, "
+            "признаки входа, дежурку, шаблоны и общие настройки. Файл профиля содержит личные "
+            "доступы — храните его как секретный."
+        )
+        profile_hint.setWordWrap(True)
+        profile_layout.addWidget(profile_hint)
+
+        profile_actions = QHBoxLayout()
+        export_profile = QPushButton("Экспорт моего профиля")
+        export_profile.clicked.connect(self.export_profile)
+        import_profile = QPushButton("Импорт моего профиля")
+        import_profile.clicked.connect(self.import_profile)
+        profile_actions.addWidget(export_profile)
+        profile_actions.addWidget(import_profile)
+        profile_actions.addStretch(1)
+        profile_layout.addLayout(profile_actions)
+
+        root.addWidget(settings_group)
+        root.addWidget(profile_group)
         root.addStretch(1)
 
     def export_settings(self):
         default_path = CONFIG_PATH.parent / default_settings_export_filename()
         selected_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Экспорт настроек",
+            "Экспорт общих настроек",
             str(default_path),
             "JSON (*.json);;Все файлы (*)",
         )
@@ -1280,14 +1419,14 @@ class SettingsTransferWidget(QWidget):
 
         try:
             destination = export_settings_file(self.config, selected_path)
-            QMessageBox.information(self, "Экспорт настроек", f"Настройки экспортированы:\n{destination}")
+            QMessageBox.information(self, "Экспорт общих настроек", f"Настройки экспортированы:\n{destination}")
         except Exception as exc:
             QMessageBox.warning(self, "Ошибка экспорта", f"Не удалось экспортировать настройки:\n{exc}")
 
     def import_settings(self):
         selected_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Импорт настроек",
+            "Импорт общих настроек",
             str(CONFIG_PATH.parent),
             "JSON (*.json);;Все файлы (*)",
         )
@@ -1306,8 +1445,9 @@ class SettingsTransferWidget(QWidget):
 
         answer = QMessageBox.question(
             self,
-            "Импорт настроек",
-            "Текущие настройки будут заменены импортированными.\n"
+            "Импорт общих настроек",
+            "Текущие общие настройки будут заменены импортированными.\n"
+            "Личные доступы не будут изменены.\n"
             "Перед импортом будет создана резервная копия текущего config.\n"
             "Продолжить?",
             QMessageBox.Yes | QMessageBox.No,
@@ -1320,14 +1460,109 @@ class SettingsTransferWidget(QWidget):
             import_settings_file(selected_path)
             QMessageBox.information(
                 self,
-                "Импорт настроек",
-                "Настройки импортированы.\nПерезапустите приложение для применения изменений.",
+                "Импорт общих настроек",
+                "Общие настройки импортированы.\nПерезапустите приложение для применения изменений.",
             )
         except Exception:
             QMessageBox.warning(
                 self,
                 "Ошибка импорта",
                 "Ошибка импорта: файл повреждён или имеет неподдерживаемый формат.",
+            )
+
+    def export_profile(self):
+        default_path = CONFIG_PATH.parent / default_encrypted_profile_export_filename()
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт моего профиля",
+            str(default_path),
+            "Защищённый профиль Око (*.okoenc);;Все файлы (*)",
+        )
+        if not selected_path:
+            return
+
+        password, ok = QInputDialog.getText(
+            self,
+            "Пароль профиля",
+            "Задайте пароль для файла .okoenc:",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return
+        if not password:
+            QMessageBox.warning(self, "Экспорт моего профиля", "Пароль файла профиля не может быть пустым.")
+            return
+
+        confirm, ok = QInputDialog.getText(
+            self,
+            "Повтор пароля",
+            "Повторите пароль для файла .okoenc:",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return
+        if password != confirm:
+            QMessageBox.warning(self, "Экспорт моего профиля", "Пароли не совпадают.")
+            return
+
+        try:
+            destination = export_profile_credentials_encrypted_file(selected_path, password)
+            QMessageBox.information(
+                self,
+                "Экспорт моего профиля",
+                f"Личный профиль экспортирован:\\n{destination}\\n\\nДля импорта потребуется заданный пароль.",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Ошибка экспорта профиля", f"Не удалось экспортировать профиль:\\n{exc}")
+
+    def import_profile(self):
+        selected_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импорт моего профиля",
+            str(CONFIG_PATH.parent),
+            "Защищённый профиль Око (*.okoenc);;Все файлы (*)",
+        )
+        if not selected_path:
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Импорт моего профиля",
+            "Будут импортированы только личные доступы.\\n"
+            "Продукты, селекторы, признаки входа, дежурка, шаблоны и общие настройки не изменятся.\\n"
+            "Существующие доступы с такими же ключами будут заменены.\\n"
+            "Продолжить?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        password, ok = QInputDialog.getText(
+            self,
+            "Пароль профиля",
+            "Введите пароль от файла .okoenc:",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return
+        if not password:
+            QMessageBox.warning(self, "Импорт моего профиля", "Пароль файла профиля не может быть пустым.")
+            return
+
+        try:
+            count = import_profile_credentials_encrypted_file(selected_path, password)
+            QMessageBox.information(
+                self,
+                "Импорт моего профиля",
+                f"Личный профиль импортирован. Обновлено записей доступов: {count}.\\n"
+                "Для применения в уже открытых вкладках перезапустите приложение.",
+            )
+        except Exception:
+            QMessageBox.warning(
+                self,
+                "Ошибка импорта профиля",
+                "Не удалось импортировать профиль. Проверьте пароль или выберите корректный файл .okoenc.",
             )
 
 
@@ -1677,10 +1912,249 @@ class ChangelogWidget(QWidget):
 
 
 
-class AppSettingsWidget(QWidget):
+
+def is_admin_user(user):
+    return str((user or {}).get("role", "") or "") in {ROLE_OWNER, ROLE_ADMIN}
+
+
+class AdministrationWidget(QWidget):
     def __init__(self, config, parent=None):
         super().__init__(parent)
+        self.config = config
+        self.current_user = self.config.get("_current_user") or {}
+
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+
+        title = QLabel("Администрирование")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        hint = QLabel(
+            "Раздел доступен администраторам Око. Здесь создаются пользователи и дополнительные администраторы. "
+            "Пароли входа в Око не показываются открытым текстом, можно только задать новый пароль."
+        )
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        current = QLabel(
+            f"Текущий пользователь: {self.current_user.get('login', 'неизвестно')} "
+            f"({self.current_user.get('role', 'без роли')})"
+        )
+        current.setWordWrap(True)
+        root.addWidget(current)
+
+        users_box = QGroupBox("Пользователи")
+        users_layout = QVBoxLayout(users_box)
+
+        self.user_select = QComboBox()
+        self.user_select.currentIndexChanged.connect(self.load_selected_user)
+        users_layout.addWidget(self.user_select)
+
+        edit_form = QFormLayout()
+        self.edit_display_name_input = QLineEdit()
+        self.edit_role_input = QComboBox()
+        self._fill_role_combo(self.edit_role_input)
+        self.edit_active_input = QCheckBox("Активен")
+        self.edit_active_input.setChecked(True)
+        edit_form.addRow("Имя:", self.edit_display_name_input)
+        edit_form.addRow("Роль:", self.edit_role_input)
+        edit_form.addRow("Статус:", self.edit_active_input)
+        users_layout.addLayout(edit_form)
+
+        user_actions = QHBoxLayout()
+        update_button = QPushButton("Сохранить изменения пользователя")
+        update_button.clicked.connect(self.update_selected_user)
+        user_actions.addWidget(update_button)
+        user_actions.addStretch()
+        users_layout.addLayout(user_actions)
+
+        password_form = QFormLayout()
+        self.reset_password_input = QLineEdit()
+        self.reset_password_input.setEchoMode(QLineEdit.Password)
+        self.reset_password_input.setPlaceholderText("Новый пароль входа в Око")
+        self.reset_password_confirm_input = QLineEdit()
+        self.reset_password_confirm_input.setEchoMode(QLineEdit.Password)
+        self.reset_password_confirm_input.setPlaceholderText("Повторите новый пароль")
+        password_form.addRow("Новый пароль:", self.reset_password_input)
+        password_form.addRow("Повтор:", self.reset_password_confirm_input)
+        users_layout.addLayout(password_form)
+
+        reset_button = QPushButton("Сбросить пароль выбранному пользователю")
+        reset_button.clicked.connect(self.reset_selected_user_password)
+        users_layout.addWidget(reset_button)
+
+        root.addWidget(users_box)
+
+        create_box = QGroupBox("Создать пользователя")
+        create_form = QFormLayout(create_box)
+
+        self.new_login_input = QLineEdit()
+        self.new_login_input.setPlaceholderText("login")
+        self.new_display_name_input = QLineEdit()
+        self.new_display_name_input.setPlaceholderText("Имя пользователя")
+        self.new_password_input = QLineEdit()
+        self.new_password_input.setEchoMode(QLineEdit.Password)
+        self.new_password_input.setPlaceholderText("Пароль входа в Око")
+        self.new_password_confirm_input = QLineEdit()
+        self.new_password_confirm_input.setEchoMode(QLineEdit.Password)
+        self.new_password_confirm_input.setPlaceholderText("Повторите пароль")
+        self.new_role_input = QComboBox()
+        self._fill_role_combo(self.new_role_input)
+
+        create_form.addRow("Логин:", self.new_login_input)
+        create_form.addRow("Имя:", self.new_display_name_input)
+        create_form.addRow("Пароль:", self.new_password_input)
+        create_form.addRow("Повтор:", self.new_password_confirm_input)
+        create_form.addRow("Роль:", self.new_role_input)
+
+        create_button = QPushButton("Создать")
+        create_button.clicked.connect(self.create_new_user)
+        create_form.addRow("", create_button)
+
+        root.addWidget(create_box)
+        root.addStretch(1)
+
+        self.refresh_users()
+
+    def _fill_role_combo(self, combo):
+        combo.clear()
+        combo.addItem("Пользователь", ROLE_USER)
+        combo.addItem("Администратор", ROLE_ADMIN)
+        combo.addItem("Владелец", ROLE_OWNER)
+
+    def _set_combo_data(self, combo, value):
+        for index in range(combo.count()):
+            if combo.itemData(index) == value:
+                combo.setCurrentIndex(index)
+                return
+        combo.setCurrentIndex(0)
+
+    def _users(self):
+        return load_users().get("users", [])
+
+    def _selected_login(self):
+        return self.user_select.currentData()
+
+    def _find_user(self, login):
+        wanted = str(login or "").casefold()
+        for user in self._users():
+            key = str(user.get("login_key") or user.get("login", "")).casefold()
+            if key == wanted:
+                return user
+        return None
+
+    def refresh_users(self):
+        selected = self._selected_login()
+
+        self.user_select.blockSignals(True)
+        self.user_select.clear()
+
+        for user in self._users():
+            login = user.get("login", "")
+            role = user.get("role", ROLE_USER)
+            status = "активен" if user.get("active", True) else "отключён"
+            self.user_select.addItem(f"{login} — {role} — {status}", login)
+
+        self.user_select.blockSignals(False)
+
+        if selected:
+            for index in range(self.user_select.count()):
+                if self.user_select.itemData(index) == selected:
+                    self.user_select.setCurrentIndex(index)
+                    break
+
+        self.load_selected_user()
+
+    def load_selected_user(self):
+        user = self._find_user(self._selected_login())
+        if not user:
+            self.edit_display_name_input.clear()
+            self._set_combo_data(self.edit_role_input, ROLE_USER)
+            self.edit_active_input.setChecked(False)
+            return
+
+        self.edit_display_name_input.setText(str(user.get("display_name", "") or user.get("login", "")))
+        self._set_combo_data(self.edit_role_input, str(user.get("role", ROLE_USER)))
+        self.edit_active_input.setChecked(bool(user.get("active", True)))
+
+    def create_new_user(self):
+        login = self.new_login_input.text().strip()
+        display_name = self.new_display_name_input.text().strip()
+        password = self.new_password_input.text()
+        confirm = self.new_password_confirm_input.text()
+        role = self.new_role_input.currentData() or ROLE_USER
+
+        if password != confirm:
+            QMessageBox.warning(self, "Администрирование", "Пароли не совпадают.")
+            return
+
+        try:
+            create_user(login, password, role=role, display_name=display_name)
+        except Exception as exc:
+            QMessageBox.warning(self, "Администрирование", str(exc))
+            return
+
+        self.new_login_input.clear()
+        self.new_display_name_input.clear()
+        self.new_password_input.clear()
+        self.new_password_confirm_input.clear()
+        self.refresh_users()
+        QMessageBox.information(self, "Администрирование", "Пользователь создан.")
+
+    def update_selected_user(self):
+        login = self._selected_login()
+        if not login:
+            QMessageBox.warning(self, "Администрирование", "Выберите пользователя.")
+            return
+
+        try:
+            updated = update_user(
+                login,
+                role=self.edit_role_input.currentData() or ROLE_USER,
+                active=self.edit_active_input.isChecked(),
+                display_name=self.edit_display_name_input.text().strip(),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Администрирование", str(exc))
+            return
+
+        current_login = str((self.config.get("_current_user") or {}).get("login", "")).casefold()
+        if current_login == str(updated.get("login", "")).casefold():
+            self.config["_current_user"] = updated
+            self.current_user = updated
+
+        self.refresh_users()
+        QMessageBox.information(self, "Администрирование", "Пользователь обновлён.")
+
+    def reset_selected_user_password(self):
+        login = self._selected_login()
+        if not login:
+            QMessageBox.warning(self, "Администрирование", "Выберите пользователя.")
+            return
+
+        password = self.reset_password_input.text()
+        confirm = self.reset_password_confirm_input.text()
+
+        if password != confirm:
+            QMessageBox.warning(self, "Администрирование", "Пароли не совпадают.")
+            return
+
+        try:
+            set_user_password(login, password)
+        except Exception as exc:
+            QMessageBox.warning(self, "Администрирование", str(exc))
+            return
+
+        self.reset_password_input.clear()
+        self.reset_password_confirm_input.clear()
+        QMessageBox.information(self, "Администрирование", "Пароль обновлён.")
+
+class AppSettingsWidget(QWidget):
+    def __init__(self, config, logout_callback=None, parent=None):
+        super().__init__(parent)
         self.config = ensure_home_defaults(config)
+        self.logout_callback = logout_callback
         self.section_indexes = {}
 
         root = QVBoxLayout(self)
@@ -1691,7 +2165,9 @@ class AppSettingsWidget(QWidget):
         self.stack = QStackedWidget()
         root.addWidget(self.stack, stretch=1)
 
-        self.add_section("Профиль", ProfileWidget(self.config))
+        self.add_section("Профиль", ProfileWidget(self.config, logout_callback=self.logout_callback))
+        if is_admin_user(self.config.get("_current_user")):
+            self.add_section("Администрирование", AdministrationWidget(self.config))
         self.add_section("Продукты и страницы", ProductsWidget(self.config))
         self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config, show_title=False))
         self.add_section("Проверка сервисов", ServiceChecksSettingsWidget(self.config))
@@ -1709,7 +2185,19 @@ class AppSettingsWidget(QWidget):
     def add_section(self, section_name, widget):
         self.section_indexes[section_name] = self.stack.addWidget(widget)
 
+    def rebuild_profile_section(self):
+        index = self.section_indexes.get("Профиль")
+        if index is None:
+            return
+        old_widget = self.stack.widget(index)
+        new_widget = ProfileWidget(self.config, logout_callback=self.logout_callback)
+        self.stack.removeWidget(old_widget)
+        old_widget.deleteLater()
+        self.section_indexes["Профиль"] = self.stack.insertWidget(index, new_widget)
+
     def open_section(self, section_name):
+        if section_name == "Профиль":
+            self.rebuild_profile_section()
         index = self.section_indexes.get(section_name)
         if index is None:
             index = self.section_indexes.get("Продукты и страницы", 0)
@@ -1729,6 +2217,7 @@ class AppSettingsWidget(QWidget):
 class HomePageWidget(QWidget):
     SETTINGS_SECTIONS = [
         "Профиль",
+        "Администрирование",
         "Продукты и страницы",
         "Настройки дежурки",
         "Проверка сервисов",
@@ -1761,7 +2250,7 @@ class HomePageWidget(QWidget):
 
         tiles = QVBoxLayout()
         tiles.setSpacing(10)
-        for section_name in self.SETTINGS_SECTIONS:
+        for section_name in self.visible_settings_sections():
             button = QPushButton(section_name)
             button.setObjectName("SecondaryAction")
             button.setMinimumHeight(72)
@@ -1785,6 +2274,11 @@ class HomePageWidget(QWidget):
         root.addWidget(footer)
 
         self.fade_in()
+
+    def visible_settings_sections(self):
+        if is_admin_user(self.config.get("_current_user")):
+            return list(self.SETTINGS_SECTIONS)
+        return [section for section in self.SETTINGS_SECTIONS if section != "Администрирование"]
 
     def open_settings_section(self, section_name):
         if self.open_settings_callback:

@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 
@@ -10,6 +11,10 @@ CREDENTIALS_FILE = CREDENTIALS_DIR / "credentials.json"
 
 OTRS_CREDENTIALS_KEY = "otrs"
 LEGACY_OTRS_CREDENTIALS_KEY = "__otrs__"
+SERVICE_CREDENTIALS_PREFIX = "service_check::"
+SERVICE_GROUP_CREDENTIALS_PREFIX = "service_group::"
+PROFILE_EXPORT_TYPE = "oko_profile_credentials"
+PROFILE_EXPORT_VERSION = 1
 
 
 def load_otrs_credentials(config=None) -> dict:
@@ -47,12 +52,26 @@ def save_otrs_credentials(login: str, password: str):
 
 def load_service_credentials(service_id: str) -> dict:
     credentials = load_saved_credentials()
-    return credentials.get(f"service_check::{service_id}", {"login": "", "password": ""})
+    return credentials.get(f"{SERVICE_CREDENTIALS_PREFIX}{service_id}", {"login": "", "password": ""})
 
 
 def save_service_credentials(service_id: str, login: str, password: str):
     credentials = load_saved_credentials()
-    credentials[f"service_check::{service_id}"] = {
+    credentials[f"{SERVICE_CREDENTIALS_PREFIX}{service_id}"] = {
+        "login": login or "",
+        "password": password or "",
+    }
+    save_credentials(credentials)
+
+
+def load_service_group_credentials(group_id: str) -> dict:
+    credentials = load_saved_credentials()
+    return credentials.get(f"{SERVICE_GROUP_CREDENTIALS_PREFIX}{group_id}", {"login": "", "password": ""})
+
+
+def save_service_group_credentials(group_id: str, login: str, password: str):
+    credentials = load_saved_credentials()
+    credentials[f"{SERVICE_GROUP_CREDENTIALS_PREFIX}{group_id}"] = {
         "login": login or "",
         "password": password or "",
     }
@@ -115,6 +134,142 @@ def save_credentials(credentials: dict):
         os.chmod(CREDENTIALS_FILE, 0o600)
     except Exception:
         pass
+
+
+def default_profile_export_filename():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"oko_profile_{timestamp}.oko-profile.json"
+
+
+def default_encrypted_profile_export_filename():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"oko_profile_{timestamp}.okoenc"
+
+
+def make_profile_credentials_export(credentials=None) -> dict:
+    credentials = load_saved_credentials() if credentials is None else credentials
+    raw_credentials = {}
+
+    for key, data in sorted((credentials or {}).items()):
+        if not isinstance(data, dict):
+            continue
+
+        raw_credentials[str(key)] = {
+            "login": _encode(data.get("login", "")),
+            "password": _encode(data.get("password", "")),
+        }
+
+    return {
+        "type": PROFILE_EXPORT_TYPE,
+        "version": PROFILE_EXPORT_VERSION,
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "credentials": raw_credentials,
+    }
+
+
+def load_profile_credentials_export(source_path) -> dict:
+    path = Path(source_path)
+
+    with path.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid profile export payload")
+
+    if payload.get("type") != PROFILE_EXPORT_TYPE:
+        raise ValueError("Unsupported profile export type")
+
+    credentials = payload.get("credentials")
+    if not isinstance(credentials, dict):
+        raise ValueError("Invalid profile credentials payload")
+
+    result = {}
+
+    for key, data in credentials.items():
+        if not isinstance(data, dict):
+            continue
+
+        result[str(key)] = {
+            "login": _decode(data.get("login", "")),
+            "password": _decode(data.get("password", "")),
+        }
+
+    return result
+
+
+def export_profile_credentials_file(destination_path, credentials=None):
+    path = Path(destination_path)
+    payload = make_profile_credentials_export(credentials)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+    return path
+
+
+def import_profile_credentials_file(source_path):
+    imported_credentials = load_profile_credentials_export(source_path)
+    credentials = load_saved_credentials()
+    credentials.update(imported_credentials)
+    save_credentials(credentials)
+    return len(imported_credentials)
+
+
+def export_profile_credentials_encrypted_file(destination_path, password: str, credentials=None):
+    from app.profile_crypto import encrypt_profile_payload
+
+    path = Path(destination_path)
+    payload = make_profile_credentials_export(credentials)
+    encrypted_payload = encrypt_profile_payload(payload, password)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(encrypted_payload, file, ensure_ascii=False, indent=2)
+
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+    return path
+
+
+def import_profile_credentials_encrypted_file(source_path, password: str):
+    from app.profile_crypto import decrypt_profile_payload
+
+    path = Path(source_path)
+    with path.open("r", encoding="utf-8") as file:
+        encrypted_payload = json.load(file)
+
+    payload = decrypt_profile_payload(encrypted_payload, password)
+
+    if payload.get("type") != PROFILE_EXPORT_TYPE:
+        raise ValueError("Unsupported profile export type")
+
+    raw_credentials = payload.get("credentials")
+    if not isinstance(raw_credentials, dict):
+        raise ValueError("Invalid profile credentials payload")
+
+    imported_credentials = {}
+    for key, data in raw_credentials.items():
+        if not isinstance(data, dict):
+            continue
+
+        imported_credentials[str(key)] = {
+            "login": _decode(data.get("login", "")),
+            "password": _decode(data.get("password", "")),
+        }
+
+    credentials = load_saved_credentials()
+    credentials.update(imported_credentials)
+    save_credentials(credentials)
+    return len(imported_credentials)
 
 
 def clear_saved_credentials():

@@ -34,8 +34,16 @@ SERVICE_CHECK_STATUSES = {
 
 DEFAULT_SERVICE_CHECKS = {
     "otrs_task_url": "",
+    "credential_groups": [],
     "items": [],
 }
+
+DEFAULT_SERVICE_CREDENTIAL_GROUP = {
+    "id": "",
+    "name": "Новая группа доступов",
+    "service_ids": [],
+}
+
 
 DEFAULT_SERVICE_ITEM = {
     "id": "",
@@ -43,6 +51,7 @@ DEFAULT_SERVICE_ITEM = {
     "enabled": True,
     "url": "",
     "auth_type": AUTH_NONE,
+    "credential_group_id": "",
     "login_selector": "",
     "password_selector": "",
     "submit_selector": "",
@@ -105,6 +114,14 @@ def can_open_next_visible_service_after_cleanup(cleanup_completed, current_dialo
 
 def default_service_checks_config():
     return deepcopy(DEFAULT_SERVICE_CHECKS)
+
+
+def default_service_credential_group(group_id="", name="Новая группа доступов"):
+    group = deepcopy(DEFAULT_SERVICE_CREDENTIAL_GROUP)
+    group["id"] = normalize_service_id(group_id or name or group["name"])
+    group["name"] = str(name or group["name"]).strip() or "Новая группа доступов"
+    group["service_ids"] = []
+    return group
 
 
 def default_service_item(item_id=""):
@@ -260,7 +277,39 @@ def unique_service_id(base_value, items, current_id=""):
 def ensure_service_checks_defaults(config):
     settings = config.setdefault("service_checks", {})
     settings.setdefault("otrs_task_url", "")
+    settings.setdefault("credential_groups", [])
     items = settings.setdefault("items", [])
+
+    normalized_groups = []
+    raw_groups = settings.get("credential_groups", [])
+    if not isinstance(raw_groups, list):
+        raw_groups = []
+
+    for index, group in enumerate(raw_groups):
+        if not isinstance(group, dict):
+            continue
+        merged_group = deepcopy(DEFAULT_SERVICE_CREDENTIAL_GROUP)
+        merged_group.update(deepcopy(group))
+        merged_group["id"] = unique_service_id(
+            merged_group.get("id") or merged_group.get("name") or f"service_group_{index + 1}",
+            normalized_groups,
+        )
+        merged_group["name"] = str(merged_group.get("name") or merged_group["id"]).strip() or "Новая группа доступов"
+        raw_service_ids = merged_group.get("service_ids", [])
+        if not isinstance(raw_service_ids, list):
+            raw_service_ids = []
+        service_ids = []
+        seen_service_ids = set()
+        for service_id in raw_service_ids:
+            service_id = str(service_id or "").strip()
+            if service_id and service_id not in seen_service_ids:
+                service_ids.append(service_id)
+                seen_service_ids.add(service_id)
+        merged_group["service_ids"] = service_ids
+        normalized_groups.append(merged_group)
+
+    settings["credential_groups"] = normalized_groups
+
     normalized = []
     for index, item in enumerate(items):
         if not isinstance(item, dict):
@@ -274,6 +323,7 @@ def ensure_service_checks_defaults(config):
         merged["allow_http_error_load"] = bool(merged.get("allow_http_error_load", False))
         valid_auth_types = {AUTH_NONE, AUTH_HTML_FORM, AUTH_WEBENGINE_SESSION, AUTH_EXISTING_SESSION, AUTH_VISIBLE_HTML_FORM, AUTH_EXTERNAL_BROWSER_GROUP}
         merged["auth_type"] = merged.get("auth_type") if merged.get("auth_type") in valid_auth_types else AUTH_NONE
+        merged["credential_group_id"] = str(merged.get("credential_group_id", "") or "").strip()
         merged["visible_window_close_on_success"] = bool(merged.get("visible_window_close_on_success", True))
         merged["visible_window_close_on_error"] = bool(merged.get("visible_window_close_on_error", False))
         try:
@@ -320,7 +370,32 @@ def ensure_service_checks_defaults(config):
         except Exception:
             merged["post_login_delay_ms"] = 1500
         normalized.append(merged)
+
+    valid_service_ids = {str(item.get("id", "")) for item in normalized}
+    service_to_group = {}
+    for group in normalized_groups:
+        clean_service_ids = []
+        for service_id in group.get("service_ids", []):
+            if service_id in valid_service_ids and service_id not in service_to_group:
+                service_to_group[service_id] = group["id"]
+                clean_service_ids.append(service_id)
+        group["service_ids"] = clean_service_ids
+
+    for item in normalized:
+        service_id = str(item.get("id", ""))
+        group_id = str(item.get("credential_group_id", "") or "").strip()
+        if group_id:
+            group = next((candidate for candidate in normalized_groups if candidate.get("id") == group_id), None)
+            if group is None:
+                item["credential_group_id"] = ""
+            elif service_id not in group["service_ids"] and service_id not in service_to_group:
+                group["service_ids"].append(service_id)
+                service_to_group[service_id] = group_id
+        elif service_id in service_to_group:
+            item["credential_group_id"] = service_to_group[service_id]
+
     settings["items"] = normalized
+    settings["credential_groups"] = normalized_groups
     return settings
 
 
