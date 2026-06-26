@@ -1081,13 +1081,96 @@ class LiveZabbixMonitorWidget(QWidget):
 
         return grouped
 
+    @staticmethod
+    def _redmine_extract_ipv4_from_text(value):
+        import re as _re
+
+        text = str(value or "")
+        if not text:
+            return ""
+
+        for match in _re.finditer(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)", text):
+            ip = match.group(0)
+            try:
+                parts = [int(part) for part in ip.split(".")]
+            except Exception:
+                continue
+
+            if len(parts) != 4:
+                continue
+            if not all(0 <= part <= 255 for part in parts):
+                continue
+            if ip in {"0.0.0.0", "255.255.255.255"}:
+                continue
+
+            return ip
+
+        return ""
+
+    def _redmine_item_ip_text(self, item):
+        if isinstance(item, dict):
+            existing = str(item.get("host_ip", "") or "").strip()
+        else:
+            existing = str(getattr(item, "host_ip", "") or "").strip()
+
+        if existing:
+            return existing
+
+        candidate_values = []
+        for attr in (
+            "host",
+            "host_url",
+            "trigger_name",
+            "tags",
+            "info",
+            "actions_text",
+            "actions_tooltip",
+            "problem_url",
+            "raw_text",
+            "status",
+            "duration",
+        ):
+            if isinstance(item, dict):
+                candidate_values.append(item.get(attr, ""))
+            else:
+                candidate_values.append(getattr(item, attr, ""))
+
+        if isinstance(item, dict):
+            candidate_values.extend(item.values())
+        elif hasattr(item, "__dict__"):
+            candidate_values.extend((getattr(item, "__dict__", {}) or {}).values())
+
+        for value in candidate_values:
+            ip = self._redmine_extract_ipv4_from_text(value)
+            if ip:
+                try:
+                    if isinstance(item, dict):
+                        item["host_ip"] = ip
+                    else:
+                        item.host_ip = ip
+                except Exception:
+                    pass
+                return ip
+
+        return ""
+
+
     def _redmine_ip_text_for_items(self, items):
-        ips = self._unique_text_values(getattr(item, "host_ip", "") for item in items or [])
+        ips = self._unique_text_values(self._redmine_item_ip_text(item) for item in items or [])
+        if not ips:
+            hosts = self._unique_text_values(
+                (item.get("host", "") if isinstance(item, dict) else getattr(item, "host", ""))
+                for item in items or []
+            )
+            if hosts:
+                return "не найден (" + ", ".join(hosts) + ")"
+            return "не найден"
+
         if len(ips) == 1:
             return ips[0]
-        if ips:
-            return ", ".join(ips)
-        return "не определён"
+
+        return ", ".join(ips)
+
 
     def _redmine_description(self, items):
         items = self._unique_live_items(items)
