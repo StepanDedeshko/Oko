@@ -108,6 +108,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self.last_js_result_meta = {}
         self._restoring_column_widths = False
         self.ack_dialogs = []
+        self.mm_otrs_dialogs = []
         self.redmine_graph_lookup_view = None
         self._redmine_graph_lookup_queue = []
         self._redmine_graph_lookup_items = []
@@ -977,7 +978,7 @@ class LiveZabbixMonitorWidget(QWidget):
             if str(item.host or "").strip().casefold() == host_key
         )
 
-    def _choose_redmine_items_for_selection(self):
+    def _choose_redmine_items_for_selection(self, title="Redmine"):
         items = self._selected_live_problem_items()
         if not items:
             return []
@@ -988,7 +989,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 host = str(items[0].host or "узел сети")
                 answer = QMessageBox.question(
                     self,
-                    "Redmine",
+                    title,
                     f"По узлу «{host}» найдено проблем: {len(same_host_items)}.\n\n"
                     "Создать одну задачу по всем проблемам этого узла?\n\n"
                     "Да — все проблемы узла.\n"
@@ -1440,12 +1441,15 @@ class LiveZabbixMonitorWidget(QWidget):
         for item in items or []:
             if self._item_has_redmine_ip(item):
                 continue
+
             host = str(getattr(item, "host", "") or "").strip()
             if not host:
                 continue
+
             host_key = host.casefold()
             if host_key in seen_hosts:
                 continue
+
             seen_hosts.add(host_key)
             result.append(item)
         return result
@@ -1565,12 +1569,13 @@ class LiveZabbixMonitorWidget(QWidget):
             ip = str(payload.get("ip") or "").strip()
 
         if ip:
-            self._apply_redmine_host_ip(item, ip)
             self.logger.info(
-                "Redmine IP lookup found: host=%s ip=%s",
+                "Redmine IP lookup found: host=%s trigger=%s ip=%s",
                 getattr(item, "host", ""),
+                getattr(item, "trigger_name", ""),
                 ip,
             )
+            self._apply_redmine_host_ip(item, ip)
             self._load_next_redmine_ip_lookup()
             return
 
@@ -1635,20 +1640,35 @@ class LiveZabbixMonitorWidget(QWidget):
   var host = norm(target.host);
   var hostUrl = String(target.host_url || '');
   var trigger = norm(target.trigger_name);
-  var targetRowIndex = Number(target.row_index);
+  var hasTargetRowIndex = target.row_index !== null && target.row_index !== undefined && target.row_index !== '';
+  var targetRowIndex = hasTargetRowIndex ? Number(target.row_index) : NaN;
   var rows = Array.from(document.querySelectorAll('tr'));
 
   function rowScore(row, index) {
     var rowText = text(row);
-    var score = 0;
-
-    if (!isNaN(targetRowIndex) && index === targetRowIndex) score += 5;
-    if (host && rowText.indexOf(host) !== -1) score += 4;
-    if (trigger && rowText.indexOf(trigger) !== -1) score += 4;
-
     var links = Array.from(row.querySelectorAll('a'));
-    if (links.some(function(a) { return host && text(a) === host; })) score += 5;
-    if (links.some(function(a) { return hostUrl && abs(a.getAttribute('href') || a.href || '') === hostUrl; })) score += 5;
+
+    var hostLinkExact = links.some(function(a) {
+      return host && text(a) === host;
+    });
+    var hostUrlExact = links.some(function(a) {
+      return hostUrl && abs(a.getAttribute('href') || a.href || '') === hostUrl;
+    });
+    var hostInRow = !!(host && rowText.indexOf(host) !== -1);
+    var triggerInRow = !!(trigger && rowText.indexOf(trigger) !== -1);
+    var rowIndexMatch = hasTargetRowIndex && !isNaN(targetRowIndex) && index === targetRowIndex;
+
+    // Главное: если известен host, не даём одной только позиции строки выбрать первый попавшийся узел.
+    if (host && !hostLinkExact && !hostUrlExact && !hostInRow) {
+      return 0;
+    }
+
+    var score = 0;
+    if (hostUrlExact) score += 20;
+    if (hostLinkExact) score += 16;
+    if (hostInRow) score += 10;
+    if (triggerInRow) score += 3;
+    if (rowIndexMatch && (hostLinkExact || hostUrlExact || hostInRow || triggerInRow)) score += 2;
 
     return score;
   }
@@ -1699,6 +1719,22 @@ class LiveZabbixMonitorWidget(QWidget):
     });
   }
 
+  var rect = hostLink.getBoundingClientRect();
+  try {
+    window.__oko_redmine_ip_lookup_target = {
+      host: target.host || '',
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      href: abs(hostLink.getAttribute('href') || hostLink.href || ''),
+      time: Date.now()
+    };
+  } catch(e) {}
+
+  try {
+    document.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, cancelable: true, key: 'Escape', code: 'Escape', which: 27, keyCode: 27}));
+    document.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true, cancelable: true, key: 'Escape', code: 'Escape', which: 27, keyCode: 27}));
+  } catch(e) {}
+
   clickElement(hostLink);
 
   return JSON.stringify({
@@ -1706,7 +1742,9 @@ class LiveZabbixMonitorWidget(QWidget):
     source: 'problems_page_host_link',
     host: target.host || '',
     link_text: rawText(hostLink).slice(0, 120),
-    href: abs(hostLink.getAttribute('href') || hostLink.href || '')
+    href: abs(hostLink.getAttribute('href') || hostLink.href || ''),
+    target_x: rect.left + rect.width / 2,
+    target_y: rect.top + rect.height / 2
   });
 })();
 """.replace("__TARGET__", payload)
@@ -1722,44 +1760,83 @@ class LiveZabbixMonitorWidget(QWidget):
   function visible(element) {
     if (!element) return false;
     var rect = element.getBoundingClientRect();
-    return !!(rect.width || rect.height || element.getClientRects().length);
+    var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+    return !!(rect.width || rect.height || element.getClientRects().length) &&
+      (!style || (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0'));
   }
 
   function clickElement(element) {
     try { element.scrollIntoView({block: 'center', inline: 'center'}); } catch(e) {}
-    ['mouseover', 'mousedown', 'mouseup', 'click'].forEach(function(type) {
+    ['mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'].forEach(function(type) {
       try {
         element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
       } catch(e) {}
     });
   }
 
-  var candidates = Array.from(document.querySelectorAll(
-    'a.menu-popup-item, [role="menuitem"], .menu-popup-item, a, button'
-  )).filter(visible);
+  function center(element) {
+    var r = element.getBoundingClientRect();
+    return {x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height};
+  }
 
-  var traceroute = candidates.find(function(element) {
+  function distanceToTarget(element, target) {
+    if (!target || typeof target.x !== 'number' || typeof target.y !== 'number') {
+      return 999999999;
+    }
+    var c = center(element);
+    var dx = c.x - target.x;
+    var dy = c.y - target.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  var target = window.__oko_redmine_ip_lookup_target || {};
+
+  var candidates = Array.from(document.querySelectorAll(
+    'a.menu-popup-item, [role="menuitem"], .menu-popup-item, .menu-popup-item-text, a, button'
+  )).filter(function(element) {
+    if (!visible(element)) return false;
     var label = String(element.getAttribute('aria-label') || '');
     var value = text(element) + ' ' + label;
     return /traceroute/i.test(value);
   });
 
-  if (!traceroute) {
+  if (!candidates.length) {
     return JSON.stringify({
       ok: false,
-      reason: 'traceroute_menu_item_not_found',
-      visible_items: candidates.slice(0, 20).map(function(element) {
-        return text(element).slice(0, 100) || String(element.getAttribute('aria-label') || '').slice(0, 100);
-      })
+      reason: 'traceroute_not_found',
+      target: target || {}
     });
   }
 
+  candidates.sort(function(a, b) {
+    return distanceToTarget(a, target) - distanceToTarget(b, target);
+  });
+
+  var traceroute = candidates[0];
+  var tracerouteText = text(traceroute);
+  var c = center(traceroute);
+  var dist = distanceToTarget(traceroute, target);
+
   clickElement(traceroute);
+
+  try {
+    window.__oko_redmine_ip_traceroute_clicked = {
+      host: target.host || '',
+      time: Date.now(),
+      x: c.x,
+      y: c.y,
+      distance: dist,
+      text: tracerouteText
+    };
+  } catch(e) {}
 
   return JSON.stringify({
     ok: true,
-    source: 'traceroute_menu_item',
-    label: text(traceroute) || String(traceroute.getAttribute('aria-label') || '')
+    source: 'nearest_traceroute_menu_item',
+    traceroute_text: tracerouteText,
+    distance: dist,
+    target: target || {},
+    candidates_count: candidates.length
   });
 })();
 """
@@ -1855,6 +1932,1204 @@ class LiveZabbixMonitorWidget(QWidget):
         if not opened:
             QMessageBox.warning(self, "Redmine", "Не удалось открыть Redmine-ссылку в браузере.")
 
+    def open_mm_otrs_for_selected_row(self):
+        items = self._choose_redmine_items_for_selection("ОТРС ММ")
+        if not items:
+            QMessageBox.information(self, "ОТРС ММ", "Выберите одну или несколько строк проблемы в Live Zabbix Monitor.")
+            return
+
+        self._enrich_redmine_host_ips(items, self._open_mm_otrs_after_ip_lookup)
+
+    @staticmethod
+    def _mm_otrs_common_prefix(hosts):
+        prefixes = []
+        for host in hosts or []:
+            text = str(host or "").strip()
+            if "-" not in text:
+                return ""
+            prefix = text.split("-", 1)[0].strip()
+            if not prefix:
+                return ""
+            prefixes.append(prefix)
+
+        if not prefixes:
+            return ""
+
+        first = prefixes[0]
+        if all(prefix.casefold() == first.casefold() for prefix in prefixes):
+            return first
+        return ""
+
+    def _mm_otrs_trigger_lines(self, triggers):
+        triggers = self._unique_text_values(triggers)
+        if not triggers:
+            triggers = ["Проблема Zabbix"]
+
+        if len(triggers) == 1:
+            return ["Триггер:", triggers[0]]
+
+        lines = ["Триггеры:"]
+        for index, trigger in enumerate(triggers, start=1):
+            lines.append(f"{index}. {trigger}")
+        return lines
+
+    def _build_mm_otrs_subject_and_body(self, items):
+        """Build MM OTRS subject/body. For multi-host tasks, resolve IP per host."""
+        items = self._unique_live_items(items)
+        grouped_hosts = self._redmine_group_items_by_host(items)
+        hosts = [host for host, _host_items in grouped_hosts]
+
+        def item_trigger(item):
+            return str(getattr(item, "trigger_name", "") or "Проблема Zabbix").strip()
+
+        triggers = []
+        seen_triggers = set()
+        for item in items or []:
+            trigger = item_trigger(item)
+            if not trigger:
+                continue
+            key = trigger.casefold()
+            if key in seen_triggers:
+                continue
+            seen_triggers.add(key)
+            triggers.append(trigger)
+
+        final_line = "Просьба проверить и восстановить работоспособность."
+
+        if not grouped_hosts:
+            subject = "На нескольких узлах наблюдаются триггеры"
+            body_lines = ["На нескольких узлах наблюдаются триггеры", ""]
+            if triggers:
+                body_lines.append("Триггеры:")
+                body_lines.extend(self._mm_otrs_trigger_lines(triggers))
+                body_lines.append("")
+            body_lines.append(final_line)
+            return subject, "\n".join(body_lines)
+
+        if len(grouped_hosts) == 1:
+            host, host_items = grouped_hosts[0]
+            ip_text = self._redmine_ip_text_for_items(host_items)
+
+            if len(triggers) == 1:
+                trigger = triggers[0]
+                subject = f"На узле {host} наблюдается триггер {trigger}"
+                body_lines = [
+                    f"На узле {host} — IP: {ip_text} наблюдается триггер {trigger}",
+                    "",
+                    final_line,
+                ]
+                return subject, "\n".join(body_lines)
+
+            subject = f"На узле {host} наблюдаются триггеры"
+            body_lines = [
+                f"На узле {host} — IP: {ip_text} наблюдаются триггеры:",
+            ]
+            body_lines.extend(self._mm_otrs_trigger_lines(triggers))
+            body_lines.extend(["", final_line])
+            return subject, "\n".join(body_lines)
+
+        prefix = self._mm_otrs_common_prefix(hosts)
+        if prefix:
+            subject = f"На {prefix} наблюдаются триггеры на узлах"
+            body_lines = [
+                f"На серверах ст. {prefix} наблюдаются триггеры",
+                "",
+                "Узлы сети:",
+            ]
+        else:
+            subject = "На нескольких узлах наблюдаются триггеры"
+            body_lines = [
+                "На нескольких узлах наблюдаются триггеры",
+                "",
+                "Узлы сети:",
+            ]
+
+        for index, (host, host_items) in enumerate(grouped_hosts, start=1):
+            ip_text = self._redmine_ip_text_for_items(host_items)
+            body_lines.append(f"{index}. {host} — IP: {ip_text}")
+
+        body_lines.append("")
+
+        if len(triggers) == 1:
+            body_lines.append("Триггер:")
+            body_lines.append(triggers[0])
+        elif triggers:
+            body_lines.append("Триггеры:")
+            body_lines.extend(self._mm_otrs_trigger_lines(triggers))
+
+        body_lines.extend(["", final_line])
+        return subject, "\n".join(body_lines)
+
+
+    def _open_mm_otrs_after_ip_lookup(self, items):
+        url = str(self.settings.get("mm_otrs_create_url", "") or "").strip()
+        if not url:
+            QMessageBox.warning(
+                self,
+                "ОТРС ММ",
+                "Не указан URL создания задачи ОТРС ММ.\n\nОткройте Настройки → Режим разработчика и заполните поле URL создания задачи ОТРС ММ.",
+            )
+            return
+
+        subject, body = self._build_mm_otrs_subject_and_body(items)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Создать задачу на ММ")
+        dialog.resize(1200, 820)
+
+        root = QVBoxLayout(dialog)
+        status_label = QLabel("Открываю форму создания задачи ОТРС ММ...")
+        root.addWidget(status_label)
+
+        view = register_web_view(QWebEngineView(dialog))
+        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        if profile is not None:
+            page = QWebEnginePage(profile, view)
+            view.setPage(page)
+
+        root.addWidget(view, stretch=1)
+
+        mm_otrs_state = {"started": False}
+
+        def fill_form(ok):
+            if not ok:
+                status_label.setText("Страница открылась с ошибкой. Проверьте доступ/авторизацию.")
+                return
+
+            if mm_otrs_state["started"]:
+                return
+
+            mm_otrs_state["started"] = True
+            status_label.setText("Страница загружена. Проверяю авторизацию ОТРС ММ...")
+            QTimer.singleShot(1000, lambda: self._login_mm_otrs_if_needed(view, status_label, subject, body, 1))
+
+        view.loadFinished.connect(fill_form)
+
+        def cleanup(_result=0, current_dialog=dialog, current_view=view):
+            try:
+                self.mm_otrs_dialogs.remove(current_dialog)
+            except ValueError:
+                pass
+            safe_delete_web_view(current_view, logger=self.logger, context="LiveZabbixMonitorWidget MM OTRS")
+
+        dialog.finished.connect(cleanup)
+        self.mm_otrs_dialogs.append(dialog)
+        dialog.show()
+        view.load(QUrl(url))
+
+    def _mm_otrs_saved_credentials(self):
+        """Return only OTRS credentials from the current profile credentials."""
+        credentials = self.credentials or {}
+
+        explicit_keys = (
+            "otrs",
+            "OTRS",
+            "itsm",
+            "ITSM",
+            "mm_otrs",
+            "MM_OTRS",
+            "otrs_mm",
+            "OTRS_MM",
+            "мм",
+            "ММ",
+        )
+
+        def extract_pair(value):
+            if not isinstance(value, dict):
+                return {"login": "", "password": ""}
+
+            login = (
+                value.get("login")
+                or value.get("username")
+                or value.get("user")
+                or value.get("email")
+                or value.get("otrs_login")
+                or value.get("itsm_login")
+                or ""
+            )
+            password = (
+                value.get("password")
+                or value.get("pass")
+                or value.get("secret")
+                or value.get("otrs_password")
+                or value.get("itsm_password")
+                or ""
+            )
+
+            return {
+                "login": str(login or ""),
+                "password": str(password or ""),
+            }
+
+        for key in explicit_keys:
+            pair = extract_pair(credentials.get(key))
+            if pair["login"] and pair["password"]:
+                return pair
+
+        services = credentials.get("services")
+        if isinstance(services, dict):
+            for key in explicit_keys:
+                pair = extract_pair(services.get(key))
+                if pair["login"] and pair["password"]:
+                    return pair
+
+        profiles = credentials.get("profiles")
+        if isinstance(profiles, dict):
+            for key in explicit_keys:
+                pair = extract_pair(profiles.get(key))
+                if pair["login"] and pair["password"]:
+                    return pair
+
+        return {"login": "", "password": ""}
+
+    def _login_mm_otrs_if_needed(self, view, status_label, subject, body, attempt=1):
+        creds = self._mm_otrs_saved_credentials()
+        login_json = json.dumps(creds.get("login", ""), ensure_ascii=False)
+        password_json = json.dumps(creds.get("password", ""), ensure_ascii=False)
+
+        js = f"""
+(function() {{
+  const loginValue = {login_json};
+  const passwordValue = {password_json};
+
+  function fire(element) {{
+    if (!element) return;
+    ["input", "change", "blur"].forEach(function(type) {{
+      try {{ element.dispatchEvent(new Event(type, {{bubbles: true}})); }} catch (e) {{}}
+    }});
+  }}
+
+  function setValue(element, value) {{
+    if (!element) return false;
+    try {{
+      element.focus();
+      element.value = value;
+      fire(element);
+      return true;
+    }} catch (e) {{
+      return false;
+    }}
+  }}
+
+  function clickElement(element) {{
+    if (!element) return false;
+    try {{ element.scrollIntoView({{block: "center", inline: "center"}}); }} catch (e) {{}}
+    try {{
+      ["mouseover", "mousedown", "mouseup", "click"].forEach(function(type) {{
+        element.dispatchEvent(new MouseEvent(type, {{bubbles: true, cancelable: true, view: window}}));
+      }});
+      return true;
+    }} catch (e) {{
+      try {{ element.click(); return true; }} catch (e2) {{}}
+    }}
+    return false;
+  }}
+
+  const subjectInput =
+    document.querySelector("#Subject") ||
+    document.querySelector('input[name="Subject"]');
+
+  if (subjectInput) {{
+    return JSON.stringify({{
+      needs_login: false,
+      subject_found: true,
+      login_clicked: false
+    }});
+  }}
+
+  const loginButton = document.querySelector("#LoginButton");
+  const passwordInput =
+    document.querySelector("#Password") ||
+    document.querySelector('input[name="Password"]') ||
+    document.querySelector('input[type="password"]');
+
+  const loginInput =
+    document.querySelector("#User") ||
+    document.querySelector("#Login") ||
+    document.querySelector('input[name="User"]') ||
+    document.querySelector('input[name="Login"]') ||
+    document.querySelector('input[name="UserLogin"]') ||
+    document.querySelector('input[type="text"]') ||
+    document.querySelector('input[type="email"]');
+
+  const needsLogin = !!(loginButton || passwordInput);
+
+  if (!needsLogin) {{
+    return JSON.stringify({{
+      needs_login: false,
+      subject_found: false,
+      login_clicked: false
+    }});
+  }}
+
+  if (!loginValue || !passwordValue) {{
+    return JSON.stringify({{
+      needs_login: true,
+      missing_credentials: true,
+      login_found: !!loginInput,
+      password_found: !!passwordInput,
+      login_button_found: !!loginButton
+    }});
+  }}
+
+  const loginSet = setValue(loginInput, loginValue);
+  const passwordSet = setValue(passwordInput, passwordValue);
+  const clicked = clickElement(loginButton);
+
+  return JSON.stringify({{
+    needs_login: true,
+    missing_credentials: false,
+    login_found: !!loginInput,
+    password_found: !!passwordInput,
+    login_button_found: !!loginButton,
+    login_set: loginSet,
+    password_set: passwordSet,
+    login_clicked: clicked
+  }});
+}})();
+"""
+
+        page = view.page() if view is not None else None
+        if page is None:
+            status_label.setText("Не удалось получить страницу ОТРС ММ.")
+            return
+
+        def after_login_check(result):
+            text = str(result or "")
+
+            if '"subject_found":true' in text:
+                status_label.setText("Авторизация уже есть. Заполняю тему и описание...")
+                self._fill_mm_otrs_direct_fields(view, status_label, subject, body, 1)
+                return
+
+            if '"missing_credentials":true' in text:
+                status_label.setText("ОТРС просит логин/пароль, но сохранённые доступы профиля не найдены.")
+                return
+
+            if '"login_clicked":true' in text:
+                status_label.setText("Логин и пароль подставлены, нажимаю Войти и жду форму задачи...")
+                QTimer.singleShot(2500, lambda: self._login_mm_otrs_if_needed(view, status_label, subject, body, attempt + 1))
+                return
+
+            if attempt < 8:
+                status_label.setText(f"Жду форму задачи или логина ОТРС ММ... {attempt}/8")
+                QTimer.singleShot(1000, lambda: self._login_mm_otrs_if_needed(view, status_label, subject, body, attempt + 1))
+                return
+
+            status_label.setText("Не удалось определить форму задачи или форму логина ОТРС ММ.")
+
+        page.runJavaScript(js, after_login_check)
+
+
+    def _mm_otrs_required_field_steps(self):
+        return [
+            {
+                "name": "Тип",
+                "input_selector": "#TypeID_Search",
+                "value": "Задача",
+                "option_selector": "#TypeID_Select a.jstree-anchor",
+                "option_text": "Задача",
+            },
+            {
+                "name": "Клиент",
+                "input_selector": "#FromCustomer",
+                "value": "stp",
+                "option_selector": "#ui-id-92",
+            },
+            {
+                "name": "Очередь/направление",
+                "input_selector": "#Dest_Search",
+                "value": "",
+                "option_selector": "#j6_2",
+            },
+            {
+                "name": "Сервис",
+                "input_selector": "#ServiceID_Search",
+                "value": "",
+                "option_selector": "#j9_14",
+            },
+            {
+                "name": "SLA",
+                "input_selector": "#SLAID_Search",
+                "value": "",
+                "option_selector": "body > div.InputField_ListContainer.ExpandToBottom",
+                "click_first_child": True,
+            },
+        ]
+
+    def _fill_mm_otrs_required_fields(self, view, status_label, subject, body, step_index=0, attempt=1):
+        steps = self._mm_otrs_required_field_steps()
+        if step_index >= len(steps):
+            status_label.setText("Обязательные поля заполнены. Заполняю тему и описание...")
+            QTimer.singleShot(700, lambda: self._fill_mm_otrs_form(view, status_label, subject, body, 1))
+            return
+
+        step = steps[step_index]
+        step_json = json.dumps(step, ensure_ascii=False)
+
+        js = f"""
+(function() {{
+  const step = {step_json};
+
+  function fire(element) {{
+    if (!element) return;
+    ["input", "change", "keyup", "blur"].forEach(function(type) {{
+      try {{ element.dispatchEvent(new Event(type, {{bubbles: true}})); }} catch (e) {{}}
+    }});
+  }}
+
+  function clickElement(element) {{
+    if (!element) return false;
+    try {{ element.scrollIntoView({{block: "center", inline: "center"}}); }} catch (e) {{}}
+    try {{
+      ["mouseover", "mousedown", "mouseup", "click"].forEach(function(type) {{
+        element.dispatchEvent(new MouseEvent(type, {{bubbles: true, cancelable: true, view: window}}));
+      }});
+      return true;
+    }} catch (e) {{
+      try {{ element.click(); return true; }} catch (e2) {{}}
+    }}
+    return false;
+  }}
+
+  function visible(element) {{
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+    return !!(rect.width || rect.height || element.getClientRects().length) &&
+      (!style || (style.visibility !== "hidden" && style.display !== "none"));
+  }}
+
+  const input = document.querySelector(step.input_selector);
+  if (!input || !visible(input)) {{
+    return JSON.stringify({{
+      ok: false,
+      reason: "input_not_ready",
+      name: step.name,
+      input_selector: step.input_selector,
+      option_selector: step.option_selector
+    }});
+  }}
+
+  try {{
+    input.focus();
+    clickElement(input);
+    if (step.value) {{
+      input.value = step.value;
+      fire(input);
+    }}
+  }} catch (e) {{}}
+
+  if (step.value && String(input.value || "").trim().casefold && String(input.value || "").trim().toLowerCase() === String(step.value || "").trim().toLowerCase()) {{
+    return JSON.stringify({{
+      ok: true,
+      reason: "already_selected",
+      name: step.name,
+      input_found: true,
+      input_value: String(input.value || "")
+    }});
+  }}
+
+  let option = null;
+
+  try {{
+    const allOptions = Array.from(document.querySelectorAll(step.option_selector));
+    if (step.option_text) {{
+      option = allOptions.find(function(element) {{
+        return visible(element) && String(element.innerText || element.textContent || "").trim() === String(step.option_text || "").trim();
+      }});
+    }}
+    if (!option) {{
+      option = allOptions.find(function(element) {{ return visible(element); }}) || null;
+    }}
+  }} catch (e) {{}}
+
+  if (option && step.click_first_child) {{
+    const child =
+      Array.from(option.querySelectorAll("a, li, div, span"))
+        .find(function(element) {{ return visible(element) && String(element.innerText || element.textContent || "").trim(); }});
+    if (child) option = child;
+  }}
+
+  if (!option || !visible(option)) {{
+    return JSON.stringify({{
+      ok: false,
+      reason: "option_not_ready",
+      name: step.name,
+      input_found: true,
+      input_value: String(input.value || ""),
+      option_selector: step.option_selector,
+      option_text: step.option_text || ""
+    }});
+  }}
+
+  const clicked = clickElement(option);
+
+  return JSON.stringify({{
+    ok: clicked,
+    reason: clicked ? "" : "click_failed",
+    name: step.name,
+    input_found: true,
+    input_value: String(input.value || ""),
+    option_found: !!option,
+    option_text: String(option.innerText || option.textContent || "").trim()
+  }});
+}})();
+"""
+
+        page = view.page() if view is not None else None
+        if page is None:
+            status_label.setText("Не удалось получить страницу ОТРС ММ.")
+            return
+
+        def after_step(result):
+            text = str(result or "")
+            parsed = {}
+            if isinstance(result, dict):
+                parsed = result
+            elif isinstance(result, str):
+                try:
+                    parsed = json.loads(result)
+                except Exception:
+                    parsed = {}
+            ok = bool(parsed.get("ok"))
+
+            if ok:
+                status_label.setText(f"ОТРС ММ: заполнено поле «{step.get('name', '')}».")
+                QTimer.singleShot(
+                    900,
+                    lambda: self._fill_mm_otrs_required_fields(view, status_label, subject, body, step_index + 1, 1),
+                )
+                return
+
+            if attempt < 10:
+                status_label.setText(
+                    f"ОТРС ММ: жду поле «{step.get('name', '')}»... попытка {attempt}/10"
+                )
+                QTimer.singleShot(
+                    700,
+                    lambda: self._fill_mm_otrs_required_fields(view, status_label, subject, body, step_index, attempt + 1),
+                )
+                return
+
+            status_label.setText(
+                f"ОТРС ММ: не удалось заполнить поле «{step.get('name', '')}». "
+                f"Результат: {text[:300]}"
+            )
+
+        page.runJavaScript(js, after_step)
+
+
+    def _fill_mm_otrs_direct_fields(self, view, status_label, subject, body, attempt=1, step_index=0):
+        """Fill OTRS fields in dependency order: Type -> Customer -> Dest -> Service -> SLA."""
+        steps = [
+            {
+                "name": "Тип",
+                "field": "#TypeID",
+                "value": "8",
+                "search": "#TypeID_Search",
+                "search_text": "Задача",
+            },
+            {
+                "name": "Очередь",
+                "field": "#Dest",
+                "value": "23||2-я линия::ГУП ММ",
+                "search": "#Dest_Search",
+                "search_text": "ГУП ММ",
+            },
+            {
+                "name": "Сервис",
+                "field": "#ServiceID",
+                "value": "247",
+                "search": "#ServiceID_Search",
+                "search_text": "Обслуживание оборудования",
+            },
+            {
+                "name": "SLA",
+                "field": "#SLAID",
+                "value": "5",
+                "search": "#SLAID_Search",
+                "search_text": "SLA_none",
+            },
+        ]
+
+        if step_index >= len(steps):
+            status_label.setText("Поля ОТРС ММ заполнены. Заполняю тему и описание...")
+            QTimer.singleShot(700, lambda: self._fill_mm_otrs_form(view, status_label, subject, body, 1))
+            return
+
+        step = steps[step_index]
+        step_json = json.dumps(step, ensure_ascii=False)
+
+        js = f"""
+(function() {{
+  const step = {step_json};
+
+  function fire(element) {{
+    if (!element) return;
+    try {{ element.dispatchEvent(new Event("input", {{bubbles: true, cancelable: true}})); }} catch (e) {{}}
+    try {{ element.dispatchEvent(new Event("change", {{bubbles: true, cancelable: true}})); }} catch (e) {{}}
+    try {{ element.dispatchEvent(new Event("blur", {{bubbles: true, cancelable: true}})); }} catch (e) {{}}
+  }}
+
+  function setValue(selector, value) {{
+    const element = document.querySelector(selector);
+    if (!element) {{
+      return {{ok: false, reason: "field_not_found", selector: selector, value: ""}};
+    }}
+
+    try {{
+      element.value = value;
+      fire(element);
+      return {{
+        ok: String(element.value || "") === String(value || ""),
+        reason: String(element.value || "") === String(value || "") ? "" : "value_not_applied",
+        selector: selector,
+        value: String(element.value || "")
+      }};
+    }} catch (e) {{
+      return {{ok: false, reason: String(e && e.message ? e.message : e), selector: selector, value: ""}};
+    }}
+  }}
+
+  function setSearchText(selector, text) {{
+    const element = document.querySelector(selector);
+    if (!element) return false;
+    try {{
+      element.value = text;
+      fire(element);
+      return true;
+    }} catch (e) {{
+      return false;
+    }}
+  }}
+
+  const fieldResult = setValue(step.field, step.value);
+  const searchResult = setSearchText(step.search, step.search_text);
+
+  return JSON.stringify({{
+    ok: !!fieldResult.ok,
+    name: step.name,
+    field_result: fieldResult,
+    search_result: searchResult,
+    current: {{
+      TypeID: document.querySelector("#TypeID") ? document.querySelector("#TypeID").value : "",
+      Dest: document.querySelector("#Dest") ? document.querySelector("#Dest").value : "",
+      ServiceID: document.querySelector("#ServiceID") ? document.querySelector("#ServiceID").value : "",
+      SLAID: document.querySelector("#SLAID") ? document.querySelector("#SLAID").value : "",
+      SLAID_Search: document.querySelector("#SLAID_Search") ? document.querySelector("#SLAID_Search").value : ""
+    }}
+  }});
+}})();
+"""
+
+        page = view.page() if view is not None else None
+        if page is None:
+            status_label.setText("Не удалось получить страницу ОТРС ММ.")
+            return
+
+        def after_step(result):
+            text = str(result or "")
+            parsed = {}
+            if isinstance(result, dict):
+                parsed = result
+            elif isinstance(result, str):
+                try:
+                    parsed = json.loads(result)
+                except Exception:
+                    parsed = {}
+
+            if parsed.get("ok"):
+                status_label.setText(f"ОТРС ММ: заполнено поле «{step.get('name', '')}».")
+
+                if step_index == 0:
+                    QTimer.singleShot(900, lambda: self._fill_mm_otrs_customer(view, status_label, subject, body, 1))
+                    return
+
+                QTimer.singleShot(
+                    1000,
+                    lambda: self._fill_mm_otrs_direct_fields(
+                        view, status_label, subject, body, 1, step_index + 1
+                    ),
+                )
+                return
+
+            if attempt < 8:
+                status_label.setText(f"ОТРС ММ: жду поле «{step.get('name', '')}»... попытка {attempt}/8")
+                QTimer.singleShot(
+                    800,
+                    lambda: self._fill_mm_otrs_direct_fields(
+                        view, status_label, subject, body, attempt + 1, step_index
+                    ),
+                )
+                return
+
+            status_label.setText(
+                f"Не удалось заполнить поле «{step.get('name', '')}». "
+                f"Продолжаю дальше. Результат: {text[:350]}"
+            )
+            QTimer.singleShot(
+                800,
+                lambda: self._fill_mm_otrs_direct_fields(
+                    view, status_label, subject, body, 1, step_index + 1
+                ),
+            )
+
+        page.runJavaScript(js, after_step)
+
+
+    def _fill_mm_otrs_customer(self, view, status_label, subject, body, attempt=1):
+        """Select OTRS customer from autocomplete and hide extra empty/raw customer rows."""
+        js = r"""
+(function() {
+  function fire(element, type) {
+    if (!element) return;
+    try {
+      element.dispatchEvent(new Event(type, {bubbles: true, cancelable: true}));
+    } catch (e) {}
+  }
+
+  function key(element, type, keyValue, codeValue) {
+    if (!element) return;
+    const keyCode = keyValue === "Enter" ? 13 : (keyValue === "ArrowDown" ? 40 : 0);
+    try {
+      element.dispatchEvent(new KeyboardEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        key: keyValue || "",
+        code: codeValue || keyValue || "",
+        which: keyCode,
+        keyCode: keyCode
+      }));
+    } catch (e) {}
+  }
+
+  function clickElement(element) {
+    if (!element) return false;
+    try {
+      ["mouseover", "mousemove", "mousedown", "mouseup", "click"].forEach(function(type) {
+        element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+      });
+      return true;
+    } catch (e) {
+      try { element.click(); return true; } catch (e2) {}
+    }
+    return false;
+  }
+
+  function visible(element) {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+    return !!(rect.width || rect.height || element.getClientRects().length) &&
+      (!style || (style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"));
+  }
+
+  function customerTextFields() {
+    return Array.from(document.querySelectorAll(
+      "input.CustomerTicketText, #CustomerTicketText, #CustomerTicketText_1, .MainCustomer"
+    ));
+  }
+
+  function selectedCustomerText() {
+    return customerTextFields().map(function(element) {
+      return String(element.value || element.innerText || element.textContent || "").trim();
+    }).filter(Boolean).join(" | ");
+  }
+
+  function isRealCustomerText(text) {
+    return /stp@stdpr\.ru|Служба Поддержки/i.test(String(text || ""));
+  }
+
+  function isRawOrEmptyCustomerText(text) {
+    const value = String(text || "").trim();
+    return value === "" || /^stp$/i.test(value);
+  }
+
+  function findCustomerRow(field) {
+    let current = field;
+    for (let i = 0; current && i < 8; i += 1) {
+      const textInputs = current.querySelectorAll ? current.querySelectorAll("input.CustomerTicketText").length : 0;
+      const radios = current.querySelectorAll ? current.querySelectorAll("input.CustomerTicketRadio").length : 0;
+
+      if (textInputs === 1 && radios <= 1) {
+        return current;
+      }
+
+      current = current.parentElement;
+    }
+
+    return field.parentElement;
+  }
+
+  function hideExtraCustomerRow(field) {
+    if (!field) return false;
+
+    try {
+      field.value = "";
+      fire(field, "input");
+      fire(field, "change");
+      fire(field, "blur");
+    } catch (e) {}
+
+    const suffix = field.id && field.id.startsWith("CustomerTicketText")
+      ? field.id.replace("CustomerTicketText", "")
+      : "";
+
+    const radio = document.querySelector("#CustomerSelected" + suffix);
+    if (radio) {
+      try {
+        radio.checked = false;
+        fire(radio, "change");
+      } catch (e) {}
+    }
+
+    const row = findCustomerRow(field);
+    if (row) {
+      row.setAttribute("data-oko-hidden-extra-customer", "1");
+      row.style.display = "none";
+    }
+
+    return true;
+  }
+
+  function normalizeCustomerRows() {
+    let realField = null;
+
+    customerTextFields().forEach(function(field) {
+      const text = String(field.value || field.innerText || field.textContent || "").trim();
+      if (isRealCustomerText(text)) {
+        realField = field;
+      }
+    });
+
+    if (!realField) {
+      return {
+        ok: false,
+        reason: "real_customer_row_not_found",
+        selected: selectedCustomerText()
+      };
+    }
+
+    const suffix = realField.id && realField.id.startsWith("CustomerTicketText")
+      ? realField.id.replace("CustomerTicketText", "")
+      : "_1";
+
+    const realRadio =
+      document.querySelector("#CustomerSelected" + suffix) ||
+      document.querySelector("#CustomerSelected_1");
+
+    if (realRadio) {
+      try {
+        realRadio.checked = true;
+        fire(realRadio, "click");
+        fire(realRadio, "change");
+      } catch (e) {}
+    }
+
+    let hidden_count = 0;
+
+    customerTextFields().forEach(function(field) {
+      if (field === realField) return;
+
+      const text = String(field.value || field.innerText || field.textContent || "").trim();
+      if (isRawOrEmptyCustomerText(text)) {
+        if (hideExtraCustomerRow(field)) {
+          hidden_count += 1;
+        }
+      }
+    });
+
+    const input = document.querySelector("#FromCustomer");
+    if (input) {
+      try {
+        input.value = "";
+        fire(input, "input");
+        fire(input, "change");
+        fire(input, "blur");
+      } catch (e) {}
+    }
+
+    const counter = document.querySelector("#CustomerTicketCounterFromCustomer");
+    if (counter) {
+      try {
+        counter.value = "1";
+        fire(counter, "change");
+      } catch (e) {}
+    }
+
+    return {
+      ok: true,
+      reason: "normalized",
+      selected: selectedCustomerText(),
+      real_field_id: realField.id || "",
+      real_radio_id: realRadio ? realRadio.id : "",
+      hidden_count: hidden_count,
+      from_customer_value: input ? String(input.value || "") : "",
+      counter: counter ? String(counter.value || "") : ""
+    };
+  }
+
+  function clickableParent(element) {
+    let current = element;
+    for (let i = 0; current && i < 5; i += 1) {
+      const tag = String(current.tagName || "").toLowerCase();
+      const text = String(current.innerText || current.textContent || "").trim();
+      if (["li", "a", "div", "span"].includes(tag) &&
+          /Служба Поддержки|stp@stdpr\.ru|stp\.stdpr\.ru/i.test(text)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return element;
+  }
+
+  const already = normalizeCustomerRows();
+  if (already.ok) {
+    return JSON.stringify({
+      ok: true,
+      reason: "already_selected_normalized",
+      normalize: already
+    });
+  }
+
+  const input = document.querySelector("#FromCustomer");
+  if (!input) {
+    return JSON.stringify({
+      ok: false,
+      reason: "FromCustomer_not_found",
+      selected: selectedCustomerText()
+    });
+  }
+
+  input.focus();
+  input.value = "stp";
+
+  try {
+    input.setSelectionRange(0, input.value.length);
+  } catch (e) {}
+
+  ["focus", "input", "keydown", "keyup", "change"].forEach(function(type) {
+    fire(input, type);
+  });
+
+  try {
+    if (window.jQuery) {
+      const jq = window.jQuery(input);
+      jq.trigger("focus");
+      jq.trigger("input");
+      jq.trigger("keydown");
+      jq.trigger("keyup");
+      jq.trigger("change");
+      if (jq.autocomplete) {
+        jq.autocomplete("search", "stp");
+      }
+    }
+  } catch (e) {}
+
+  let clicked = false;
+  let clickedText = "";
+  let method = "keyboard";
+
+  key(input, "keydown", "ArrowDown", "ArrowDown");
+  key(input, "keyup", "ArrowDown", "ArrowDown");
+  key(input, "keydown", "Enter", "Enter");
+  key(input, "keyup", "Enter", "Enter");
+
+  let normalizedAfterKeyboard = normalizeCustomerRows();
+
+  if (!normalizedAfterKeyboard.ok) {
+    const rect = input.getBoundingClientRect();
+    const points = [
+      [rect.left + 20, rect.bottom + 14],
+      [rect.left + 160, rect.bottom + 14],
+      [rect.left + 20, rect.bottom + 28],
+      [rect.left + 160, rect.bottom + 28]
+    ];
+
+    for (const point of points) {
+      const element = document.elementFromPoint(point[0], point[1]);
+      const parent = clickableParent(element);
+      const text = String(parent && (parent.innerText || parent.textContent) || "").trim();
+
+      if (parent && visible(parent) && /Служба Поддержки|stp@stdpr\.ru|stp\.stdpr\.ru/i.test(text)) {
+        clicked = clickElement(parent);
+        clickedText = text;
+        method = "elementFromPoint";
+        break;
+      }
+    }
+  }
+
+  try {
+    window.setTimeout(function() {
+      normalizeCustomerRows();
+    }, 350);
+  } catch (e) {}
+
+  const finalNormalize = normalizeCustomerRows();
+
+  return JSON.stringify({
+    ok: finalNormalize.ok,
+    reason: finalNormalize.ok ? "selected_normalized" : "selection_started",
+    method: method,
+    clicked: clicked,
+    clicked_text: clickedText,
+    normalize: finalNormalize,
+    selected: selectedCustomerText(),
+    from_customer_value: input.value || ""
+  });
+})();
+"""
+
+        page = view.page() if view is not None else None
+        if page is None:
+            status_label.setText("Не удалось получить страницу ОТРС ММ.")
+            return
+
+        def after_customer(result):
+            text = str(result or "")
+            parsed = {}
+            if isinstance(result, dict):
+                parsed = result
+            elif isinstance(result, str):
+                try:
+                    parsed = json.loads(result)
+                except Exception:
+                    parsed = {}
+
+            if parsed.get("ok"):
+                status_label.setText("Клиент ОТРС ММ выбран, лишняя строка скрыта. Заполняю очередь/сервис/SLA...")
+                QTimer.singleShot(
+                    1200,
+                    lambda: self._fill_mm_otrs_direct_fields(view, status_label, subject, body, 1, 1),
+                )
+                return
+
+            if attempt < 12:
+                status_label.setText(f"Ищу и выбираю клиента stp из выпадающего списка... попытка {attempt}/12")
+                QTimer.singleShot(
+                    900,
+                    lambda: self._fill_mm_otrs_customer(view, status_label, subject, body, attempt + 1),
+                )
+                return
+
+            status_label.setText(
+                "Не удалось выбрать клиента из выпадающего списка. "
+                f"Результат: {text[:500]}. Продолжаю поля дальше."
+            )
+            QTimer.singleShot(
+                900,
+                lambda: self._fill_mm_otrs_direct_fields(view, status_label, subject, body, 1, 1),
+            )
+
+        page.runJavaScript(js, after_customer)
+
+
+    def _fill_mm_otrs_form(self, view, status_label, subject, body, attempt=1):
+        subject_json = json.dumps(subject, ensure_ascii=False)
+        body_json = json.dumps(body, ensure_ascii=False)
+
+        js = f"""
+(function() {{
+  const subject = {subject_json};
+  const bodyText = {body_json};
+
+  function htmlEscape(value) {{
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }}
+
+  function fire(element) {{
+    if (!element) return;
+    ["input", "change", "blur"].forEach(function(type) {{
+      try {{ element.dispatchEvent(new Event(type, {{bubbles: true}})); }} catch (e) {{}}
+    }});
+  }}
+
+  const subjectInput =
+    document.querySelector("#Subject") ||
+    document.querySelector('input[name="Subject"]') ||
+    document.querySelector('input.W75pc[name="Subject"]');
+
+  if (subjectInput) {{
+    subjectInput.focus();
+    subjectInput.value = subject;
+    fire(subjectInput);
+  }}
+
+  const bodyHtml = htmlEscape(bodyText).replace(/\\n/g, "<br>");
+  let bodyFilled = false;
+  let ckeditorUsed = false;
+  let iframeFound = false;
+
+  try {{
+    if (window.CKEDITOR && window.CKEDITOR.instances) {{
+      const names = Object.keys(window.CKEDITOR.instances);
+      for (const name of names) {{
+        window.CKEDITOR.instances[name].setData(bodyHtml);
+        try {{ window.CKEDITOR.instances[name].updateElement(); }} catch (e) {{}}
+        bodyFilled = true;
+        ckeditorUsed = true;
+        break;
+      }}
+    }}
+  }} catch (e) {{}}
+
+  const iframe =
+    document.querySelector("#cke_1_contents > iframe") ||
+    document.querySelector(".cke_wysiwyg_frame") ||
+    document.querySelector("iframe");
+
+  try {{
+    if (iframe) {{
+      iframeFound = true;
+    }}
+    if (iframe && iframe.contentDocument && iframe.contentDocument.body) {{
+      iframe.contentDocument.body.innerHTML = bodyHtml;
+      fire(iframe.contentDocument.body);
+      bodyFilled = true;
+    }}
+  }} catch (e) {{}}
+
+  return JSON.stringify({{
+    subject_found: !!subjectInput,
+    body_filled: bodyFilled,
+    ckeditor_used: ckeditorUsed,
+    iframe_found: iframeFound
+  }});
+}})();
+"""
+
+        page = view.page() if view is not None else None
+        if page is None:
+            status_label.setText("Не удалось получить страницу ОТРС ММ.")
+            return
+
+        def after_fill(result):
+            text = str(result or "")
+            subject_ok = '"subject_found":true' in text or "'subject_found': True" in text
+            body_ok = '"body_filled":true' in text or "'body_filled': True" in text
+
+            if subject_ok and body_ok:
+                status_label.setText("Тема и описание заполнены. Проверьте остальные поля и создайте задачу вручную.")
+                return
+
+            if attempt < 6:
+                status_label.setText(f"Форма ещё готовится, повтор заполнения {attempt + 1}/6...")
+                QTimer.singleShot(800, lambda: self._fill_mm_otrs_form(view, status_label, subject, body, attempt + 1))
+                return
+
+            status_label.setText(
+                "Не удалось полностью заполнить форму. Проверьте селекторы темы/описания. "
+                f"Результат: {text[:300]}"
+            )
+
+        page.runJavaScript(js, after_fill)
+
+
     def open_acknowledgement(self, url):
         if not url:
             return
@@ -1940,6 +3215,8 @@ class LiveZabbixMonitorWidget(QWidget):
 
         redmine_action = menu.addAction("Создать Redmine по выбранным строкам")
         redmine_action.triggered.connect(self.open_redmine_for_selected_row)
+        mm_otrs_action = menu.addAction("Создать задачу на ММ")
+        mm_otrs_action.triggered.connect(self.open_mm_otrs_for_selected_row)
 
         menu.exec(self.table.viewport().mapToGlobal(position))
 

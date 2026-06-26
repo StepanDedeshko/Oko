@@ -222,6 +222,10 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         form.addRow("Интервал опроса:", self.interval_input)
         form.addRow("Профиль Zabbix:", self.profile_input)
         form.addRow("", self.show_diagnostics_checkbox)
+        self.mm_otrs_create_url_input = QLineEdit()
+        self.mm_otrs_create_url_input.setText(str(self.settings.get("mm_otrs_create_url", "") or ""))
+        self.mm_otrs_create_url_input.setPlaceholderText("https://itsm... URL создания задачи ОТРС ММ")
+        form.addRow("URL создания задачи ОТРС ММ:", self.mm_otrs_create_url_input)
 
         root.addLayout(form)
 
@@ -243,6 +247,7 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         self.settings["zabbix_profile_id"] = profile_id
         self.settings["profile_id"] = profile_id
         self.settings["show_live_zabbix_diagnostics"] = self.show_diagnostics_checkbox.isChecked()
+        self.settings["mm_otrs_create_url"] = self.mm_otrs_create_url_input.text().strip()
 
         save_config(self.config)
 
