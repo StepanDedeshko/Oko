@@ -68,6 +68,7 @@ from app.diagnostics_widget import DiagnosticsWidget
 from app.duty_settings import DutyModeSettingsWidget
 from app.service_checks_widget import ServiceChecksSettingsWidget
 from app.credentials import load_service_group_credentials, save_service_group_credentials, save_service_credentials
+from app.credentials import default_profile_export_filename, export_profile_credentials_file, import_profile_credentials_file
 from app.safe_widgets import NoWheelComboBox
 from app.service_checks import ensure_service_checks_defaults
 from app.live_zabbix import ensure_live_monitor_defaults
@@ -1321,41 +1322,65 @@ class NotesWidget(QWidget):
 
 
 class SettingsTransferWidget(QWidget):
-    """Export/import safe user settings without credentials."""
+    """Export/import common app settings and personal credentials separately."""
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
 
         root = QVBoxLayout(self)
-        group = QGroupBox("Перенос настроек")
-        layout = QVBoxLayout(group)
 
-        hint = QLabel(
+        settings_group = QGroupBox("Общие настройки приложения")
+        settings_layout = QVBoxLayout(settings_group)
+
+        settings_hint = QLabel(
             "Экспорт переносит продукты, страницы, графики, duty triggers, шаблоны и тему. "
             "Логины, пароли, токены, cookie, session и другие auth-данные не сохраняются."
         )
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        settings_hint.setWordWrap(True)
+        settings_layout.addWidget(settings_hint)
 
-        actions = QHBoxLayout()
-        export_button = QPushButton("Экспорт настроек")
+        settings_actions = QHBoxLayout()
+        export_button = QPushButton("Экспорт общих настроек")
         export_button.clicked.connect(self.export_settings)
-        import_button = QPushButton("Импорт настроек")
+        import_button = QPushButton("Импорт общих настроек")
         import_button.clicked.connect(self.import_settings)
-        actions.addWidget(export_button)
-        actions.addWidget(import_button)
-        actions.addStretch(1)
-        layout.addLayout(actions)
+        settings_actions.addWidget(export_button)
+        settings_actions.addWidget(import_button)
+        settings_actions.addStretch(1)
+        settings_layout.addLayout(settings_actions)
 
-        root.addWidget(group)
+        profile_group = QGroupBox("Личный профиль / доступы")
+        profile_layout = QVBoxLayout(profile_group)
+
+        profile_hint = QLabel(
+            "Экспорт профиля переносит только ваши сохранённые доступы: ОТРС, Zabbix, "
+            "отдельные доступы сервисов и группы сервисов. Он не меняет продукты, селекторы, "
+            "признаки входа, дежурку, шаблоны и общие настройки. Файл профиля содержит личные "
+            "доступы — храните его как секретный."
+        )
+        profile_hint.setWordWrap(True)
+        profile_layout.addWidget(profile_hint)
+
+        profile_actions = QHBoxLayout()
+        export_profile = QPushButton("Экспорт моего профиля")
+        export_profile.clicked.connect(self.export_profile)
+        import_profile = QPushButton("Импорт моего профиля")
+        import_profile.clicked.connect(self.import_profile)
+        profile_actions.addWidget(export_profile)
+        profile_actions.addWidget(import_profile)
+        profile_actions.addStretch(1)
+        profile_layout.addLayout(profile_actions)
+
+        root.addWidget(settings_group)
+        root.addWidget(profile_group)
         root.addStretch(1)
 
     def export_settings(self):
         default_path = CONFIG_PATH.parent / default_settings_export_filename()
         selected_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Экспорт настроек",
+            "Экспорт общих настроек",
             str(default_path),
             "JSON (*.json);;Все файлы (*)",
         )
@@ -1364,14 +1389,14 @@ class SettingsTransferWidget(QWidget):
 
         try:
             destination = export_settings_file(self.config, selected_path)
-            QMessageBox.information(self, "Экспорт настроек", f"Настройки экспортированы:\n{destination}")
+            QMessageBox.information(self, "Экспорт общих настроек", f"Настройки экспортированы:\n{destination}")
         except Exception as exc:
             QMessageBox.warning(self, "Ошибка экспорта", f"Не удалось экспортировать настройки:\n{exc}")
 
     def import_settings(self):
         selected_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Импорт настроек",
+            "Импорт общих настроек",
             str(CONFIG_PATH.parent),
             "JSON (*.json);;Все файлы (*)",
         )
@@ -1390,8 +1415,9 @@ class SettingsTransferWidget(QWidget):
 
         answer = QMessageBox.question(
             self,
-            "Импорт настроек",
-            "Текущие настройки будут заменены импортированными.\n"
+            "Импорт общих настроек",
+            "Текущие общие настройки будут заменены импортированными.\n"
+            "Личные доступы не будут изменены.\n"
             "Перед импортом будет создана резервная копия текущего config.\n"
             "Продолжить?",
             QMessageBox.Yes | QMessageBox.No,
@@ -1404,8 +1430,8 @@ class SettingsTransferWidget(QWidget):
             import_settings_file(selected_path)
             QMessageBox.information(
                 self,
-                "Импорт настроек",
-                "Настройки импортированы.\nПерезапустите приложение для применения изменений.",
+                "Импорт общих настроек",
+                "Общие настройки импортированы.\nПерезапустите приложение для применения изменений.",
             )
         except Exception:
             QMessageBox.warning(
@@ -1413,6 +1439,66 @@ class SettingsTransferWidget(QWidget):
                 "Ошибка импорта",
                 "Ошибка импорта: файл повреждён или имеет неподдерживаемый формат.",
             )
+
+    def export_profile(self):
+        default_path = CONFIG_PATH.parent / default_profile_export_filename()
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт моего профиля",
+            str(default_path),
+            "Профиль Око (*.oko-profile.json);;JSON (*.json);;Все файлы (*)",
+        )
+        if not selected_path:
+            return
+
+        try:
+            destination = export_profile_credentials_file(selected_path)
+            QMessageBox.information(
+                self,
+                "Экспорт моего профиля",
+                f"Личный профиль экспортирован:\n{destination}\n\nФайл содержит личные доступы. Храните его как секретный.",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Ошибка экспорта профиля", f"Не удалось экспортировать профиль:\n{exc}")
+
+    def import_profile(self):
+        selected_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импорт моего профиля",
+            str(CONFIG_PATH.parent),
+            "Профиль Око (*.oko-profile.json);;JSON (*.json);;Все файлы (*)",
+        )
+        if not selected_path:
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Импорт моего профиля",
+            "Будут импортированы только личные доступы.\n"
+            "Продукты, селекторы, признаки входа, дежурка, шаблоны и общие настройки не изменятся.\n"
+            "Существующие доступы с такими же ключами будут заменены.\n"
+            "Продолжить?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            count = import_profile_credentials_file(selected_path)
+            QMessageBox.information(
+                self,
+                "Импорт моего профиля",
+                f"Личный профиль импортирован. Обновлено записей доступов: {count}.\n"
+                "Для применения в уже открытых вкладках перезапустите приложение.",
+            )
+        except Exception:
+            QMessageBox.warning(
+                self,
+                "Ошибка импорта профиля",
+                "Ошибка импорта профиля: файл повреждён или имеет неподдерживаемый формат.",
+            )
+
 
 
 class TemplatesWidget(QWidget):
