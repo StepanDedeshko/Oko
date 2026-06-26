@@ -1,7 +1,12 @@
 """Local Oko application users and roles.
 
-This module stores only password hashes for logging into Oko itself.
+This module stores password hashes for logging into Oko itself.
 External system credentials are kept separately in app.credentials/profile logic.
+
+"Remember me" uses a local random token:
+- raw token is stored only in remember.local.json with chmod 600;
+- only token hash is stored in users.local.json;
+- changing the user password invalidates saved login.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import uuid
 
 USERS_DIR = Path.home() / ".config" / "zabbix_duty_panel"
 USERS_FILE = USERS_DIR / "users.local.json"
+REMEMBER_FILE = USERS_DIR / "remember.local.json"
 
 ROLE_OWNER = "owner"
 ROLE_ADMIN = "admin"
@@ -33,6 +39,10 @@ MIN_PASSWORD_LENGTH = 4
 
 def users_file_path(path: str | Path | None = None) -> Path:
     return Path(path) if path is not None else USERS_FILE
+
+
+def remember_file_path(path: str | Path | None = None) -> Path:
+    return Path(path) if path is not None else REMEMBER_FILE
 
 
 def _utc_now() -> str:
@@ -101,27 +111,31 @@ def _new_salt() -> str:
     return secrets.token_hex(16)
 
 
-def _hash_password(password: str, salt_hex: str, iterations: int = PASSWORD_HASH_ITERATIONS) -> str:
-    password_bytes = str(password or "").encode("utf-8")
+def _hash_secret(secret: str, salt_hex: str, iterations: int = PASSWORD_HASH_ITERATIONS) -> str:
+    secret_bytes = str(secret or "").encode("utf-8")
     salt = bytes.fromhex(salt_hex)
-    digest = hashlib.pbkdf2_hmac("sha256", password_bytes, salt, int(iterations))
+    digest = hashlib.pbkdf2_hmac("sha256", secret_bytes, salt, int(iterations))
     return digest.hex()
 
 
-def _verify_password(password: str, user: dict) -> bool:
-    salt = str(user.get("password_salt", "") or "")
-    expected = str(user.get("password_hash", "") or "")
+def _verify_secret(secret: str, user: dict, hash_key: str, salt_key: str) -> bool:
+    salt = str(user.get(salt_key, "") or "")
+    expected = str(user.get(hash_key, "") or "")
     iterations = int(user.get("password_iterations", PASSWORD_HASH_ITERATIONS) or PASSWORD_HASH_ITERATIONS)
 
     if not salt or not expected:
         return False
 
     try:
-        actual = _hash_password(password, salt, iterations)
+        actual = _hash_secret(secret, salt, iterations)
     except Exception:
         return False
 
     return hmac.compare_digest(actual, expected)
+
+
+def _verify_password(password: str, user: dict) -> bool:
+    return _verify_secret(password, user, "password_hash", "password_salt")
 
 
 def public_user(user: dict | None) -> dict:
@@ -133,6 +147,8 @@ def public_user(user: dict | None) -> dict:
         "password_salt",
         "password_iterations",
         "password_algorithm",
+        "remember_token_hash",
+        "remember_token_salt",
     }
     return {key: deepcopy(value) for key, value in user.items() if key not in hidden}
 
@@ -194,7 +210,7 @@ def create_user(
         "password_algorithm": PASSWORD_HASH_ALGORITHM,
         "password_iterations": PASSWORD_HASH_ITERATIONS,
         "password_salt": salt,
-        "password_hash": _hash_password(password, salt),
+        "password_hash": _hash_secret(password, salt),
         "created_at": now,
         "updated_at": now,
     }
@@ -278,8 +294,81 @@ def set_user_password(login: str, password: str, path: str | Path | None = None)
     user["password_algorithm"] = PASSWORD_HASH_ALGORITHM
     user["password_iterations"] = PASSWORD_HASH_ITERATIONS
     user["password_salt"] = salt
-    user["password_hash"] = _hash_password(password, salt)
+    user["password_hash"] = _hash_secret(password, salt)
+    user.pop("remember_token_hash", None)
+    user.pop("remember_token_salt", None)
     user["updated_at"] = _utc_now()
 
     save_users(data, path)
     return public_user(user)
+
+
+def save_remembered_user(login: str, path: str | Path | None = None, remember_path: str | Path | None = None) -> dict:
+    data = load_users(path)
+    user = _find_user(data, login)
+    if not user:
+        raise ValueError("Пользователь не найден.")
+    if not bool(user.get("active", True)):
+        raise ValueError("Пользователь отключён.")
+
+    token = secrets.token_urlsafe(48)
+    salt = _new_salt()
+    user["remember_token_salt"] = salt
+    user["remember_token_hash"] = _hash_secret(token, salt)
+    user["updated_at"] = _utc_now()
+    save_users(data, path)
+
+    remember_file = remember_file_path(remember_path)
+    remember_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "login": user.get("login", ""),
+        "token": token,
+        "created_at": _utc_now(),
+    }
+    with remember_file.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+    try:
+        os.chmod(remember_file, 0o600)
+    except Exception:
+        pass
+
+    return public_user(user)
+
+
+def load_remembered_user(path: str | Path | None = None, remember_path: str | Path | None = None) -> dict | None:
+    remember_file = remember_file_path(remember_path)
+    if not remember_file.exists():
+        return None
+
+    try:
+        with remember_file.open("r", encoding="utf-8") as file:
+            remembered = json.load(file)
+    except Exception:
+        return None
+
+    login = str((remembered or {}).get("login", "") or "")
+    token = str((remembered or {}).get("token", "") or "")
+    if not login or not token:
+        return None
+
+    data = load_users(path)
+    user = _find_user(data, login)
+    if not user:
+        return None
+    if not bool(user.get("active", True)):
+        return None
+    if not _verify_secret(token, user, "remember_token_hash", "remember_token_salt"):
+        return None
+
+    return public_user(user)
+
+
+def clear_remembered_user(remember_path: str | Path | None = None):
+    try:
+        remember_file = remember_file_path(remember_path)
+        if remember_file.exists():
+            remember_file.unlink()
+    except Exception:
+        pass

@@ -1,3 +1,4 @@
+from app.app_users import ROLE_ADMIN, ROLE_OWNER, ROLE_USER, create_user, load_users, set_user_password, update_user
 
 import hashlib
 import hmac
@@ -8,6 +9,7 @@ import sys
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -1677,6 +1679,244 @@ class ChangelogWidget(QWidget):
 
 
 
+
+def is_admin_user(user):
+    return str((user or {}).get("role", "") or "") in {ROLE_OWNER, ROLE_ADMIN}
+
+
+class AdministrationWidget(QWidget):
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.current_user = self.config.get("_current_user") or {}
+
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+
+        title = QLabel("Администрирование")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        hint = QLabel(
+            "Раздел доступен администраторам Око. Здесь создаются пользователи и дополнительные администраторы. "
+            "Пароли входа в Око не показываются открытым текстом, можно только задать новый пароль."
+        )
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        current = QLabel(
+            f"Текущий пользователь: {self.current_user.get('login', 'неизвестно')} "
+            f"({self.current_user.get('role', 'без роли')})"
+        )
+        current.setWordWrap(True)
+        root.addWidget(current)
+
+        users_box = QGroupBox("Пользователи")
+        users_layout = QVBoxLayout(users_box)
+
+        self.user_select = QComboBox()
+        self.user_select.currentIndexChanged.connect(self.load_selected_user)
+        users_layout.addWidget(self.user_select)
+
+        edit_form = QFormLayout()
+        self.edit_display_name_input = QLineEdit()
+        self.edit_role_input = QComboBox()
+        self._fill_role_combo(self.edit_role_input)
+        self.edit_active_input = QCheckBox("Активен")
+        self.edit_active_input.setChecked(True)
+        edit_form.addRow("Имя:", self.edit_display_name_input)
+        edit_form.addRow("Роль:", self.edit_role_input)
+        edit_form.addRow("Статус:", self.edit_active_input)
+        users_layout.addLayout(edit_form)
+
+        user_actions = QHBoxLayout()
+        update_button = QPushButton("Сохранить изменения пользователя")
+        update_button.clicked.connect(self.update_selected_user)
+        user_actions.addWidget(update_button)
+        user_actions.addStretch()
+        users_layout.addLayout(user_actions)
+
+        password_form = QFormLayout()
+        self.reset_password_input = QLineEdit()
+        self.reset_password_input.setEchoMode(QLineEdit.Password)
+        self.reset_password_input.setPlaceholderText("Новый пароль входа в Око")
+        self.reset_password_confirm_input = QLineEdit()
+        self.reset_password_confirm_input.setEchoMode(QLineEdit.Password)
+        self.reset_password_confirm_input.setPlaceholderText("Повторите новый пароль")
+        password_form.addRow("Новый пароль:", self.reset_password_input)
+        password_form.addRow("Повтор:", self.reset_password_confirm_input)
+        users_layout.addLayout(password_form)
+
+        reset_button = QPushButton("Сбросить пароль выбранному пользователю")
+        reset_button.clicked.connect(self.reset_selected_user_password)
+        users_layout.addWidget(reset_button)
+
+        root.addWidget(users_box)
+
+        create_box = QGroupBox("Создать пользователя")
+        create_form = QFormLayout(create_box)
+
+        self.new_login_input = QLineEdit()
+        self.new_login_input.setPlaceholderText("login")
+        self.new_display_name_input = QLineEdit()
+        self.new_display_name_input.setPlaceholderText("Имя пользователя")
+        self.new_password_input = QLineEdit()
+        self.new_password_input.setEchoMode(QLineEdit.Password)
+        self.new_password_input.setPlaceholderText("Пароль входа в Око")
+        self.new_password_confirm_input = QLineEdit()
+        self.new_password_confirm_input.setEchoMode(QLineEdit.Password)
+        self.new_password_confirm_input.setPlaceholderText("Повторите пароль")
+        self.new_role_input = QComboBox()
+        self._fill_role_combo(self.new_role_input)
+
+        create_form.addRow("Логин:", self.new_login_input)
+        create_form.addRow("Имя:", self.new_display_name_input)
+        create_form.addRow("Пароль:", self.new_password_input)
+        create_form.addRow("Повтор:", self.new_password_confirm_input)
+        create_form.addRow("Роль:", self.new_role_input)
+
+        create_button = QPushButton("Создать")
+        create_button.clicked.connect(self.create_new_user)
+        create_form.addRow("", create_button)
+
+        root.addWidget(create_box)
+        root.addStretch(1)
+
+        self.refresh_users()
+
+    def _fill_role_combo(self, combo):
+        combo.clear()
+        combo.addItem("Пользователь", ROLE_USER)
+        combo.addItem("Администратор", ROLE_ADMIN)
+        combo.addItem("Владелец", ROLE_OWNER)
+
+    def _set_combo_data(self, combo, value):
+        for index in range(combo.count()):
+            if combo.itemData(index) == value:
+                combo.setCurrentIndex(index)
+                return
+        combo.setCurrentIndex(0)
+
+    def _users(self):
+        return load_users().get("users", [])
+
+    def _selected_login(self):
+        return self.user_select.currentData()
+
+    def _find_user(self, login):
+        wanted = str(login or "").casefold()
+        for user in self._users():
+            key = str(user.get("login_key") or user.get("login", "")).casefold()
+            if key == wanted:
+                return user
+        return None
+
+    def refresh_users(self):
+        selected = self._selected_login()
+
+        self.user_select.blockSignals(True)
+        self.user_select.clear()
+
+        for user in self._users():
+            login = user.get("login", "")
+            role = user.get("role", ROLE_USER)
+            status = "активен" if user.get("active", True) else "отключён"
+            self.user_select.addItem(f"{login} — {role} — {status}", login)
+
+        self.user_select.blockSignals(False)
+
+        if selected:
+            for index in range(self.user_select.count()):
+                if self.user_select.itemData(index) == selected:
+                    self.user_select.setCurrentIndex(index)
+                    break
+
+        self.load_selected_user()
+
+    def load_selected_user(self):
+        user = self._find_user(self._selected_login())
+        if not user:
+            self.edit_display_name_input.clear()
+            self._set_combo_data(self.edit_role_input, ROLE_USER)
+            self.edit_active_input.setChecked(False)
+            return
+
+        self.edit_display_name_input.setText(str(user.get("display_name", "") or user.get("login", "")))
+        self._set_combo_data(self.edit_role_input, str(user.get("role", ROLE_USER)))
+        self.edit_active_input.setChecked(bool(user.get("active", True)))
+
+    def create_new_user(self):
+        login = self.new_login_input.text().strip()
+        display_name = self.new_display_name_input.text().strip()
+        password = self.new_password_input.text()
+        confirm = self.new_password_confirm_input.text()
+        role = self.new_role_input.currentData() or ROLE_USER
+
+        if password != confirm:
+            QMessageBox.warning(self, "Администрирование", "Пароли не совпадают.")
+            return
+
+        try:
+            create_user(login, password, role=role, display_name=display_name)
+        except Exception as exc:
+            QMessageBox.warning(self, "Администрирование", str(exc))
+            return
+
+        self.new_login_input.clear()
+        self.new_display_name_input.clear()
+        self.new_password_input.clear()
+        self.new_password_confirm_input.clear()
+        self.refresh_users()
+        QMessageBox.information(self, "Администрирование", "Пользователь создан.")
+
+    def update_selected_user(self):
+        login = self._selected_login()
+        if not login:
+            QMessageBox.warning(self, "Администрирование", "Выберите пользователя.")
+            return
+
+        try:
+            updated = update_user(
+                login,
+                role=self.edit_role_input.currentData() or ROLE_USER,
+                active=self.edit_active_input.isChecked(),
+                display_name=self.edit_display_name_input.text().strip(),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Администрирование", str(exc))
+            return
+
+        current_login = str((self.config.get("_current_user") or {}).get("login", "")).casefold()
+        if current_login == str(updated.get("login", "")).casefold():
+            self.config["_current_user"] = updated
+            self.current_user = updated
+
+        self.refresh_users()
+        QMessageBox.information(self, "Администрирование", "Пользователь обновлён.")
+
+    def reset_selected_user_password(self):
+        login = self._selected_login()
+        if not login:
+            QMessageBox.warning(self, "Администрирование", "Выберите пользователя.")
+            return
+
+        password = self.reset_password_input.text()
+        confirm = self.reset_password_confirm_input.text()
+
+        if password != confirm:
+            QMessageBox.warning(self, "Администрирование", "Пароли не совпадают.")
+            return
+
+        try:
+            set_user_password(login, password)
+        except Exception as exc:
+            QMessageBox.warning(self, "Администрирование", str(exc))
+            return
+
+        self.reset_password_input.clear()
+        self.reset_password_confirm_input.clear()
+        QMessageBox.information(self, "Администрирование", "Пароль обновлён.")
+
 class AppSettingsWidget(QWidget):
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -1692,6 +1932,8 @@ class AppSettingsWidget(QWidget):
         root.addWidget(self.stack, stretch=1)
 
         self.add_section("Профиль", ProfileWidget(self.config))
+        if is_admin_user(self.config.get("_current_user")):
+            self.add_section("Администрирование", AdministrationWidget(self.config))
         self.add_section("Продукты и страницы", ProductsWidget(self.config))
         self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config, show_title=False))
         self.add_section("Проверка сервисов", ServiceChecksSettingsWidget(self.config))
@@ -1729,6 +1971,7 @@ class AppSettingsWidget(QWidget):
 class HomePageWidget(QWidget):
     SETTINGS_SECTIONS = [
         "Профиль",
+        "Администрирование",
         "Продукты и страницы",
         "Настройки дежурки",
         "Проверка сервисов",
@@ -1761,7 +2004,7 @@ class HomePageWidget(QWidget):
 
         tiles = QVBoxLayout()
         tiles.setSpacing(10)
-        for section_name in self.SETTINGS_SECTIONS:
+        for section_name in self.visible_settings_sections():
             button = QPushButton(section_name)
             button.setObjectName("SecondaryAction")
             button.setMinimumHeight(72)
@@ -1785,6 +2028,11 @@ class HomePageWidget(QWidget):
         root.addWidget(footer)
 
         self.fade_in()
+
+    def visible_settings_sections(self):
+        if is_admin_user(self.config.get("_current_user")):
+            return list(self.SETTINGS_SECTIONS)
+        return [section for section in self.SETTINGS_SECTIONS if section != "Администрирование"]
 
     def open_settings_section(self, section_name):
         if self.open_settings_callback:

@@ -1,5 +1,6 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFormLayout,
     QGroupBox,
@@ -12,7 +13,14 @@ from PySide6.QtWidgets import (
 )
 
 from app.app_info import APP_NAME
-from app.app_users import authenticate_user, create_user, has_users
+from app.app_users import (
+    authenticate_user,
+    clear_remembered_user,
+    create_user,
+    has_users,
+    load_remembered_user,
+    save_remembered_user,
+)
 from app.credentials import load_saved_credentials
 from app.logger import get_logger
 from app.screen_utils import center_widget_on_screen
@@ -44,9 +52,10 @@ class LoginDialog(QDialog):
         self.theme_name = self.config.get("settings", {}).get("theme", "mass_effect")
         self.logger = get_logger()
         self.first_owner_setup = not has_users()
+        self.remembered_user = None if self.first_owner_setup else load_remembered_user()
 
         self.setWindowTitle(f"Вход в {APP_NAME}")
-        self.resize(440, 260)
+        self.resize(460, 300)
 
         root = QVBoxLayout(self)
         root.setSpacing(12)
@@ -61,14 +70,21 @@ class LoginDialog(QDialog):
         title.setStyleSheet("font-size: 18px; font-weight: bold;")
         root.addWidget(title)
 
-        hint = QLabel(
-            "Учётки Zabbix, ОТРС и сервисов вводятся после входа в разделе «Профиль»."
-            if not self.first_owner_setup
-            else "Первый пользователь получит роль владельца/администратора."
+        hint_text = (
+            "Первый пользователь получит роль владельца/администратора."
+            if self.first_owner_setup
+            else "Учётки Zabbix, ОТРС и сервисов вводятся после входа в разделе «Профиль»."
         )
-        hint.setWordWrap(True)
-        hint.setAlignment(Qt.AlignCenter)
-        root.addWidget(hint)
+        if self.remembered_user:
+            hint_text = (
+                f"Сохранён вход: {self.remembered_user.get('login')} "
+                f"({self.remembered_user.get('role')}). Вход выполнится автоматически."
+            )
+
+        self.hint = QLabel(hint_text)
+        self.hint.setWordWrap(True)
+        self.hint.setAlignment(Qt.AlignCenter)
+        root.addWidget(self.hint)
 
         account_box = QGroupBox("Учётная запись Око")
         form = QFormLayout(account_box)
@@ -90,27 +106,46 @@ class LoginDialog(QDialog):
             self.confirm_password_input.setEchoMode(QLineEdit.Password)
             form.addRow("Повтор пароля:", self.confirm_password_input)
 
+        self.remember_checkbox = QCheckBox("Запомнить вход на этом компьютере")
+        self.remember_checkbox.setChecked(True)
+        if self.first_owner_setup:
+            self.remember_checkbox.setToolTip("После создания администратора следующий запуск Око откроется без повторного ввода пароля.")
+        form.addRow("", self.remember_checkbox)
+
+        if self.remembered_user:
+            self.login_input.setText(str(self.remembered_user.get("login", "")))
+            self.password_input.setPlaceholderText("Используется сохранённый вход")
+            self.password_input.setEnabled(False)
+
         root.addWidget(account_box)
 
         buttons = QHBoxLayout()
-        login_button = QPushButton("Создать администратора" if self.first_owner_setup else "Войти")
-        cancel_button = QPushButton("Отмена")
 
-        login_button.setDefault(True)
-        login_button.clicked.connect(self.accept_login)
+        self.login_button = QPushButton("Создать администратора" if self.first_owner_setup else "Войти")
+        cancel_button = QPushButton("Отмена")
+        forget_button = QPushButton("Забыть вход")
+        forget_button.clicked.connect(self.forget_remembered_login)
+        forget_button.setVisible(bool(self.remembered_user))
+
+        self.login_button.setDefault(True)
+        self.login_button.clicked.connect(self.accept_login)
         cancel_button.clicked.connect(self.reject)
         self.login_input.returnPressed.connect(self.accept_login)
         self.password_input.returnPressed.connect(self.accept_login)
         if self.confirm_password_input is not None:
             self.confirm_password_input.returnPressed.connect(self.accept_login)
 
+        buttons.addWidget(forget_button)
         buttons.addStretch()
-        buttons.addWidget(login_button)
+        buttons.addWidget(self.login_button)
         buttons.addWidget(cancel_button)
         root.addLayout(buttons)
 
         center_widget_on_screen(self, self.preferred_screen)
         self.apply_theme_style()
+
+        if self.remembered_user:
+            QTimer.singleShot(350, self.accept_remembered_login)
 
     def apply_theme_style(self):
         if self.theme_name != "light_standard":
@@ -144,7 +179,42 @@ class LoginDialog(QDialog):
             QPushButton:hover { border-color: #93c5fd; }
         """)
 
+    def accept_remembered_login(self):
+        user = load_remembered_user()
+        if not user:
+            self.forget_remembered_login(show_message=False)
+            return
+
+        self.current_user = user
+        self.config["_current_user"] = self.current_user
+        self.credentials = load_saved_credentials()
+        self.logger.info("Oko remembered user logged in: login=%s role=%s", user.get("login"), user.get("role"))
+        self.accept()
+
+    def forget_remembered_login(self, show_message=True):
+        clear_remembered_user()
+        self.remembered_user = None
+        self.password_input.setEnabled(True)
+        self.password_input.clear()
+        self.password_input.setPlaceholderText("Пароль")
+        self.hint.setText("Сохранённый вход удалён. Введите логин и пароль.")
+        if show_message:
+            QMessageBox.information(self, "Вход в Око", "Сохранённый вход удалён.")
+
+    def _save_remember_if_needed(self, login):
+        if self.remember_checkbox.isChecked():
+            try:
+                save_remembered_user(login)
+            except Exception:
+                self.logger.exception("Failed to save remembered Oko login")
+        else:
+            clear_remembered_user()
+
     def accept_login(self):
+        if self.remembered_user and not self.password_input.isEnabled():
+            self.accept_remembered_login()
+            return
+
         login = self.login_input.text().strip()
         password = self.password_input.text()
 
@@ -164,6 +234,7 @@ class LoginDialog(QDialog):
 
             try:
                 self.current_user = create_user(login, password, role="owner", display_name=login)
+                self._save_remember_if_needed(login)
             except Exception as exc:
                 QMessageBox.warning(self, "Первичная настройка", str(exc))
                 return
@@ -181,5 +252,6 @@ class LoginDialog(QDialog):
         self.current_user = user
         self.config["_current_user"] = self.current_user
         self.credentials = load_saved_credentials()
+        self._save_remember_if_needed(login)
         self.logger.info("Oko user logged in: login=%s role=%s", user.get("login"), user.get("role"))
         self.accept()

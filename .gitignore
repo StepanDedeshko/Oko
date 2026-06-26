@@ -22,3 +22,4 @@ credentials.local.enc
 config.backup*
 data/
 web_profiles/
+remember.local.json
