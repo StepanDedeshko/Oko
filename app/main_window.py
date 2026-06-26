@@ -7,6 +7,7 @@ from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QComboBox,
+    QApplication,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -21,6 +22,7 @@ from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from app.duty_mode import DutyModeWidget
+from app.app_users import clear_remembered_user
 from app.home_config import AppSettingsWidget, HomePageWidget
 from app.config import save_config
 from app.dashboard_widgets import GraphsDashboard, ProblemPageDashboard, SimplePageDashboard, ModePagesDashboard
@@ -56,6 +58,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.config = config
+        self.config["_logout_callback"] = self.logout_user
         self.credentials = credentials
         self.settings = config.get("settings", {})
         self.current_time_range = self.settings.get("default_time_range", "1h")
@@ -118,6 +121,33 @@ class MainWindow(QMainWindow):
         self.select_first_dashboard()
 
         self.apply_initial_window_mode()
+
+    def logout_user(self):
+        message = "Выйти из аккаунта Око на этом компьютере? Сохранённый вход будет удалён. После выхода приложение закроется."
+
+        answer = QMessageBox.question(
+            self,
+            "Выход из аккаунта",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            clear_remembered_user()
+            self.config.pop("_current_user", None)
+            self.logger.info("Oko user logged out")
+        except Exception:
+            self.logger.exception("Failed to clear remembered Oko login on logout")
+
+        QMessageBox.information(
+            self,
+            "Выход из аккаунта",
+            "Сохранённый вход удалён. Запустите Око снова, чтобы войти другим пользователем.",
+        )
+        QApplication.quit()
 
     def create_bottom_hud(self):
         """

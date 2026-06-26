@@ -1046,6 +1046,7 @@ class ProfileWidget(QWidget):
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
+        self.logout_callback = self.config.get("_logout_callback")
         self.saved_credentials = load_saved_credentials()
         self.saved_zabbix_credentials = self.saved_credentials
         self.zabbix_inputs = {}
@@ -1057,6 +1058,20 @@ class ProfileWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
+
+        account_actions = QGroupBox("Аккаунт Око")
+        account_actions_layout = QVBoxLayout(account_actions)
+
+        logout_hint = QLabel("Выход удалит сохранённый вход на этом компьютере. Остальные настройки и доступы не удаляются.")
+        logout_hint.setWordWrap(True)
+        account_actions_layout.addWidget(logout_hint)
+
+        self.logout_button = QPushButton("Выйти из аккаунта Око")
+        self.logout_button.setObjectName("DangerAction")
+        self.logout_button.clicked.connect(self.logout_from_profile)
+        account_actions_layout.addWidget(self.logout_button)
+
+        root.addWidget(account_actions)
 
         def add_section_title(title_text):
             label = QLabel(title_text)
@@ -1258,6 +1273,15 @@ class ProfileWidget(QWidget):
 
         QMessageBox.information(self, "Профиль", "Сохранённые Zabbix-пароли удалены.")
 
+    def logout_from_profile(self):
+        if self.logout_callback:
+            self.logout_callback()
+        else:
+            QMessageBox.warning(
+                self,
+                "Выход из аккаунта",
+                "Обработчик выхода не подключён. Перезапустите приложение и попробуйте снова.",
+            )
 
 
 class ThemeWidget(QWidget):
