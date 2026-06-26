@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -29,6 +30,7 @@ from app.service_checks import (
     AUTH_EXISTING_SESSION,
     AUTH_EXTERNAL_BROWSER_GROUP,
     AUTH_VISIBLE_HTML_FORM,
+    default_service_credential_group,
     default_service_item,
     ensure_service_checks_defaults,
     format_service_actions,
@@ -83,6 +85,44 @@ class ServiceChecksSettingsWidget(QWidget):
         actions.addWidget(save_button)
         actions.addStretch(1)
         root.addLayout(actions)
+
+        groups_box = QGroupBox("Общие доступы сервисов")
+        groups_layout = QVBoxLayout(groups_box)
+
+        group_top = QHBoxLayout()
+        self.credential_group_select = QComboBox()
+        self.credential_group_select.currentIndexChanged.connect(self.select_credential_group)
+
+        add_group_button = QPushButton("Добавить доступ")
+        add_group_button.clicked.connect(self.add_credential_group)
+        delete_group_button = QPushButton("Удалить доступ")
+        delete_group_button.clicked.connect(self.delete_credential_group)
+
+        group_top.addWidget(QLabel("Доступ:"))
+        group_top.addWidget(self.credential_group_select, stretch=1)
+        group_top.addWidget(add_group_button)
+        group_top.addWidget(delete_group_button)
+        groups_layout.addLayout(group_top)
+
+        group_form = QFormLayout()
+        self.credential_group_name_input = QLineEdit()
+        self.credential_group_name_input.setPlaceholderText("Например: Сервисы 2-5")
+        self.credential_group_name_input.textChanged.connect(self.update_credential_group_from_form)
+        group_form.addRow("Название доступа:", self.credential_group_name_input)
+        groups_layout.addLayout(group_form)
+
+        self.credential_group_services_list = QListWidget()
+        self.credential_group_services_list.itemChanged.connect(self.update_credential_group_from_form)
+        groups_layout.addWidget(QLabel("Сервисы:"))
+        groups_layout.addWidget(self.credential_group_services_list)
+
+        groups_hint = QLabel(
+            "Администратор настраивает общий доступ к нескольким сервисам. Пользователи вводят свои логины и пароли в разделе «Профиль»."
+        )
+        groups_hint.setWordWrap(True)
+        groups_layout.addWidget(groups_hint)
+
+        root.addWidget(groups_box)
 
         splitter = QSplitter(Qt.Horizontal)
         self.list_widget = QListWidget()
@@ -145,6 +185,8 @@ class ServiceChecksSettingsWidget(QWidget):
         self.auth_type_input = QComboBox()
         for label, value in AUTH_LABELS:
             self.auth_type_input.addItem(label, value)
+        self.credential_group_input = QComboBox()
+        self.credential_group_input.currentIndexChanged.connect(self.on_credential_group_changed)
         self.login_input = QLineEdit()
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
@@ -158,6 +200,7 @@ class ServiceChecksSettingsWidget(QWidget):
         self.post_login_delay_input.setRange(0, 60)
         self.post_login_delay_input.setSuffix(" сек")
         auth_form.addRow("Тип авторизации:", self.auth_type_input)
+        auth_form.addRow("Общий доступ:", self.credential_group_input)
         auth_form.addRow("Логин:", self.login_input)
         auth_form.addRow("Пароль:", self.password_input)
         auth_form.addRow("CSS selector поля логина:", self.login_selector_input)
@@ -251,6 +294,8 @@ class ServiceChecksSettingsWidget(QWidget):
         root.addWidget(splitter, stretch=1)
 
         self._connect_changes()
+        self.refresh_credential_groups()
+        self.refresh_service_group_input()
         self.refresh_list()
         if self.settings.get("items"):
             self.list_widget.setCurrentRow(0)
@@ -271,6 +316,7 @@ class ServiceChecksSettingsWidget(QWidget):
         self.external_browser_manual_confirm_input.toggled.connect(self.update_current_from_form)
         self.timeout_input.valueChanged.connect(self.update_current_from_form)
         self.auth_type_input.currentIndexChanged.connect(self.on_auth_type_changed)
+        self.credential_group_input.currentIndexChanged.connect(self.on_credential_group_changed)
         self.post_login_delay_input.valueChanged.connect(self.update_current_from_form)
         self.visible_close_success_input.toggled.connect(self.update_current_from_form)
         self.visible_close_error_input.toggled.connect(self.update_current_from_form)
@@ -299,8 +345,165 @@ class ServiceChecksSettingsWidget(QWidget):
         is_visible = self.auth_type_input.currentData() == AUTH_VISIBLE_HTML_FORM
         self.visible_window_group.setVisible(is_visible)
         is_external = self.auth_type_input.currentData() == AUTH_EXTERNAL_BROWSER_GROUP
-        for widget in (self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_actions_input, self.logout_actions_input):
+        uses_credential_group = bool(self.credential_group_input.currentData())
+        for widget in (self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_actions_input, self.logout_actions_input):
             widget.setEnabled(not is_external and self.current_item() is not None)
+        for widget in (self.login_input, self.password_input):
+            widget.setEnabled(not is_external and self.current_item() is not None and not uses_credential_group)
+        if uses_credential_group:
+            self.login_input.setPlaceholderText("Заполняется пользователем в Профиле")
+            self.password_input.setPlaceholderText("Заполняется пользователем в Профиле")
+        else:
+            self.login_input.setPlaceholderText("Логин для отдельного доступа")
+            self.password_input.setPlaceholderText("Пароль для отдельного доступа")
+
+
+    def credential_groups(self):
+        return self.settings.setdefault("credential_groups", [])
+
+    def refresh_credential_groups(self):
+        selected = self.credential_group_select.currentData() if hasattr(self, "credential_group_select") else ""
+        self.credential_group_select.blockSignals(True)
+        self.credential_group_select.clear()
+        for group in self.credential_groups():
+            self.credential_group_select.addItem(group.get("name") or group.get("id"), group.get("id"))
+        self.credential_group_select.blockSignals(False)
+
+        if selected:
+            for index in range(self.credential_group_select.count()):
+                if self.credential_group_select.itemData(index) == selected:
+                    self.credential_group_select.setCurrentIndex(index)
+                    break
+
+        self.select_credential_group()
+        self.refresh_service_group_input()
+
+    def current_credential_group(self):
+        group_id = self.credential_group_select.currentData() if hasattr(self, "credential_group_select") else ""
+        for group in self.credential_groups():
+            if group.get("id") == group_id:
+                return group
+        return None
+
+    def select_credential_group(self):
+        group = self.current_credential_group()
+        self._loading = True
+        self.credential_group_name_input.setEnabled(group is not None)
+        self.credential_group_services_list.setEnabled(group is not None)
+        self.credential_group_name_input.setText(group.get("name", "") if group else "")
+        self.refresh_credential_group_services_list(group)
+        self._loading = False
+
+    def refresh_credential_group_services_list(self, group=None):
+        self.credential_group_services_list.blockSignals(True)
+        self.credential_group_services_list.clear()
+
+        group = group if group is not None else self.current_credential_group()
+        selected_services = set(group.get("service_ids", []) if group else [])
+
+        for service in self.settings.get("items", []):
+            service_id = service.get("id", "")
+            item = QListWidgetItem(service.get("name") or service_id)
+            item.setData(Qt.UserRole, service_id)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if service_id in selected_services else Qt.Unchecked)
+            self.credential_group_services_list.addItem(item)
+
+        self.credential_group_services_list.blockSignals(False)
+
+    def refresh_service_group_input(self, selected_group_id=None):
+        if not hasattr(self, "credential_group_input"):
+            return
+
+        selected = selected_group_id
+        if selected is None and self.current_item():
+            selected = self.current_item().get("credential_group_id", "")
+        if selected is None:
+            selected = self.credential_group_input.currentData() or ""
+
+        self.credential_group_input.blockSignals(True)
+        self.credential_group_input.clear()
+        self.credential_group_input.addItem("Отдельный доступ", "")
+        for group in self.credential_groups():
+            self.credential_group_input.addItem(group.get("name") or group.get("id"), group.get("id"))
+        self.credential_group_input.blockSignals(False)
+
+        for index in range(self.credential_group_input.count()):
+            if self.credential_group_input.itemData(index) == selected:
+                self.credential_group_input.setCurrentIndex(index)
+                break
+
+    def add_credential_group(self):
+        groups = self.credential_groups()
+        group = default_service_credential_group("service_group", "Новый общий доступ")
+        group["id"] = unique_service_id(group["id"], groups)
+        groups.append(group)
+        self.refresh_credential_groups()
+        for index in range(self.credential_group_select.count()):
+            if self.credential_group_select.itemData(index) == group["id"]:
+                self.credential_group_select.setCurrentIndex(index)
+                break
+
+    def delete_credential_group(self):
+        group = self.current_credential_group()
+        if not group:
+            return
+        if QMessageBox.question(self, "Удалить доступ", "Удалить выбранный общий доступ?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+
+        group_id = group.get("id", "")
+        self.settings["credential_groups"] = [candidate for candidate in self.credential_groups() if candidate.get("id") != group_id]
+        for service in self.settings.get("items", []):
+            if service.get("credential_group_id") == group_id:
+                service["credential_group_id"] = ""
+        self.refresh_credential_groups()
+        self.refresh_list()
+
+    def update_credential_group_from_form(self, *args):
+        if self._loading:
+            return
+        group = self.current_credential_group()
+        if not group:
+            return
+
+        group["name"] = self.credential_group_name_input.text().strip() or "Новый общий доступ"
+
+        selected_service_ids = []
+        for index in range(self.credential_group_services_list.count()):
+            item = self.credential_group_services_list.item(index)
+            service_id = item.data(Qt.UserRole)
+            if item.checkState() == Qt.Checked:
+                selected_service_ids.append(service_id)
+
+        group_id = group.get("id", "")
+        group["service_ids"] = selected_service_ids
+
+        for service in self.settings.get("items", []):
+            service_id = service.get("id", "")
+            if service_id in selected_service_ids:
+                service["credential_group_id"] = group_id
+            elif service.get("credential_group_id") == group_id:
+                service["credential_group_id"] = ""
+
+        self.refresh_credential_groups()
+        self.refresh_service_group_input()
+        self.refresh_list()
+
+    def on_credential_group_changed(self, *args):
+        self.update_current_from_form()
+        self.update_visible_window_visibility()
+
+    def sync_service_group_membership(self, service_id, group_id):
+        service_id = str(service_id or "").strip()
+        group_id = str(group_id or "").strip()
+        if not service_id:
+            return
+
+        for group in self.credential_groups():
+            service_ids = [sid for sid in group.get("service_ids", []) if sid != service_id]
+            if group.get("id") == group_id:
+                service_ids.append(service_id)
+            group["service_ids"] = service_ids
 
     def refresh_list(self):
         self.list_widget.clear()
@@ -319,7 +522,7 @@ class ServiceChecksSettingsWidget(QWidget):
         item = self.current_item()
         self._loading = True
         enabled = item is not None
-        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.allow_http_error_load_input, self.session_group_input, self.session_group_order_input, self.session_group_login_owner_input, self.session_group_logout_owner_input, self.external_browser_open_delay_input, self.external_browser_manual_confirm_input, self.auth_type_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.post_login_mini_test_enabled_input, self.post_login_actions_input, self.logout_actions_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
+        for widget in (self.name_input, self.enabled_input, self.url_input, self.timeout_input, self.allow_insecure_ssl_input, self.allow_http_error_load_input, self.session_group_input, self.session_group_order_input, self.session_group_login_owner_input, self.session_group_logout_owner_input, self.external_browser_open_delay_input, self.external_browser_manual_confirm_input, self.auth_type_input, self.credential_group_input, self.login_input, self.password_input, self.login_selector_input, self.password_selector_input, self.submit_selector_input, self.post_login_delay_input, self.visible_close_success_input, self.visible_close_error_input, self.visible_close_delay_input, self.success_texts_input, self.error_texts_input, self.success_selectors_input, self.error_selectors_input, self.post_login_mini_test_enabled_input, self.post_login_actions_input, self.logout_actions_input, self.logout_menu_selector_input, self.logout_button_selector_input, self.logout_success_selectors_input, self.logout_success_texts_input, self.logout_menu_wait_input, self.logout_wait_input):
             widget.setEnabled(enabled)
         self.otrs_task_url_input.setText(self.settings.get("otrs_task_url", ""))
         if item:
@@ -337,6 +540,7 @@ class ServiceChecksSettingsWidget(QWidget):
             self.external_browser_manual_confirm_input.setChecked(bool(item.get("external_browser_manual_confirm", True)))
             idx = self.auth_type_input.findData(item.get("auth_type", AUTH_NONE))
             self.auth_type_input.setCurrentIndex(max(0, idx))
+            self.refresh_service_group_input(item.get("credential_group_id", ""))
             self.visible_close_success_input.setChecked(bool(item.get("visible_window_close_on_success", True)))
             self.visible_close_error_input.setChecked(bool(item.get("visible_window_close_on_error", False)))
             self.visible_close_delay_input.setValue(int(item.get("visible_window_close_delay_seconds", 3)))
@@ -404,6 +608,8 @@ class ServiceChecksSettingsWidget(QWidget):
         item["external_browser_manual_confirm"] = self.external_browser_manual_confirm_input.isChecked()
         item["external_browser_open_mode"] = "tabs"
         item["auth_type"] = self.auth_type_input.currentData() or AUTH_NONE
+        item["credential_group_id"] = self.credential_group_input.currentData() or ""
+        self.sync_service_group_membership(item.get("id", ""), item["credential_group_id"])
         item["visible_window_close_on_success"] = self.visible_close_success_input.isChecked()
         item["visible_window_close_on_error"] = self.visible_close_error_input.isChecked()
         item["visible_window_close_delay_seconds"] = int(self.visible_close_delay_input.value())

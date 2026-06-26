@@ -447,12 +447,17 @@ class MainWindow(QMainWindow):
             self.pause_inactive_web_dashboards()
             self.log_memory_status()
 
-    def open_duty_page(self):
-        pages = self.product_dashboard_indexes.get("Дежурство", [])
-        if pages:
-            self.stack.setCurrentIndex(pages[0]["index"])
-            self.pause_inactive_web_dashboards()
-            self.log_memory_status()
+    def open_duty_page(self, target_type="duty_mode"):
+        page = self._find_duty_page(target_type or "duty_mode")
+        if not page:
+            return
+
+        index = page["index"]
+        self.stack.setCurrentIndex(index)
+        self.update_toolbar_for_current_page(index)
+        self.update_duty_section_switch(page)
+        self.pause_inactive_web_dashboards()
+        self.log_memory_status()
 
     def create_duty_mode_page(self):
         self.duty_mode_widget = DutyModeWidget(
@@ -522,19 +527,18 @@ class MainWindow(QMainWindow):
 
     def populate_product_combo(self):
         """
-        Заполняет список продуктов без Главной.
-        Главная открывается кликом по логотипу приложения.
+        Заполняет список продуктов без служебных страниц.
+        Главная открывается отдельной кнопкой, Дежурство — отдельной кнопкой с Главной.
         """
         self.product_combo.blockSignals(True)
         self.product_combo.clear()
 
         for product_name in self.product_dashboard_indexes.keys():
-            if product_name == "Главная":
+            if product_name in {"Главная", "Дежурство"}:
                 continue
             self.product_combo.addItem(product_name, product_name)
 
         self.product_combo.blockSignals(False)
-
 
     def on_product_changed(self, *_args):
         if self.is_updating_selectors:
@@ -579,15 +583,55 @@ class MainWindow(QMainWindow):
         self.pause_inactive_web_dashboards()
         self.log_memory_status()
 
+    def _duty_pages(self):
+        return list(self.product_dashboard_indexes.get("Дежурство", []) or [])
+
+    def _find_duty_page(self, target_type="duty_mode"):
+        pages = self._duty_pages()
+        for page in pages:
+            if isinstance(page, dict) and page.get("type") == target_type:
+                return page
+        return pages[0] if pages else None
+
+    def _is_duty_page_index(self, index=None):
+        if index is None:
+            index = self.stack.currentIndex()
+        for page in self._duty_pages():
+            if isinstance(page, dict) and page.get("index") == index:
+                return True
+        return False
+
     def _current_duty_section_type(self):
+        current_index = self.stack.currentIndex()
+        for page in self._duty_pages():
+            if isinstance(page, dict) and page.get("index") == current_index:
+                return page.get("type", "")
+
         section = self.section_combo.currentData() if hasattr(self, "section_combo") else None
-        if isinstance(section, dict):
+        if isinstance(section, dict) and section.get("type") in {"duty_mode", "live_zabbix_monitor"}:
             return section.get("type", "")
+
         return ""
 
     def update_duty_section_switch(self, section=None):
-        product_name = self.product_combo.currentData() if hasattr(self, "product_combo") else ""
-        is_duty = product_name == "Дежурство"
+        duty_types = {"duty_mode", "live_zabbix_monitor"}
+
+        current_type = ""
+        if isinstance(section, dict) and section.get("type") in duty_types:
+            current_type = section.get("type", "")
+            is_duty = True
+        else:
+            current_type = self._current_duty_section_type()
+            is_duty = current_type in duty_types or self._is_duty_page_index()
+
+        # В режиме дежурства список продуктов не показываем:
+        # там должны быть только реальные продукты, без служебного пункта “Дежурство”.
+        if hasattr(self, "product_label_action"):
+            self.product_label_action.setVisible(not is_duty)
+        if hasattr(self, "product_combo_action"):
+            self.product_combo_action.setVisible(not is_duty)
+        if hasattr(self, "product_separator_action"):
+            self.product_separator_action.setVisible(not is_duty)
 
         if hasattr(self, "section_label_action"):
             self.section_label_action.setVisible(not is_duty)
@@ -595,17 +639,12 @@ class MainWindow(QMainWindow):
             self.section_combo_action.setVisible(not is_duty)
         if hasattr(self, "section_separator_action"):
             self.section_separator_action.setVisible(not is_duty)
+
         if hasattr(self, "duty_section_switch_action"):
             self.duty_section_switch_action.setVisible(is_duty)
 
         if not is_duty or not hasattr(self, "duty_section_switch_button"):
             return
-
-        current_type = ""
-        if isinstance(section, dict):
-            current_type = section.get("type", "")
-        else:
-            current_type = self._current_duty_section_type()
 
         if current_type == "live_zabbix_monitor":
             self.duty_section_switch_button.setText("Сервисы/Графики")
@@ -613,19 +652,9 @@ class MainWindow(QMainWindow):
             self.duty_section_switch_button.setText("Zabbix")
 
     def toggle_duty_section(self):
-        if self.product_combo.currentData() != "Дежурство":
-            return
-
         current_type = self._current_duty_section_type()
         target_type = "duty_mode" if current_type == "live_zabbix_monitor" else "live_zabbix_monitor"
-
-        for index in range(self.section_combo.count()):
-            section = self.section_combo.itemData(index)
-            if isinstance(section, dict) and section.get("type") == target_type:
-                self.section_combo.setCurrentIndex(index)
-                self.on_section_changed()
-                return
-
+        self.open_duty_page(target_type)
 
     def on_time_changed(self):
         range_value = self.time_combo.currentData()

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -66,6 +67,7 @@ from app.update_widget import UpdateWidget
 from app.diagnostics_widget import DiagnosticsWidget
 from app.duty_settings import DutyModeSettingsWidget
 from app.service_checks_widget import ServiceChecksSettingsWidget
+from app.credentials import load_service_group_credentials, save_service_group_credentials, save_service_credentials
 from app.safe_widgets import NoWheelComboBox
 from app.service_checks import ensure_service_checks_defaults
 from app.live_zabbix import ensure_live_monitor_defaults
@@ -1045,82 +1047,143 @@ class ProfileWidget(QWidget):
         self.saved_credentials = load_saved_credentials()
         self.saved_zabbix_credentials = self.saved_credentials
         self.zabbix_inputs = {}
+        self.service_group_inputs = {}
 
         duty = self.config.setdefault("duty_mode", {})
         otrs_credentials = load_otrs_credentials(self.config)
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
-        otrs_box = QGroupBox("ОТРС")
-        otrs_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        otrs_layout = QFormLayout(otrs_box)
+        def add_section_title(title_text):
+            label = QLabel(title_text)
+            label.setStyleSheet("font-size: 17px; font-weight: 700; margin-top: 12px;")
+            root.addWidget(label)
+            return label
+
+        def add_caption(text):
+            label = QLabel(text)
+            label.setWordWrap(True)
+            label.setStyleSheet("font-size: 14px; font-weight: 700; padding-top: 8px; border: none;")
+            root.addWidget(label)
+            return label
+
+        def add_labeled_password_pair(login_value="", password_value="", login_placeholder="Введите логин", password_placeholder="Введите пароль"):
+            login_row = QHBoxLayout()
+            login_row.setSpacing(10)
+
+            login_label = QLabel("Логин:")
+            login_label.setMinimumWidth(90)
+            login_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+            login_input = QLineEdit(login_value)
+            login_input.setPlaceholderText(login_placeholder)
+            login_input.setMinimumHeight(40)
+            login_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            login_row.addWidget(login_label)
+            login_row.addWidget(login_input, stretch=1)
+            root.addLayout(login_row)
+
+            password_row = QHBoxLayout()
+            password_row.setSpacing(10)
+
+            password_label = QLabel("Пароль:")
+            password_label.setMinimumWidth(90)
+            password_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+            password_input = QLineEdit(password_value)
+            password_input.setEchoMode(QLineEdit.Password)
+            password_input.setPlaceholderText(password_placeholder)
+            password_input.setMinimumHeight(40)
+            password_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            password_row.addWidget(password_label)
+            password_row.addWidget(password_input, stretch=1)
+            root.addLayout(password_row)
+
+            return login_input, password_input
+
+        add_section_title("ОТРС")
 
         self.enabled = QCheckBox("Подставлять сохранённые доступы ОТРС")
         self.enabled.setChecked(duty.get("otrs_login_enabled", False))
+        root.addWidget(self.enabled)
 
-        self.login = QLineEdit(otrs_credentials.get("login", ""))
-        self.login.setPlaceholderText("Логин ОТРС")
-        self.password = QLineEdit(otrs_credentials.get("password", ""))
-        self.password.setEchoMode(QLineEdit.Password)
-        self.password.setPlaceholderText("Пароль ОТРС")
+        self.login, self.password = add_labeled_password_pair(
+            otrs_credentials.get("login", ""),
+            otrs_credentials.get("password", ""),
+            "Логин ОТРС",
+            "Пароль ОТРС",
+        )
 
-        otrs_hint = QLabel("Поведенческие настройки ОТРС (URL, тема задачи, автоотправка) находятся в разделе «Настройки дежурки».")
-        otrs_hint.setWordWrap(True)
+        add_section_title("Zabbix")
 
-        otrs_layout.addRow("", self.enabled)
-        otrs_layout.addRow("Логин ОТРС:", self.login)
-        otrs_layout.addRow("Пароль ОТРС:", self.password)
-        otrs_layout.addRow("", otrs_hint)
+        enabled_zabbix_instances = [
+            instance
+            for instance in self.config.get("zabbix_instances", [])
+            if instance.get("enabled", True)
+        ]
 
-        root.addWidget(otrs_box)
+        first_saved_zabbix = {}
+        for instance in enabled_zabbix_instances:
+            saved = self.saved_zabbix_credentials.get(instance.get("id"), {})
+            if saved.get("login") or saved.get("password"):
+                first_saved_zabbix = saved
+                break
 
-        zbx_box = QGroupBox("Zabbix")
-        zbx_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        zbx_layout = QVBoxLayout(zbx_box)
+        self.zabbix_common_login, self.zabbix_common_password = add_labeled_password_pair(
+            first_saved_zabbix.get("login", ""),
+            first_saved_zabbix.get("password", ""),
+            "Логин Zabbix",
+            "Пароль Zabbix",
+        )
 
-        zbx_hint = QLabel("Сохранённые доступы Zabbix.")
-        zbx_hint.setWordWrap(True)
-        zbx_hint.setMaximumHeight(34)
-        zbx_layout.addWidget(zbx_hint)
-
-        for instance in self.config.get("zabbix_instances", []):
-            if not instance.get("enabled", True):
-                continue
-
-            zabbix_id = instance.get("id")
-            name = instance.get("name", zabbix_id)
-            saved = self.saved_zabbix_credentials.get(zabbix_id, {})
-
-            group = QGroupBox(name)
-            group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-            form = QFormLayout(group)
-
-            login_input = QLineEdit(saved.get("login", ""))
-            login_input.setPlaceholderText("Логин Zabbix")
-
-            password_input = QLineEdit(saved.get("password", ""))
-            password_input.setEchoMode(QLineEdit.Password)
-            password_input.setPlaceholderText("Пароль Zabbix")
-
-            form.addRow("URL:", QLabel(instance.get("base_url", "")))
-            form.addRow("Логин:", login_input)
-            form.addRow("Пароль:", password_input)
-
-            self.zabbix_inputs[zabbix_id] = {
-                "login": login_input,
-                "password": password_input,
-                "name": name,
+        self.zabbix_inputs = {
+            instance.get("id"): {
+                "login": self.zabbix_common_login,
+                "password": self.zabbix_common_password,
+                "name": instance.get("name", instance.get("id")),
             }
-
-            zbx_layout.addWidget(group)
+            for instance in enabled_zabbix_instances
+            if instance.get("id")
+        }
 
         if not self.zabbix_inputs:
             empty = QLabel("В config.json нет включённых Zabbix-инстансов.")
             empty.setWordWrap(True)
-            zbx_layout.addWidget(empty)
+            root.addWidget(empty)
 
-        root.addWidget(zbx_box)
+        add_section_title("Сервисы")
+
+        service_settings = ensure_service_checks_defaults(self.config)
+        service_groups = service_settings.get("credential_groups", [])
+
+        for group in service_groups:
+            group_id = group.get("id", "")
+            group_name = group.get("name", group_id)
+            creds = load_service_group_credentials(group_id)
+
+            add_caption(group_name)
+
+            login_input, password_input = add_labeled_password_pair(
+                creds.get("login", ""),
+                creds.get("password", ""),
+                "Введите логин",
+                "Введите пароль",
+            )
+
+            self.service_group_inputs[group_id] = {
+                "login": login_input,
+                "password": password_input,
+                "name": group_name,
+            }
+
+        if not service_groups:
+            empty = QLabel("Сервисы для отдельного доступа ещё не настроены администратором.")
+            empty.setWordWrap(True)
+            root.addWidget(empty)
 
         buttons = QHBoxLayout()
 
@@ -1157,6 +1220,25 @@ class ProfileWidget(QWidget):
             }
 
         save_credentials(credentials)
+
+        service_settings = ensure_service_checks_defaults(self.config)
+        service_ids_by_group = {
+            group.get("id", ""): list(group.get("service_ids", []) or [])
+            for group in service_settings.get("credential_groups", [])
+        }
+
+        for group_id, widgets in self.service_group_inputs.items():
+            group_login = widgets["login"].text().strip()
+            group_password = widgets["password"].text()
+
+            save_service_group_credentials(group_id, group_login, group_password)
+
+            # Безопасная совместимость:
+            # движок проверки сервисов остаётся старым и берёт service_check::<service_id>.
+            # Профиль только раскладывает логин/пароль группы по сервисам этой группы.
+            for service_id in service_ids_by_group.get(group_id, []):
+                save_service_credentials(service_id, group_login, group_password)
+
         save_config(self.config)
         QMessageBox.information(self, "Профиль", "Доступы сохранены.")
 
@@ -1951,7 +2033,19 @@ class AppSettingsWidget(QWidget):
     def add_section(self, section_name, widget):
         self.section_indexes[section_name] = self.stack.addWidget(widget)
 
+    def rebuild_profile_section(self):
+        index = self.section_indexes.get("Профиль")
+        if index is None:
+            return
+        old_widget = self.stack.widget(index)
+        new_widget = ProfileWidget(self.config)
+        self.stack.removeWidget(old_widget)
+        old_widget.deleteLater()
+        self.section_indexes["Профиль"] = self.stack.insertWidget(index, new_widget)
+
     def open_section(self, section_name):
+        if section_name == "Профиль":
+            self.rebuild_profile_section()
         index = self.section_indexes.get(section_name)
         if index is None:
             index = self.section_indexes.get("Продукты и страницы", 0)

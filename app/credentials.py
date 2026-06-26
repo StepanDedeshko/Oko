@@ -10,6 +10,8 @@ CREDENTIALS_FILE = CREDENTIALS_DIR / "credentials.json"
 
 OTRS_CREDENTIALS_KEY = "otrs"
 LEGACY_OTRS_CREDENTIALS_KEY = "__otrs__"
+SERVICE_CREDENTIALS_PREFIX = "service_check::"
+SERVICE_GROUP_CREDENTIALS_PREFIX = "service_group::"
 
 
 def load_otrs_credentials(config=None) -> dict:
@@ -47,12 +49,26 @@ def save_otrs_credentials(login: str, password: str):
 
 def load_service_credentials(service_id: str) -> dict:
     credentials = load_saved_credentials()
-    return credentials.get(f"service_check::{service_id}", {"login": "", "password": ""})
+    return credentials.get(f"{SERVICE_CREDENTIALS_PREFIX}{service_id}", {"login": "", "password": ""})
 
 
 def save_service_credentials(service_id: str, login: str, password: str):
     credentials = load_saved_credentials()
-    credentials[f"service_check::{service_id}"] = {
+    credentials[f"{SERVICE_CREDENTIALS_PREFIX}{service_id}"] = {
+        "login": login or "",
+        "password": password or "",
+    }
+    save_credentials(credentials)
+
+
+def load_service_group_credentials(group_id: str) -> dict:
+    credentials = load_saved_credentials()
+    return credentials.get(f"{SERVICE_GROUP_CREDENTIALS_PREFIX}{group_id}", {"login": "", "password": ""})
+
+
+def save_service_group_credentials(group_id: str, login: str, password: str):
+    credentials = load_saved_credentials()
+    credentials[f"{SERVICE_GROUP_CREDENTIALS_PREFIX}{group_id}"] = {
         "login": login or "",
         "password": password or "",
     }
