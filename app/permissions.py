@@ -126,13 +126,44 @@ def set_duty_link(config: dict, key: str, value: str):
     ensure_duty_links(config)[key] = str(value or "").strip()
 
 
+
+def visible_service_groups_for_user(config: dict, user: dict | None) -> list[dict]:
+    """Return service credential groups visible in the user-facing service UI.
+
+    Admin/owner users with an empty service_group_ids list see every group.
+    Agents with an empty list intentionally see no groups.
+    """
+    normalized = normalize_user_permissions(user)
+    groups = deepcopy((((config or {}).get("service_checks") or {}).get("credential_groups") or []))
+    allowed = set(normalized.get("service_group_ids") or [])
+    if normalized.get("role") in ADMIN_ROLES and not allowed:
+        return groups
+    if not allowed:
+        return []
+    return [group for group in groups if str(group.get("id", "")) in allowed]
+
+
+def service_check_items_for_group(config: dict, group_id: str) -> list[dict]:
+    checks = (config or {}).get("service_checks", {}) or {}
+    group_id = str(group_id or "")
+    service_ids = set()
+    for group in checks.get("credential_groups", []) or []:
+        if str(group.get("id", "")) == group_id:
+            service_ids = {str(item) for item in group.get("service_ids", []) or [] if str(item)}
+            break
+    result = []
+    for item in checks.get("items", []) or []:
+        if str(item.get("credential_group_id", "")) == group_id or str(item.get("id", "")) in service_ids:
+            result.append(item)
+    return result
+
 def service_checks_for_user(config: dict, user: dict | None) -> dict:
     from app.config import sanitize_export_data
     checks = deepcopy((config or {}).get("service_checks", {}) or {})
-    allowed = set(normalize_user_permissions(user).get("service_group_ids") or [])
-    if allowed:
-        checks["credential_groups"] = [g for g in checks.get("credential_groups", []) if str(g.get("id", "")) in allowed]
-        checks["items"] = [i for i in checks.get("items", []) if str(i.get("credential_group_id", "")) in allowed]
+    visible_groups = visible_service_groups_for_user(config or {}, user)
+    allowed = {str(group.get("id", "")) for group in visible_groups if str(group.get("id", ""))}
+    checks["credential_groups"] = [g for g in checks.get("credential_groups", []) if str(g.get("id", "")) in allowed]
+    checks["items"] = [i for i in checks.get("items", []) if str(i.get("credential_group_id", "")) in allowed]
     return sanitize_export_data({"service_checks": checks}).get("service_checks", {})
 
 

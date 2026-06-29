@@ -336,6 +336,10 @@ def load_settings_export(source_path):
 
     if not isinstance(data, dict):
         raise ValueError("unsupported settings export format")
+    if data.get("format") == "oko_user_settings_export":
+        if data.get("format_version") != SETTINGS_EXPORT_FORMAT_VERSION:
+            raise ValueError("unsupported settings export version")
+        return sanitize_export_data(data)
     if data.get("format") != SETTINGS_EXPORT_FORMAT:
         raise ValueError("unsupported settings export format")
     if data.get("format_version") != SETTINGS_EXPORT_FORMAT_VERSION:

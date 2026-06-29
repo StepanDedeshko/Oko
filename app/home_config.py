@@ -1942,7 +1942,8 @@ class AdministrationWidget(QWidget):
 
         hint = QLabel(
             "Раздел доступен администраторам Око. Здесь создаются пользователи и дополнительные администраторы. "
-            "Пароли входа в Око не показываются открытым текстом, можно только задать новый пароль."
+            "Пароли входа в Око не показываются открытым текстом, можно только задать новый пароль. "
+            "Защита не позволит отключить или понизить последнего администратора; для owner/admin права admin/developer сохраняются автоматически."
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -1971,6 +1972,13 @@ class AdministrationWidget(QWidget):
         edit_form.addRow("Роль:", self.edit_role_input)
         edit_form.addRow("Статус:", self.edit_active_input)
         users_layout.addLayout(edit_form)
+
+        self.role_guard_hint = QLabel(
+            "Owner/admin всегда сохраняют доступ к администрированию и режиму разработчика. "
+            "Последнего администратора нельзя отключить или понизить."
+        )
+        self.role_guard_hint.setWordWrap(True)
+        users_layout.addWidget(self.role_guard_hint)
 
         self.permissions_list = QListWidget()
         for permission, title in SECTION_NAMES.items():

@@ -1,5 +1,7 @@
 import json
 import unittest
+from pathlib import Path
+import tempfile
 
 from app.permissions import (
     ALL_SECTION_PERMISSIONS,
@@ -15,8 +17,12 @@ from app.permissions import (
     import_user_settings_payload,
     normalize_user_permissions,
     service_checks_for_user,
+    service_check_items_for_group,
     set_duty_link,
+    visible_service_groups_for_user,
 )
+from app.app_users import create_user, update_user
+from app.config import import_settings_file, load_settings_export
 
 
 class PermissionsAndUserExportTests(unittest.TestCase):
@@ -84,12 +90,73 @@ class PermissionsAndUserExportTests(unittest.TestCase):
         self.assertEqual(imported["_current_user"]["service_group_ids"], ["g1"])
         self.assertNotIn("credentials", imported)
 
+    def test_user_settings_export_can_be_loaded_and_imported_from_file(self):
+        payload = {
+            "format": "oko_user_settings_export",
+            "format_version": 1,
+            "user": {"login": "agent", "role": "custom", "section_permissions": [SECTION_PROFILE], "service_group_ids": ["g1"]},
+            "settings": {
+                "duty_links": {"live_zabbix_url": "https://z", "redmine_create_url": "https://r", "otrs_create_url": "https://o", "mm_otrs_create_url": "https://m"},
+                "service_checks": {"credential_groups": [{"id": "g1"}], "items": []},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            export_path = Path(tmp) / "user.json"
+            config_path = Path(tmp) / "config.json"
+            export_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            config_path.write_text(json.dumps({"local_credentials_marker": True}, ensure_ascii=False), encoding="utf-8")
+            self.assertEqual(load_settings_export(export_path)["format"], "oko_user_settings_export")
+            import_settings_file(export_path, config_path=config_path)
+            imported = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(imported["_current_user"]["service_group_ids"], ["g1"])
+        self.assertEqual(imported["duty_links"]["mm_otrs_create_url"], "https://m")
+        self.assertTrue(imported["local_credentials_marker"])
+
     def test_service_checks_for_user_limits_to_groups_but_keeps_technical_for_export(self):
         config = {"service_checks": {"credential_groups": [{"id": "g1"}, {"id": "g2"}], "items": [{"id": "s1", "credential_group_id": "g1", "timeout_seconds": 5}, {"id": "s2", "credential_group_id": "g2"}]}}
         checks = service_checks_for_user(config, {"role": "agent", "service_group_ids": ["g1"]})
         self.assertEqual([g["id"] for g in checks["credential_groups"]], ["g1"])
         self.assertEqual([i["id"] for i in checks["items"]], ["s1"])
         self.assertEqual(checks["items"][0]["timeout_seconds"], 5)
+
+        empty_agent_checks = service_checks_for_user(config, {"role": "agent", "service_group_ids": []})
+        self.assertEqual(empty_agent_checks["credential_groups"], [])
+        self.assertEqual(empty_agent_checks["items"], [])
+
+    def test_visible_service_groups_respect_roles_and_empty_agent_groups(self):
+        config = {"service_checks": {"credential_groups": [{"id": "g1"}, {"id": "g2"}], "items": []}}
+        self.assertEqual([g["id"] for g in visible_service_groups_for_user(config, {"role": "agent", "service_group_ids": ["g1"]})], ["g1"])
+        self.assertEqual(visible_service_groups_for_user(config, {"role": "agent", "service_group_ids": []}), [])
+        self.assertEqual([g["id"] for g in visible_service_groups_for_user(config, {"role": "admin", "service_group_ids": []})], ["g1", "g2"])
+
+    def test_agent_group_ui_helpers_do_not_expose_technical_editor_fields(self):
+        config = {
+            "service_checks": {
+                "credential_groups": [{"id": "g1", "name": "Group 1", "service_ids": ["s1"]}],
+                "items": [{"id": "s1", "credential_group_id": "g1", "url": "https://svc", "login_selector": "#login", "timeout_seconds": 10}],
+            }
+        }
+        user = {"role": "agent", "service_group_ids": ["g1"]}
+        groups = visible_service_groups_for_user(config, user)
+        items = service_check_items_for_group(config, groups[0]["id"])
+        self.assertEqual(groups[0]["name"], "Group 1")
+        self.assertEqual(items[0]["id"], "s1")
+        self.assertFalse(can_open_section(user, "Технические настройки проверок"))
+
+    def test_duty_links_all_new_keys_saved(self):
+        config = {}
+        for key in ("live_zabbix_url", "redmine_create_url", "otrs_create_url", "mm_otrs_create_url"):
+            set_duty_link(config, key, f"https://example/{key}")
+        self.assertEqual(config["duty_links"], {key: f"https://example/{key}" for key in ("live_zabbix_url", "redmine_create_url", "otrs_create_url", "mm_otrs_create_url")})
+
+    def test_update_user_cannot_remove_last_admin_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "users.json"
+            create_user("owner", "pass1", role="owner", path=path)
+            with self.assertRaises(ValueError):
+                update_user("owner", role="agent", path=path)
+            with self.assertRaises(ValueError):
+                update_user("owner", active=False, path=path)
 
 
 if __name__ == "__main__":

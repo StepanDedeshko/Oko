@@ -23,7 +23,18 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.credentials import load_service_credentials, save_service_credentials
+from app.credentials import (
+    load_service_credentials,
+    load_service_group_credentials,
+    save_service_credentials,
+    save_service_group_credentials,
+)
+from app.permissions import (
+    SECTION_SERVICE_CHECKS_TECHNICAL,
+    has_permission,
+    service_check_items_for_group,
+    visible_service_groups_for_user,
+)
 from app.service_checks import (
     AUTH_HTML_FORM,
     AUTH_NONE,
@@ -66,6 +77,12 @@ class ServiceChecksSettingsWidget(QWidget):
         self.settings = ensure_service_checks_defaults(self.config)
         self.current_index = -1
         self._loading = False
+        self.current_user = (self.config or {}).get("_current_user") or {}
+        self.is_technical_editor = has_permission(self.current_user, SECTION_SERVICE_CHECKS_TECHNICAL)
+
+        if not self.is_technical_editor:
+            self.build_user_group_ui()
+            return
 
         root = QVBoxLayout(self)
         title = QLabel("Проверка сервисов")
@@ -488,6 +505,84 @@ class ServiceChecksSettingsWidget(QWidget):
         self.refresh_credential_groups()
         self.refresh_service_group_input()
         self.refresh_list()
+
+    def build_user_group_ui(self):
+        root = QVBoxLayout(self)
+        title = QLabel("Проверка сервисов")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        hint = QLabel(
+            "Здесь агент включает доступные группы сервисов и сохраняет личные логины/пароли. "
+            "URL, CSS-селекторы, таймауты и другие технические параметры доступны только администраторам."
+        )
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        self.user_group_controls = {}
+        groups = visible_service_groups_for_user(self.config, self.current_user)
+        if not groups:
+            empty = QLabel("Нет доступных групп сервисов. Обратитесь к администратору")
+            empty.setWordWrap(True)
+            root.addWidget(empty)
+            root.addStretch(1)
+            return
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        cards = QVBoxLayout(container)
+
+        for group in groups:
+            group_id = str(group.get("id", "") or "")
+            services = service_check_items_for_group(self.config, group_id)
+            credentials = load_service_group_credentials(group_id)
+            box = QGroupBox(str(group.get("name", "") or group_id))
+            form = QFormLayout(box)
+            enabled = QCheckBox("Включить")
+            enabled.setChecked(any(item.get("enabled", True) for item in services))
+            mini_test = QCheckBox("Тест")
+            mini_test.setChecked(any(item.get("post_login_mini_test_enabled", True) for item in services))
+            login = QLineEdit(str(credentials.get("login", "") or ""))
+            password = QLineEdit(str(credentials.get("password", "") or ""))
+            password.setEchoMode(QLineEdit.Password)
+            status = QLabel("Не сохранено")
+            status.setWordWrap(True)
+            save_button = QPushButton("Сохранить")
+            save_button.clicked.connect(lambda _=False, gid=group_id: self.save_user_group(gid))
+            form.addRow("Группа:", QLabel(str(group.get("name", "") or group_id)))
+            form.addRow("Проверка:", enabled)
+            form.addRow("Mini-test:", mini_test)
+            form.addRow("Логин:", login)
+            form.addRow("Пароль:", password)
+            form.addRow("Статус:", status)
+            form.addRow("", save_button)
+            self.user_group_controls[group_id] = {
+                "enabled": enabled,
+                "mini_test": mini_test,
+                "login": login,
+                "password": password,
+                "status": status,
+            }
+            cards.addWidget(box)
+
+        cards.addStretch(1)
+        scroll.setWidget(container)
+        root.addWidget(scroll, stretch=1)
+
+    def save_user_group(self, group_id):
+        controls = self.user_group_controls.get(group_id)
+        if not controls:
+            return
+        enabled = controls["enabled"].isChecked()
+        mini_test = controls["mini_test"].isChecked()
+        for service in service_check_items_for_group(self.config, group_id):
+            service["enabled"] = enabled
+            service["post_login_mini_test_enabled"] = mini_test
+        save_service_group_credentials(group_id, controls["login"].text().strip(), controls["password"].text())
+        save_config(self.config)
+        controls["status"].setText("Сохранено")
+
 
     def on_credential_group_changed(self, *args):
         self.update_current_from_form()
