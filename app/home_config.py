@@ -1058,7 +1058,7 @@ class ProductsWidget(QWidget):
 
 
 class ProfileWidget(QWidget):
-    def __init__(self, config, logout_callback=None, parent=None):
+    def __init__(self, config, logout_callback=None, session_check_callback=None, session_auth_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         self.logout_callback = logout_callback
