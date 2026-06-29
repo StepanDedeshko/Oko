@@ -78,7 +78,12 @@ class ServiceChecksSettingsWidget(QWidget):
         self.current_index = -1
         self._loading = False
         self.current_user = (self.config or {}).get("_current_user") or {}
-        self.is_technical_editor = has_permission(self.current_user, SECTION_SERVICE_CHECKS_TECHNICAL)
+        # Legacy/config-only startup without local user data must keep the technical editor available.
+        # Explicit users are restricted by section.service_checks_technical.
+        self.is_technical_editor = not self.current_user or has_permission(
+            self.current_user,
+            SECTION_SERVICE_CHECKS_TECHNICAL,
+        )
 
         if not self.is_technical_editor:
             self.build_user_group_ui()
