@@ -353,10 +353,13 @@ class DutyModeSettingsWidget(QWidget):
         self.live_zabbix_url_input.setPlaceholderText("URL страницы Live Zabbix Monitor")
         self.redmine_create_url_input = QLineEdit(get_duty_link(self.config, "redmine_create_url"))
         self.redmine_create_url_input.setPlaceholderText("URL создания Redmine-задачи из Live Zabbix")
+        self.otrs_create_url_link_input = QLineEdit(get_duty_link(self.config, "otrs_create_url"))
+        self.otrs_create_url_link_input.setPlaceholderText("URL создания задачи ОТРС")
         self.mm_otrs_create_url_input = QLineEdit(get_duty_link(self.config, "mm_otrs_create_url"))
         self.mm_otrs_create_url_input.setPlaceholderText("URL создания задачи ОТРС ММ")
         links_form.addRow("Live Zabbix Monitor:", self.live_zabbix_url_input)
         links_form.addRow("Redmine из Live Zabbix:", self.redmine_create_url_input)
+        links_form.addRow("ОТРС:", self.otrs_create_url_link_input)
         links_form.addRow("ОТРС ММ:", self.mm_otrs_create_url_input)
         root.addWidget(links_box)
 
@@ -382,8 +385,9 @@ class DutyModeSettingsWidget(QWidget):
         otrs_row.addWidget(QLabel("URL создания задачи ОТРС:"))
 
         self.otrs_create_url = QLineEdit()
-        self.otrs_create_url.setText(self.settings().get("otrs_create_url", ""))
-        self.otrs_create_url.setPlaceholderText("https://.../otrs/index.pl?Action=AgentTicketPhone")
+        self.otrs_create_url.setText(get_duty_link(self.config, "otrs_create_url") or self.settings().get("otrs_create_url", ""))
+        self.otrs_create_url.setPlaceholderText("Редактируется в подразделе «Основное» выше")
+        self.otrs_create_url.setReadOnly(True)
 
         otrs_row.addWidget(self.otrs_create_url, stretch=1)
         root.addLayout(otrs_row)
@@ -782,7 +786,7 @@ class DutyModeSettingsWidget(QWidget):
         settings["sound_path"] = self.sound_label.text().strip()
         if settings["sound_path"] == "Звук не выбран":
             settings["sound_path"] = ""
-        settings["otrs_create_url"] = self.otrs_create_url.text().strip()
+        settings["otrs_create_url"] = self.otrs_create_url_link_input.text().strip()
         set_duty_link(self.config, "otrs_create_url", settings["otrs_create_url"])
         set_duty_link(self.config, "live_zabbix_url", self.live_zabbix_url_input.text().strip())
         set_duty_link(self.config, "redmine_create_url", self.redmine_create_url_input.text().strip())
