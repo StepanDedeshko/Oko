@@ -35,6 +35,7 @@ from app.logger import get_logger
 from app.safe_widgets import NoWheelComboBox, NoWheelSpinBox
 from app.screen_utils import available_geometry_for_widget, center_widget_on_screen, safe_window_size
 from app.permissions import ensure_duty_links, get_duty_link, set_duty_link
+from app.session_warmup import ensure_session_warmup_defaults
 
 
 TRIGGER_MODES = {
@@ -375,6 +376,36 @@ class DutyModeSettingsWidget(QWidget):
         )
         service_checks_hint.setWordWrap(True)
         root.addWidget(service_checks_hint)
+
+        warmup = ensure_session_warmup_defaults(self.config)
+        warmup_box = QGroupBox("Прогрев сессий Zabbix/OTRS")
+        warmup_form = QFormLayout(warmup_box)
+        self.session_warmup_on_startup_checkbox = QCheckBox("Прогревать Zabbix/OTRS при запуске")
+        self.session_warmup_on_startup_checkbox.setChecked(bool(warmup.get("warmup_on_startup", True)))
+        self.session_warmup_before_tasks_checkbox = QCheckBox("Проверять сессию перед созданием задач")
+        self.session_warmup_before_tasks_checkbox.setChecked(bool(warmup.get("check_before_tasks", True)))
+        self.session_warmup_timeout = NoWheelSpinBox()
+        self.session_warmup_timeout.setMinimum(5)
+        self.session_warmup_timeout.setMaximum(120)
+        self.session_warmup_timeout.setValue(int(warmup.get("timeout_seconds", 25)))
+        self.session_warmup_check_button = QPushButton("Проверить сессии сейчас")
+        self.session_warmup_check_button.setToolTip("Запустит проверку после сохранения настроек и открытия главного окна.")
+        self.session_warmup_results_label = QLabel(self._session_warmup_results_text())
+        self.session_warmup_results_label.setWordWrap(True)
+        warmup_form.addRow(self.session_warmup_on_startup_checkbox)
+        warmup_form.addRow(self.session_warmup_before_tasks_checkbox)
+        warmup_form.addRow("Таймаут прогрева, секунд:", self.session_warmup_timeout)
+        warmup_form.addRow(self.session_warmup_check_button)
+        warmup_form.addRow("Последний результат:", self.session_warmup_results_label)
+        root.addWidget(warmup_box)
+
+    def _session_warmup_results_text(self):
+        warmup = ensure_session_warmup_defaults(self.config)
+        labels = {"ok": "OK", "auth_required": "требуется вход", "network_error": "ошибка", "timeout": "ошибка", "skipped_no_url": "не настроено"}
+        results = warmup.get("last_results", {}) if isinstance(warmup.get("last_results"), dict) else {}
+        zabbix = labels.get((results.get("zabbix") or {}).get("status"), "не проверялось")
+        otrs = labels.get((results.get("otrs") or {}).get("status"), "не проверялось")
+        return f"Zabbix: {zabbix}; OTRS: {otrs}"
 
     def build_otrs_section(self, root):
         access_hint = QLabel("Логин и пароль ОТРС настраиваются в разделе «Профиль».")
@@ -802,6 +833,10 @@ class DutyModeSettingsWidget(QWidget):
         settings["duty_service_checks_task_number"] = self.duty_service_checks_task_number_input.text().strip()
         settings["current_ticket_number"] = settings["duty_zabbix_task_number"]
         settings["otrs_auto_submit_login"] = self.otrs_auto_submit_checkbox.isChecked()
+        warmup_settings = ensure_session_warmup_defaults(self.config)
+        warmup_settings["warmup_on_startup"] = self.session_warmup_on_startup_checkbox.isChecked()
+        warmup_settings["check_before_tasks"] = self.session_warmup_before_tasks_checkbox.isChecked()
+        warmup_settings["timeout_seconds"] = int(self.session_warmup_timeout.value())
         settings["graph_ids"] = self.selected_graph_ids()
 
         trigger_settings = self.duty_triggers_settings()
