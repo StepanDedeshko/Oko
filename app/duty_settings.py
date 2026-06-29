@@ -34,6 +34,7 @@ from app.duty_zabbix import (
 from app.logger import get_logger
 from app.safe_widgets import NoWheelComboBox, NoWheelSpinBox
 from app.screen_utils import available_geometry_for_widget, center_widget_on_screen, safe_window_size
+from app.permissions import ensure_duty_links, get_duty_link, set_duty_link
 
 
 TRIGGER_MODES = {
@@ -346,6 +347,19 @@ class DutyModeSettingsWidget(QWidget):
         sound_row.addWidget(clear_sound)
         root.addLayout(sound_row)
 
+        links_box = QGroupBox("Рабочие ссылки дежурки")
+        links_form = QFormLayout(links_box)
+        self.live_zabbix_url_input = QLineEdit(get_duty_link(self.config, "live_zabbix_url"))
+        self.live_zabbix_url_input.setPlaceholderText("URL страницы Live Zabbix Monitor")
+        self.redmine_create_url_input = QLineEdit(get_duty_link(self.config, "redmine_create_url"))
+        self.redmine_create_url_input.setPlaceholderText("URL создания Redmine-задачи из Live Zabbix")
+        self.mm_otrs_create_url_input = QLineEdit(get_duty_link(self.config, "mm_otrs_create_url"))
+        self.mm_otrs_create_url_input.setPlaceholderText("URL создания задачи ОТРС ММ")
+        links_form.addRow("Live Zabbix Monitor:", self.live_zabbix_url_input)
+        links_form.addRow("Redmine из Live Zabbix:", self.redmine_create_url_input)
+        links_form.addRow("ОТРС ММ:", self.mm_otrs_create_url_input)
+        root.addWidget(links_box)
+
         self.duty_service_checks_enabled_checkbox = QCheckBox("Проверять сервисы в режиме дежурства")
         self.duty_service_checks_enabled_checkbox.setChecked(bool(self.settings().get("duty_service_checks_enabled", False)))
         self.duty_service_checks_enabled_checkbox.setToolTip(
@@ -421,7 +435,8 @@ class DutyModeSettingsWidget(QWidget):
 
     def settings(self):
         settings = ensure_duty_mode_defaults(self.config)
-        settings.setdefault("otrs_create_url", settings.get("otrs", {}).get("create_url", ""))
+        ensure_duty_links(self.config)
+        settings.setdefault("otrs_create_url", get_duty_link(self.config, "otrs_create_url") or settings.get("otrs", {}).get("create_url", ""))
         return settings
 
     def duty_triggers_settings(self):
@@ -768,6 +783,10 @@ class DutyModeSettingsWidget(QWidget):
         if settings["sound_path"] == "Звук не выбран":
             settings["sound_path"] = ""
         settings["otrs_create_url"] = self.otrs_create_url.text().strip()
+        set_duty_link(self.config, "otrs_create_url", settings["otrs_create_url"])
+        set_duty_link(self.config, "live_zabbix_url", self.live_zabbix_url_input.text().strip())
+        set_duty_link(self.config, "redmine_create_url", self.redmine_create_url_input.text().strip())
+        set_duty_link(self.config, "mm_otrs_create_url", self.mm_otrs_create_url_input.text().strip())
         settings["duty_zabbix_expected_task_title"] = self.zabbix_expected_title_input.text().strip() or "Дежурная проверка Zabbix / графиков"
         settings["duty_service_checks_expected_task_title"] = self.service_checks_expected_title_input.text().strip() or "Дежурная проверка сервисов"
         settings["expected_ticket_subject"] = settings["duty_zabbix_expected_task_title"]
