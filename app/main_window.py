@@ -37,7 +37,7 @@ from app.app_info import APP_NAME
 from app.logger import get_logger
 from app.screen_utils import clamp_rect_to_available, rect_fits_available, safe_window_size
 from app.webengine_lifecycle import current_rss_mb, register_web_view, safe_delete_web_view, tracked_web_view_count
-from app.session_warmup import SessionWarmupManager, WarmupStatus
+from app.session_warmup import SessionWarmupManager, WarmupStatus, MODE_SILENT, SYSTEM_ZABBIX, SYSTEM_OTRS
 
 
 class MainWindow(QMainWindow):
@@ -132,7 +132,7 @@ class MainWindow(QMainWindow):
         self.session_warmup_manager.result_ready.connect(self.on_session_warmup_result)
         settings = self.config.get("session_warmup", {}) if isinstance(self.config, dict) else {}
         if settings.get("warmup_on_startup", True):
-            QTimer.singleShot(1200, self.session_warmup_manager.start)
+            QTimer.singleShot(1200, lambda: self.session_warmup_manager.start(mode=MODE_SILENT))
 
     def update_session_warmup_status(self, message):
         self.session_status_label.setText(str(message or ""))
@@ -140,13 +140,18 @@ class MainWindow(QMainWindow):
     def on_session_warmup_result(self, result):
         name = "Zabbix" if result.system == "zabbix" else "OTRS"
         if result.status == WarmupStatus.OK:
-            self.session_status_label.setText(f"{name}: авторизовано")
+            self.session_status_label.setText(f"{name}: OK")
         elif result.status == WarmupStatus.AUTH_REQUIRED:
-            self.session_status_label.setText(f"{name}: требуется вход")
+            self.session_status_label.setText(f"{name}: нужен вход")
         elif result.status == WarmupStatus.SKIPPED_NO_URL:
             self.session_status_label.setText(f"{name}: не настроено")
         else:
-            self.session_status_label.setText(f"{name}: ошибка")
+            self.session_status_label.setText(f"{name}: ошибка сети")
+
+
+    def open_manual_session_auth(self, system):
+        if self.session_warmup_manager is not None:
+            self.session_warmup_manager.open_manual_auth(system)
 
     def ensure_sessions_before_action(self, systems=("zabbix", "otrs")):
         settings = self.config.get("session_warmup", {}) if isinstance(self.config, dict) else {}
@@ -305,6 +310,12 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
         self.session_status_label.setToolTip("Статус прогрева сессий Zabbix/OTRS")
         self.toolbar.addWidget(self.session_status_label)
+        self.zabbix_login_button = QPushButton("Войти в Zabbix")
+        self.zabbix_login_button.clicked.connect(lambda: self.open_manual_session_auth(SYSTEM_ZABBIX))
+        self.toolbar.addWidget(self.zabbix_login_button)
+        self.otrs_login_button = QPushButton("Войти в OTRS")
+        self.otrs_login_button.clicked.connect(lambda: self.open_manual_session_auth(SYSTEM_OTRS))
+        self.toolbar.addWidget(self.otrs_login_button)
 
     def configure_toolbar_combo(self, combo, minimum_width, maximum_width):
         combo.setMinimumWidth(minimum_width)
