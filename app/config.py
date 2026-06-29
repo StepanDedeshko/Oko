@@ -8,7 +8,7 @@ from app.logger import get_logger
 from app.service_checks import default_service_checks_config
 from app.redmine_triggers import default_special_redmine_triggers_config, ensure_special_redmine_triggers_defaults
 from app.trigger_model import default_trigger_catalog_config, ensure_trigger_catalog_defaults
-from app.live_zabbix import default_live_monitor_config, ensure_live_monitor_defaults
+from app.live_zabbix import default_live_detection_config, default_live_monitor_config, ensure_live_monitor_defaults
 from app.permissions import ensure_duty_links, build_user_settings_export, import_user_settings_payload
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
@@ -205,6 +205,7 @@ def _default_config():
         "zabbix_trigger_definitions": default_trigger_catalog_config(),
         "special_redmine_triggers": default_special_redmine_triggers_config(),
         "live_zabbix_monitor": default_live_monitor_config(),
+        "live_zabbix_detection_items": default_live_detection_config(),
         "service_checks": default_service_checks_config(),
         "duty_links": {},
         "zabbix_trigger_catalog": {"version": 1, "triggers": []},

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse, quote
 import json
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, DetectionStatus, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_detection_defaults, ensure_live_monitor_defaults, latest_detection_status, normalize_detection_items, parse_zabbix_history_values, split_items_by_duty_filter, zabbix_history_auth_required, DETECTION_ERROR, DETECTION_NO_DATA, DETECTION_OK, DETECTION_ZERO, DETECTION_ZERO_STREAK
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
@@ -121,6 +121,17 @@ class LiveZabbixMonitorWidget(QWidget):
         self._parse_attempts = []
         self._monitor_started = False
         self._zabbix_auth_retrying = False
+        self.detection_settings = ensure_live_detection_defaults(config)
+        self.detection_cache = {}
+        self.detection_runtime_cache = {}
+        self.detection_queue = []
+        self.detection_lookup_view = None
+        self._detection_current = None
+        self._detection_auth_retry = None
+        self._detection_blink_on = False
+        self.detection_blink_timer = QTimer(self)
+        self.detection_blink_timer.timeout.connect(self._toggle_detection_blink)
+        self.detection_blink_timer.start(900)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_now)
         self._build_ui()
@@ -232,6 +243,7 @@ class LiveZabbixMonitorWidget(QWidget):
             "Подтверждено",
             "Действия",
             "Теги",
+            "Сработки",
         ]
         self.table = QTableWidget(0, len(self.table_columns))
         self.table.setHorizontalHeaderLabels(self.table_columns)
@@ -281,7 +293,7 @@ class LiveZabbixMonitorWidget(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
-        defaults = [105, 110, 42, 145, 460, 76, 86, 120, 130]
+        defaults = [105, 110, 42, 145, 420, 76, 86, 120, 130, 120]
         widths = self.settings.get("table_column_widths") or defaults
         self._restoring_column_widths = True
         for index, width in enumerate(defaults):
@@ -972,6 +984,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.ack_text or ("Да" if item.acknowledged else "Нет"),
                 item.actions_text or "—",
                 item.tags,
+                self._detection_text_for_host(item.host),
             ]
 
             for column, value in enumerate(values):
@@ -1009,6 +1022,9 @@ class LiveZabbixMonitorWidget(QWidget):
                     cell.setToolTip("Правый клик: открыть график/проблему")
                     cell.setData(Qt.UserRole, {"graph_urls": list(item.graph_urls), "problem_url": item.problem_url})
 
+                if column == 9:
+                    self._apply_detection_cell_style(cell, item.host)
+
                 if column == 7 and str(value or "").strip() == "—":
                     cell.setTextAlignment(Qt.AlignCenter)
                     cell.setForeground(QColor("#8b9aa5"))
@@ -1031,6 +1047,155 @@ class LiveZabbixMonitorWidget(QWidget):
         else:
             self.poll_status_label.setText(ZERO_PROBLEMS_MESSAGE)
         self._update_diagnostics(payload or {"safe_debug": {}, "items": []})
+        self._schedule_detection_checks(all_items)
+
+
+    def _detection_config_enabled(self):
+        return bool(self.detection_settings.get("enabled", True))
+
+    def _detection_mapping_for_host(self, host):
+        return normalize_detection_items(self.config).get(str(host or "").strip().casefold()) or {}
+
+    def _detection_status_for_host(self, host):
+        return self.detection_cache.get(str(host or "").strip().casefold())
+
+    def _detection_text_for_host(self, host):
+        if not self._detection_config_enabled():
+            return "—"
+        status = self._detection_status_for_host(host)
+        return status.text if isinstance(status, DetectionStatus) else "проверка..."
+
+    def _detection_tooltip(self, host, status):
+        lines = [f"Узел: {host or '—'}"]
+        if isinstance(status, DetectionStatus):
+            source = status.selected_version or "—"
+            itemid = status.selected_itemid or "—"
+            lines.append(f"Источник: {source} itemid={itemid}")
+            lines.append(f"Последнее значение: {status.last_value if status.last_value is not None else '—'}")
+            lines.append(f"Последнее время: {status.last_timestamp.strftime('%H:%M') if status.last_timestamp else '—'}")
+            lines.append(status.reason or status.text)
+        else:
+            lines.append("проверка...")
+        return "\n".join(lines)
+
+    def _apply_detection_cell_style(self, cell, host):
+        status = self._detection_status_for_host(host)
+        cell.setTextAlignment(Qt.AlignCenter)
+        cell.setToolTip(self._detection_tooltip(host, status))
+        cell.setData(Qt.UserRole + 20, bool(isinstance(status, DetectionStatus) and status.blink))
+        if not isinstance(status, DetectionStatus):
+            cell.setForeground(QColor("#8b9aa5")); return
+        if status.status == DETECTION_OK:
+            cell.setBackground(QColor("#dff3e3")); cell.setForeground(QColor("#1b5e20"))
+        elif status.status in {DETECTION_ZERO, DETECTION_ZERO_STREAK}:
+            cell.setBackground(QColor("#ff8a80" if self._detection_blink_on else "#ffcdd2")); cell.setForeground(QColor("#7f0000"))
+        elif status.status == DETECTION_NO_DATA:
+            cell.setBackground(QColor("#fff4c2")); cell.setForeground(QColor("#6d5700"))
+        else:
+            cell.setBackground(QColor("#ffd6cc")); cell.setForeground(QColor("#8a1f11"))
+
+    def _toggle_detection_blink(self):
+        self._detection_blink_on = not self._detection_blink_on
+        for row in range(self.table.rowCount()):
+            cell = self.table.item(row, 9) if self.table.columnCount() > 9 else None
+            if cell is not None and cell.data(Qt.UserRole + 20):
+                cell.setBackground(QColor("#ff8a80" if self._detection_blink_on else "#ffcdd2"))
+
+    def _schedule_detection_checks(self, items):
+        if not self._detection_config_enabled():
+            return
+        ttl = int(self.detection_settings.get("refresh_interval_sec", 60) or 60)
+        now = datetime.now(); hosts=[]; seen=set()
+        for item in items or []:
+            host = str(getattr(item, "host", "") or "").strip()
+            key = host.casefold()
+            if not host or key in seen: continue
+            seen.add(key)
+            cached = self.detection_cache.get(key)
+            if isinstance(cached, DetectionStatus) and cached.checked_at and (now - cached.checked_at).total_seconds() < ttl:
+                continue
+            if not self._detection_mapping_for_host(host):
+                self.logger.info("Detection check missing mapping: host=%s", host)
+                self.detection_cache[key] = DetectionStatus(status=DETECTION_NO_DATA, text="нет данных", reason="missing mapping", checked_at=now)
+                continue
+            hosts.append(host)
+        if hosts:
+            self.logger.info("Detection check started: hosts=%s", len(hosts))
+            self.detection_queue.extend(hosts)
+            self._ensure_detection_lookup_view()
+            self._load_next_detection_check()
+
+    def _ensure_detection_lookup_view(self):
+        if self.detection_lookup_view is not None: return
+        self.detection_lookup_view = register_web_view(QWebEngineView())
+        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        if profile is not None:
+            self.detection_lookup_view.setPage(QWebEnginePage(profile, self.detection_lookup_view))
+        self.detection_lookup_view.hide()
+
+    def _history_url_for_itemid(self, itemid):
+        base = self.problems_url() or ""
+        return QUrl(base).resolved(QUrl(f"history.php?action=showvalues&itemids%5B%5D={quote(str(itemid))}")).toString()
+
+    def _load_next_detection_check(self):
+        if self._detection_current or not self.detection_queue: return
+        host = self.detection_queue.pop(0); mapping = self._detection_mapping_for_host(host)
+        order = list(self.detection_settings.get("prefer_order") or ["v2", "v1"])
+        runtime = self.detection_runtime_cache.get(host.casefold(), {})
+        if runtime.get("selected_version") in order:
+            order = [runtime["selected_version"]] + [v for v in order if v != runtime["selected_version"]]
+        attempts = [(v, mapping.get(f"{v}_itemid")) for v in order if mapping.get(f"{v}_itemid")]
+        self._detection_current = {"host": host, "attempts": attempts, "auth_retry": False}
+        self._load_current_detection_attempt()
+
+    def _load_current_detection_attempt(self):
+        cur = self._detection_current
+        if not cur: return
+        if not cur["attempts"]:
+            self.detection_cache[cur["host"].casefold()] = DetectionStatus(status=DETECTION_NO_DATA, text="нет данных", reason="no_data", checked_at=datetime.now())
+            self._detection_current = None; self._refresh_detection_cells(); self._load_next_detection_check(); return
+        version, itemid = cur["attempts"][0]
+        try: self.detection_lookup_view.loadFinished.disconnect()
+        except (TypeError, RuntimeError): pass
+        self.detection_lookup_view.loadFinished.connect(lambda ok, v=version, i=itemid: self._on_detection_history_loaded(ok, v, i))
+        self.detection_lookup_view.load(QUrl(self._history_url_for_itemid(itemid)))
+
+    def _on_detection_history_loaded(self, ok, version, itemid):
+        if not ok:
+            self._detection_current["attempts"].pop(0); self._load_current_detection_attempt(); return
+        page = self.detection_lookup_view.page()
+        page.runJavaScript("document.documentElement.outerHTML", lambda html, v=version, i=itemid: self._on_detection_history_html(html, v, i))
+
+    def _on_detection_history_html(self, html, version, itemid):
+        cur = self._detection_current
+        if not cur: return
+        if zabbix_history_auth_required(str(html or "")) and not cur.get("auth_retry"):
+            cur["auth_retry"] = True; self._silent_zabbix_autologin({"safe_debug": {"auth_required": True}}); QTimer.singleShot(3000, self._load_current_detection_attempt); return
+        values = parse_zabbix_history_values(str(html or ""))
+        if values:
+            st = latest_detection_status(values, self.detection_settings.get("zero_alert_after_minutes", 5), now=datetime.now())
+            st.selected_version = version; st.selected_itemid = str(itemid); st.checked_at = datetime.now()
+            self.detection_cache[cur["host"].casefold()] = st
+            self.detection_runtime_cache[cur["host"].casefold()] = {"selected_version": version, "selected_itemid": str(itemid)}
+            self.logger.info("Detection check host: host=%s version=%s status=%s value=%s", cur["host"], version, st.status, st.last_value)
+            self._detection_current = None; self._refresh_detection_cells(); self._load_next_detection_check(); return
+        self.logger.info("Detection check fallback: host=%s from=%s reason=no_data", cur["host"], version)
+        cur["attempts"].pop(0); self._load_current_detection_attempt()
+
+    def _refresh_detection_cells(self):
+        for row in range(self.table.rowCount()):
+            host_cell = self.table.item(row, 3); det_cell = self.table.item(row, 9) if self.table.columnCount() > 9 else None
+            if host_cell and det_cell:
+                host = host_cell.text(); det_cell.setText(self._detection_text_for_host(host)); self._apply_detection_cell_style(det_cell, host)
+
+    def _force_detection_check_for_host(self, host):
+        self.detection_cache.pop(str(host or '').strip().casefold(), None)
+        self.detection_queue.insert(0, str(host or '').strip())
+        self._ensure_detection_lookup_view(); self._load_next_detection_check()
+
+    def _open_detection_history(self, host, version):
+        mapping = self._detection_mapping_for_host(host); itemid = mapping.get(f"{version}_itemid")
+        if itemid: QDesktopServices.openUrl(QUrl(self._history_url_for_itemid(itemid)))
 
     @staticmethod
     def _severity_color(level, severity_class="", severity_text=""):
@@ -3332,6 +3497,27 @@ class LiveZabbixMonitorWidget(QWidget):
                 action = menu.addAction("Ссылка на подтверждение не найдена")
                 action.setEnabled(False)
 
+        selected_items = self._selected_live_problem_items()
+        selected_host = str(getattr(selected_items[0], "host", "") or "").strip() if selected_items else ""
+        mapping = self._detection_mapping_for_host(selected_host)
+        if selected_host:
+            if menu.actions():
+                menu.addSeparator()
+            check_detection_action = menu.addAction("Проверить сработки по узлу сейчас")
+            check_detection_action.triggered.connect(lambda _checked=False, h=selected_host: self._force_detection_check_for_host(h))
+            if mapping.get("v2_itemid"):
+                open_v2_action = menu.addAction("Открыть history v2")
+                open_v2_action.triggered.connect(lambda _checked=False, h=selected_host: self._open_detection_history(h, "v2"))
+            if mapping.get("v1_itemid"):
+                open_v1_action = menu.addAction("Открыть history v1")
+                open_v1_action.triggered.connect(lambda _checked=False, h=selected_host: self._open_detection_history(h, "v1"))
+            copy_host_action = menu.addAction("Копировать узел")
+            copy_host_action.triggered.connect(lambda _checked=False, h=selected_host: __import__("PySide6.QtWidgets").QtWidgets.QApplication.clipboard().setText(h))
+            itemids = ", ".join(v for v in [mapping.get("v2_itemid", ""), mapping.get("v1_itemid", "")] if v)
+            if itemids:
+                copy_itemid_action = menu.addAction("Копировать itemid")
+                copy_itemid_action.triggered.connect(lambda _checked=False, ids=itemids: __import__("PySide6.QtWidgets").QtWidgets.QApplication.clipboard().setText(ids))
+
         if menu.actions():
             menu.addSeparator()
 
@@ -3366,6 +3552,9 @@ class LiveZabbixMonitorWidget(QWidget):
     def cleanup(self):
         self.stop_monitor()
         self._cleanup_redmine_graph_lookup_view()
+        if self.detection_lookup_view is not None:
+            safe_delete_web_view(self.detection_lookup_view, logger=self.logger, context="LiveZabbixMonitorWidget detection lookup")
+            self.detection_lookup_view = None
         if self.view is not None:
             safe_delete_web_view(self.view, logger=self.logger, context="LiveZabbixMonitorWidget", load_handler=self._on_loaded)
             self._load_finished_connected = False

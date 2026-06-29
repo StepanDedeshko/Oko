@@ -205,8 +205,25 @@
     "enabled": false,
     "zabbix_id": "",
     "problems_url": "",
-    "poll_interval_seconds": 10,
+    "poll_interval_seconds": 60,
     "history_path": "data/live_zabbix_history.jsonl",
     "duty_filter_enabled": true
+  },
+  "live_zabbix_detection_items": {
+    "enabled": true,
+    "refresh_interval_sec": 60,
+    "zero_alert_after_minutes": 5,
+    "prefer_order": [
+      "v2",
+      "v1"
+    ],
+    "items": [
+      {
+        "host": "node-001",
+        "v2_itemid": "718873",
+        "v1_itemid": "335007",
+        "enabled": true
+      }
+    ]
   }
 }

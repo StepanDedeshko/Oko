@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QScrollArea,
     QSpinBox,
     QSizePolicy,
@@ -74,7 +75,7 @@ from app.credentials import load_service_group_credentials, save_service_group_c
 from app.credentials import default_encrypted_profile_export_filename, export_profile_credentials_encrypted_file, import_profile_credentials_encrypted_file
 from app.safe_widgets import NoWheelComboBox
 from app.service_checks import ensure_service_checks_defaults
-from app.live_zabbix import ensure_live_monitor_defaults
+from app.live_zabbix import ensure_live_detection_defaults, ensure_live_monitor_defaults
 
 
 def clone(value):
@@ -239,6 +240,30 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
 
         root.addLayout(form)
 
+        self.detection_settings = ensure_live_detection_defaults(self.config)
+        detection_box = QGroupBox("Сработки по узлам")
+        detection_layout = QFormLayout(detection_box)
+        self.detection_enabled_checkbox = QCheckBox("Включить столбец Сработки")
+        self.detection_enabled_checkbox.setChecked(bool(self.detection_settings.get("enabled", True)))
+        self.detection_interval_input = QSpinBox(); self.detection_interval_input.setRange(15, 3600); self.detection_interval_input.setSuffix(" сек"); self.detection_interval_input.setValue(int(self.detection_settings.get("refresh_interval_sec", 60)))
+        self.detection_zero_minutes_input = QSpinBox(); self.detection_zero_minutes_input.setRange(1, 1440); self.detection_zero_minutes_input.setSuffix(" мин"); self.detection_zero_minutes_input.setValue(int(self.detection_settings.get("zero_alert_after_minutes", 5)))
+        self.detection_prefer_combo = QComboBox(); self.detection_prefer_combo.addItem("v2, потом v1", ["v2", "v1"]); self.detection_prefer_combo.addItem("v1, потом v2", ["v1", "v2"])
+        if list(self.detection_settings.get("prefer_order", [])) == ["v1", "v2"]: self.detection_prefer_combo.setCurrentIndex(1)
+        self.detection_items_text = QPlainTextEdit(); self.detection_items_text.setPlaceholderText("host; v2 itemid; v1 itemid; enabled\nnode-001; 718873; 335007; true")
+        rows = []
+        for row in self.detection_settings.get("items", []) or []:
+            rows.append(f"{row.get('host') or row.get('host_name') or row.get('node') or ''}; {row.get('v2_itemid') or row.get('itemid_v2') or ''}; {row.get('v1_itemid') or row.get('itemid_v1') or ''}; {row.get('enabled', True)}")
+        self.detection_items_text.setPlainText("\n".join(rows))
+        detection_buttons_hint = QLabel("Кнопки будущего импорта: Добавить · Удалить · Импорт v2 · Импорт v1 · Проверить выбранный узел. Форматы импорта CSV/TSV/TXT поддерживает helper import_detection_itemids().")
+        detection_buttons_hint.setWordWrap(True)
+        detection_layout.addRow("", self.detection_enabled_checkbox)
+        detection_layout.addRow("Интервал проверки сработок:", self.detection_interval_input)
+        detection_layout.addRow("Считать проблемой 0 дольше:", self.detection_zero_minutes_input)
+        detection_layout.addRow("Сначала проверять:", self.detection_prefer_combo)
+        detection_layout.addRow("Таблица соответствий:", self.detection_items_text)
+        detection_layout.addRow("", detection_buttons_hint)
+        root.addWidget(detection_box)
+
         buttons = QHBoxLayout()
         save_button = QPushButton("Сохранить настройки Live Zabbix")
         save_button.clicked.connect(self.save_settings)
@@ -258,6 +283,17 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         self.settings["profile_id"] = profile_id
         self.settings["show_live_zabbix_diagnostics"] = self.show_diagnostics_checkbox.isChecked()
         self.settings["mm_otrs_create_url"] = self.mm_otrs_create_url_input.text().strip()
+        self.detection_settings["enabled"] = self.detection_enabled_checkbox.isChecked()
+        self.detection_settings["refresh_interval_sec"] = int(self.detection_interval_input.value())
+        self.detection_settings["zero_alert_after_minutes"] = int(self.detection_zero_minutes_input.value())
+        self.detection_settings["prefer_order"] = list(self.detection_prefer_combo.currentData() or ["v2", "v1"])
+        items = []
+        for line in self.detection_items_text.toPlainText().splitlines():
+            parts = [part.strip() for part in line.replace("\t", ";").replace(",", ";").split(";")]
+            if not parts or not parts[0]:
+                continue
+            items.append({"host": parts[0], "v2_itemid": parts[1] if len(parts) > 1 else "", "v1_itemid": parts[2] if len(parts) > 2 else "", "enabled": (len(parts) < 4 or parts[3].casefold() not in {"false", "0", "no", "нет"})})
+        self.detection_settings["items"] = items
 
         save_config(self.config)
 

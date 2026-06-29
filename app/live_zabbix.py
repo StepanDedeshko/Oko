@@ -194,6 +194,236 @@ def diff_snapshots(previous, current, processed_keys: set[str] | None = None) ->
 
 
 
+LIVE_DETECTION_CONFIG_KEY = "live_zabbix_detection_items"
+DETECTION_OK = "OK"
+DETECTION_ZERO = "ZERO"
+DETECTION_ZERO_STREAK = "ZERO_STREAK"
+DETECTION_NO_DATA = "NO_DATA"
+DETECTION_AUTH_REQUIRED = "AUTH_REQUIRED"
+DETECTION_ERROR = "ERROR"
+DETECTION_CHECKING = "CHECKING"
+
+@dataclass
+class HistoryValue:
+    timestamp: datetime
+    value: float
+    metric_name: str = ""
+
+@dataclass
+class DetectionStatus:
+    status: str = DETECTION_NO_DATA
+    text: str = "нет данных"
+    reason: str = ""
+    last_value: float | None = None
+    last_timestamp: datetime | None = None
+    zero_since: datetime | None = None
+    selected_version: str = ""
+    selected_itemid: str = ""
+    checked_at: datetime | None = None
+    metric_name: str = ""
+
+    @property
+    def blink(self) -> bool:
+        return self.status in {DETECTION_ZERO, DETECTION_ZERO_STREAK}
+
+
+def default_live_detection_config() -> dict:
+    return {"enabled": True, "refresh_interval_sec": 60, "zero_alert_after_minutes": 5, "prefer_order": ["v2", "v1"], "items": []}
+
+
+def ensure_live_detection_defaults(config: dict) -> dict:
+    settings = config.setdefault(LIVE_DETECTION_CONFIG_KEY, {})
+    defaults = default_live_detection_config()
+    for key, value in defaults.items():
+        settings.setdefault(key, value)
+    try:
+        settings["refresh_interval_sec"] = max(15, min(3600, int(settings.get("refresh_interval_sec", 60))))
+    except (TypeError, ValueError):
+        settings["refresh_interval_sec"] = 60
+    try:
+        settings["zero_alert_after_minutes"] = max(1, min(1440, int(settings.get("zero_alert_after_minutes", 5))))
+    except (TypeError, ValueError):
+        settings["zero_alert_after_minutes"] = 5
+    order = [str(v).lower() for v in settings.get("prefer_order", ["v2", "v1"]) if str(v).lower() in {"v1", "v2"}]
+    settings["prefer_order"] = order or ["v2", "v1"]
+    return settings
+
+
+def _strip_tags(value: str) -> str:
+    import re, html as _html
+    return _html.unescape(re.sub(r"<[^>]+>", " ", value or "")).replace("\xa0", " ").strip()
+
+
+def _cell_text(cell_html: str) -> str:
+    import re
+    match = re.search(r"<pre\b[^>]*>(.*?)</pre>", cell_html or "", flags=re.I | re.S)
+    return _strip_tags(match.group(1) if match else cell_html)
+
+
+def _parse_history_dt(value: str) -> datetime | None:
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%y %H:%M:%S", "%d.%m.%y %H:%M"):
+        try:
+            return datetime.strptime(str(value or "").strip(), fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def _parse_number(value: str):
+    import re
+    text = str(value or "").strip().replace(",", ".")
+    m = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    if not m:
+        return None
+    number = float(m.group(0))
+    return int(number) if number.is_integer() else number
+
+
+def zabbix_history_auth_required(html: str) -> bool:
+    return bool(zabbix_auth_required_from_html(html).get("auth_required"))
+
+
+def _history_table_parts(html: str):
+    import re
+    tables = re.findall(r"<table\b[^>]*class=[\"'][^\"']*list-table[^\"']*[\"'][^>]*>(.*?)</table>", html or "", flags=re.I | re.S)
+    if not tables:
+        tables = re.findall(r"<table\b[^>]*>(.*?)</table>", html or "", flags=re.I | re.S)
+    for table in tables:
+        rows = re.findall(r"<tr\b[^>]*>(.*?)</tr>", table, flags=re.I | re.S)
+        if not rows:
+            continue
+        header_cells = re.findall(r"<t[hd]\b[^>]*>(.*?)</t[hd]>", rows[0], flags=re.I | re.S)
+        headers = [_cell_text(c) for c in header_cells]
+        if any("отметка времени" in h.casefold() for h in headers):
+            return headers, rows[1:]
+    return [], []
+
+
+def extract_history_metric_name(html: str) -> str:
+    headers, rows = _history_table_parts(html)
+    if not headers:
+        return ""
+    time_idx = next((i for i,h in enumerate(headers) if "отметка времени" in h.casefold()), -1)
+    for i, name in enumerate(headers):
+        if i != time_idx and name.strip():
+            return name.strip()
+    return ""
+
+
+def parse_zabbix_history_values(html: str) -> list[HistoryValue]:
+    import re
+    headers, rows = _history_table_parts(html)
+    if not headers:
+        return []
+    time_idx = next((i for i,h in enumerate(headers) if "отметка времени" in h.casefold()), -1)
+    if time_idx < 0:
+        return []
+    parsed_rows = []
+    for row in rows:
+        cells = re.findall(r"<td\b[^>]*>(.*?)</td>", row, flags=re.I | re.S)
+        if len(cells) <= time_idx:
+            continue
+        ts = _parse_history_dt(_cell_text(cells[time_idx]))
+        if ts is None:
+            continue
+        best = None; metric = ""
+        for i, cell in enumerate(cells):
+            if i == time_idx:
+                continue
+            number = _parse_number(_cell_text(cell))
+            if number is not None:
+                best = number; metric = headers[i] if i < len(headers) else ""; break
+        if best is not None:
+            parsed_rows.append(HistoryValue(timestamp=ts, value=best, metric_name=metric))
+    return parsed_rows
+
+
+def latest_detection_status(values, zero_alert_after_minutes=5, now=None) -> DetectionStatus:
+    values = list(values or [])
+    if not values:
+        return DetectionStatus(status=DETECTION_NO_DATA, text="нет данных", reason="no numeric history values")
+    values.sort(key=lambda v: v.timestamp, reverse=True)
+    latest = values[0]
+    now = now or datetime.now()
+    hhmm = latest.timestamp.strftime("%H:%M")
+    status = DetectionStatus(status=DETECTION_OK, text=f"{latest.value:g} · {hhmm}", last_value=latest.value, last_timestamp=latest.timestamp, checked_at=now, metric_name=latest.metric_name)
+    if float(latest.value) > 0:
+        status.reason = "latest value is positive"
+        return status
+    last_nonzero = next((v for v in values if float(v.value) > 0), None)
+    zero_since = latest.timestamp if last_nonzero is None else max(latest.timestamp, last_nonzero.timestamp)
+    if last_nonzero is None or (now - latest.timestamp) >= timedelta(minutes=int(zero_alert_after_minutes or 5)):
+        status.status = DETECTION_ZERO_STREAK
+        status.text = f"нет сработок с {hhmm}"
+        status.reason = f"zero longer than {zero_alert_after_minutes} minutes"
+    else:
+        status.status = DETECTION_ZERO
+        status.text = f"0 · с {hhmm}"
+        status.reason = "latest value is zero"
+    status.zero_since = zero_since
+    return status
+
+
+def normalize_detection_items(config: dict) -> dict[str, dict]:
+    settings = ensure_live_detection_defaults(config or {})
+    result = {}
+    for raw in settings.get("items", []) or []:
+        if not isinstance(raw, dict) or raw.get("enabled", True) is False:
+            continue
+        host = str(raw.get("host") or raw.get("host_name") or raw.get("node") or "").strip()
+        if not host:
+            continue
+        result[host.casefold()] = {"host": host, "v2_itemid": str(raw.get("v2_itemid") or raw.get("itemid_v2") or "").strip(), "v1_itemid": str(raw.get("v1_itemid") or raw.get("itemid_v1") or "").strip(), "enabled": True}
+    return result
+
+
+def import_detection_itemids(text: str) -> dict:
+    import csv, io, re
+    found=[]; errors=[]
+    for line_no,line in enumerate(str(text or "").splitlines(),1):
+        raw=line.strip()
+        if not raw or raw.startswith('#'):
+            continue
+        ids=re.findall(r"(?:itemids(?:%5B%5D|\[\])?=|itemid[=:\s]+)(\d{3,})", raw, flags=re.I) or re.findall(r"(?<!\d)(\d{3,})(?!\d)", raw)
+        if not ids:
+            continue
+        parts=next(csv.reader([raw], delimiter='\t' if '\t' in raw else ',')) if (',' in raw or '\t' in raw) else raw.split()
+        host=next((p.strip() for p in parts if p.strip() and not re.fullmatch(r"\d+", p.strip()) and 'history.php' not in p and 'itemids' not in p.casefold()), "")
+        for itemid in ids:
+            found.append({"host": host, "itemid": itemid, "line": line_no, "needs_host": not bool(host)})
+    if not found:
+        errors.append("Не найдены itemid в поддерживаемом формате CSV/TSV/TXT.")
+    return {"items": found, "errors": errors}
+
+
+def resolve_detection_for_host(host: str, config: dict, fetch_html, *, cache=None, now=None, autologin=None) -> DetectionStatus:
+    now = now or datetime.now(); cache = cache if cache is not None else {}
+    settings = ensure_live_detection_defaults(config or {})
+    mapping = normalize_detection_items(config).get(str(host or '').strip().casefold())
+    if not mapping:
+        return DetectionStatus(status=DETECTION_NO_DATA, text="нет данных", reason="missing mapping", checked_at=now)
+    versions = list(settings.get("prefer_order") or ["v2", "v1"])
+    selected = cache.get(str(host).casefold(), {})
+    if selected.get("selected_version") in versions and selected.get("selected_itemid"):
+        versions = [selected["selected_version"]] + [v for v in versions if v != selected["selected_version"]]
+    for version in versions:
+        itemid = mapping.get(f"{version}_itemid")
+        if not itemid: continue
+        html = fetch_html(itemid, version)
+        if zabbix_history_auth_required(html):
+            if autologin and autologin():
+                html = fetch_html(itemid, version)
+            else:
+                continue
+        values = parse_zabbix_history_values(html)
+        if values:
+            st = latest_detection_status(values, settings.get("zero_alert_after_minutes",5), now=now)
+            st.selected_version=version; st.selected_itemid=itemid; st.checked_at=now
+            cache[str(host).casefold()] = {"selected_version": version, "selected_itemid": itemid}
+            return st
+    return DetectionStatus(status=DETECTION_NO_DATA, text="нет данных", reason="no_data", checked_at=now)
+
+
 
 JS_SMOKE_TEST_SCRIPT = r"""
 (function() {
