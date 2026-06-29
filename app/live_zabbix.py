@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import json
 
@@ -16,6 +16,80 @@ from app.duty_zabbix import (
 )
 
 LIVE_MONITOR_CONFIG_KEY = "live_zabbix_monitor"
+
+
+LIVE_PERIOD_ALL = "all"
+LIVE_PERIOD_TODAY = "today"
+LIVE_PERIOD_7_DAYS = "7_days"
+
+
+def zabbix_auth_required_from_html(html: str) -> dict:
+    """Detect Zabbix expired-session pages without exposing page text or secrets."""
+    text = str(html or "")
+    lowered = text.casefold()
+    required_markers = (
+        "вы не выполнили вход",
+        "для просмотра этой страницы вы должны войти в систему",
+        "возможно сессия просрочена или был изменен пароль",
+    )
+    has_message = any(marker in lowered for marker in required_markers) and "msg-bad" in lowered
+    login_url = ""
+    marker = "data-login-url="
+    marker_index = lowered.find(marker)
+    if marker_index >= 0:
+        value_start = marker_index + len(marker)
+        quote = text[value_start:value_start + 1]
+        if quote in {"'", '"'}:
+            value_end = text.find(quote, value_start + 1)
+            if value_end >= 0:
+                login_url = text[value_start + 1:value_end]
+    has_button = 'id="login"' in lowered or "id='login'" in lowered or 'name="login"' in lowered or "name='login'" in lowered
+    return {"auth_required": bool(has_message and has_button), "login_url": login_url}
+
+
+def is_unprocessed_problem(item) -> bool:
+    ack_text = str(getattr(item, "ack_text", "") or (item.get("ack_text", "") if isinstance(item, dict) else "")).strip().casefold()
+    if ack_text in {"нет", "no"}:
+        return True
+    if ack_text in {"да", "yes"}:
+        return False
+    acknowledged = getattr(item, "acknowledged", None) if not isinstance(item, dict) else item.get("acknowledged")
+    return acknowledged is False
+
+
+def _item_started_at(item):
+    raw = getattr(item, "started_at", "") if not isinstance(item, dict) else item.get("started_at", "")
+    raw = str(raw or "").strip()
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%y %H:%M:%S", "%d.%m.%y %H:%M"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            pass
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed = datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+        now = datetime.now()
+        return now.replace(hour=parsed.hour, minute=parsed.minute, second=parsed.second, microsecond=0)
+    return datetime.min
+
+
+def apply_live_zabbix_table_filters(items, *, period=LIVE_PERIOD_ALL, unprocessed_only=False, now=None):
+    """Apply combined Live Zabbix table filters and return newest problems first."""
+    now = now or datetime.now()
+    period = period or LIVE_PERIOD_ALL
+    result = []
+    for item in list(items or []):
+        started = _item_started_at(item)
+        if period == LIVE_PERIOD_TODAY and started < now.replace(hour=0, minute=0, second=0, microsecond=0):
+            continue
+        if period == LIVE_PERIOD_7_DAYS and started < now - timedelta(days=7):
+            continue
+        if unprocessed_only and not is_unprocessed_problem(item):
+            continue
+        result.append(item)
+    return sorted(result, key=_item_started_at, reverse=True)
 
 
 def default_live_monitor_config() -> dict:
@@ -267,6 +341,12 @@ DOM_PARSER_SCRIPT_PLACEHOLDER = r"""
   var tables = Array.from(document.querySelectorAll('table')).filter(function(table) { return !table.closest('.overlay-dialogue, .modal, .modal-popup, #acknowledge_form, .table-forms, td'); });
   var rows = Array.from(document.getElementsByTagName('tr'));
   var loginDetected = !!document.querySelector('input[type=password], input[name*=password i], form[action*=login i]') || /login|sign[ -]?in|вход/i.test(document.title || '');
+  var loginButton = document.querySelector('button#login[name=login], button#login, button[name=login]');
+  var zabbixAuthRequired = !!(loginButton && loginButton.getAttribute('data-login-url') && document.querySelector('output.msg-bad.msg-global') && /Вы не выполнили вход|Для просмотра этой страницы вы должны войти в систему|Возможно сессия просрочена или был изменен пароль/i.test(text(document.body)));
+  if (zabbixAuthRequired) {
+    var authDebug = {title: String(document.title || '').slice(0, 160), url_path: safeUrl(document.location.href), login_detected: true, auth_required: true, data_login_url: loginButton.getAttribute('data-login-url') || '', table_count: tables.length, tr_count: rows.length, header_map: {}, candidate_count: 0, problem_count: 0, zero_reason: 'auth_required', sample_rows: []};
+    return JSON.stringify({ok: false, auth_required: true, data_login_url: loginButton.getAttribute('data-login-url') || '', login_detected: true, items: [], separators: [], safe_debug: authDebug, zero_reason: 'auth_required'});
+  }
   var items = [];
   var separators = [];
   var candidates = [];
