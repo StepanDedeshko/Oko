@@ -149,6 +149,10 @@ class MainWindow(QMainWindow):
             self.session_status_label.setText(f"{name}: ошибка сети")
 
 
+    def start_session_warmup_now(self):
+        if self.session_warmup_manager is not None:
+            self.session_warmup_manager.start(mode=MODE_SILENT)
+
     def open_manual_session_auth(self, system):
         if self.session_warmup_manager is not None:
             self.session_warmup_manager.open_manual_auth(system)
@@ -374,7 +378,12 @@ class MainWindow(QMainWindow):
         self.page_has_time_buttons[self.auth_page_index] = False
 
     def create_settings_page(self):
-        settings_widget = AppSettingsWidget(config=self.config, logout_callback=self.logout_user)
+        settings_widget = AppSettingsWidget(
+            config=self.config,
+            logout_callback=self.logout_user,
+            session_check_callback=self.start_session_warmup_now,
+            session_auth_callback=self.open_manual_session_auth,
+        )
 
         self.settings_page_index = self.stack.addWidget(settings_widget)
         self.page_has_time_buttons[self.settings_page_index] = False

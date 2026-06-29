@@ -217,7 +217,7 @@ class DutyTriggerEditDialog(QDialog):
 
 
 class DutyModeSettingsWidget(QWidget):
-    def __init__(self, config, on_saved_callback=None, show_title=True):
+    def __init__(self, config, on_saved_callback=None, show_title=True, session_check_callback=None, session_auth_callback=None):
         super().__init__()
 
         self.logger = get_logger()
@@ -225,6 +225,8 @@ class DutyModeSettingsWidget(QWidget):
 
         self.config = config
         self.on_saved_callback = on_saved_callback
+        self.session_check_callback = session_check_callback
+        self.session_auth_callback = session_auth_callback
         self.trigger_items = deepcopy(self.duty_triggers_settings().get("items", []))
         self.zabbix_trigger_catalog_entries = load_zabbix_trigger_catalog(config=self.config, logger=self.logger)
         self.section_indexes = {}
@@ -398,6 +400,9 @@ class DutyModeSettingsWidget(QWidget):
         self.session_warmup_zabbix_login_button.setToolTip("Откройте ручное окно входа из верхней панели главного окна.")
         self.session_warmup_otrs_login_button = QPushButton("Войти в OTRS")
         self.session_warmup_otrs_login_button.setToolTip("Откройте ручное окно входа из верхней панели главного окна.")
+        self.session_warmup_check_button.clicked.connect(self.run_session_warmup_check)
+        self.session_warmup_zabbix_login_button.clicked.connect(lambda: self.open_session_auth("zabbix"))
+        self.session_warmup_otrs_login_button.clicked.connect(lambda: self.open_session_auth("otrs"))
         self.session_warmup_results_label = QLabel(self._session_warmup_results_text())
         self.session_warmup_results_label.setWordWrap(True)
         warmup_form.addRow(self.session_warmup_on_startup_checkbox)
@@ -410,6 +415,19 @@ class DutyModeSettingsWidget(QWidget):
         warmup_form.addRow(self.session_warmup_otrs_login_button)
         warmup_form.addRow("Последний результат:", self.session_warmup_results_label)
         root.addWidget(warmup_box)
+
+    def run_session_warmup_check(self):
+        if self.session_check_callback:
+            self.session_check_callback()
+            QMessageBox.information(self, "Прогрев сессий", "Тихая проверка сессий запущена.")
+        else:
+            QMessageBox.information(self, "Прогрев сессий", "Сохраните настройки и используйте статус/кнопки входа в верхней панели главного окна.")
+
+    def open_session_auth(self, system):
+        if self.session_auth_callback:
+            self.session_auth_callback(system)
+        else:
+            QMessageBox.information(self, "Прогрев сессий", "Ручной вход доступен из верхней панели главного окна.")
 
     def _session_warmup_results_text(self):
         warmup = ensure_session_warmup_defaults(self.config)

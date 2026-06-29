@@ -1062,6 +1062,8 @@ class ProfileWidget(QWidget):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         self.logout_callback = logout_callback
+        self.session_check_callback = session_check_callback
+        self.session_auth_callback = session_auth_callback
         self.saved_credentials = load_saved_credentials()
         self.saved_zabbix_credentials = self.saved_credentials
         self.zabbix_inputs = {}
@@ -2247,10 +2249,12 @@ class AdministrationWidget(QWidget):
         QMessageBox.information(self, "Администрирование", "Пароль обновлён.")
 
 class AppSettingsWidget(QWidget):
-    def __init__(self, config, logout_callback=None, parent=None):
+    def __init__(self, config, logout_callback=None, session_check_callback=None, session_auth_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         self.logout_callback = logout_callback
+        self.session_check_callback = session_check_callback
+        self.session_auth_callback = session_auth_callback
         self.section_indexes = {}
 
         root = QVBoxLayout(self)
@@ -2266,7 +2270,7 @@ class AppSettingsWidget(QWidget):
             ("Профиль", lambda: ProfileWidget(self.config, logout_callback=self.logout_callback)),
             ("Администрирование", lambda: AdministrationWidget(self.config)),
             ("Продукты и страницы", lambda: ProductsWidget(self.config)),
-            ("Настройки дежурки", lambda: DutyModeSettingsWidget(self.config, show_title=False)),
+            ("Настройки дежурки", lambda: DutyModeSettingsWidget(self.config, show_title=False, session_check_callback=self.session_check_callback, session_auth_callback=self.session_auth_callback)),
             ("Проверка сервисов", lambda: ServiceChecksSettingsWidget(self.config)),
             ("Шаблоны", lambda: TemplatesWidget(self.config)),
             ("Что нового", lambda: ChangelogWidget()),
