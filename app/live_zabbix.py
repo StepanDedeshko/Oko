@@ -53,6 +53,29 @@ def normalize_ip(value: str) -> str:
     match = re.search(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)", text)
     return match.group(0) if match else text
 
+def short_host_after_dash(host: str) -> str:
+    full = normalize_host_name(host)
+    if not full:
+        return ""
+    for separator in ("-", "–", "—"):
+        if separator not in full:
+            continue
+        short = full.rsplit(separator, 1)[-1].strip()
+        if short:
+            return normalize_host_name(short)
+    return full
+
+def host_match_aliases(host: str) -> list[str]:
+    aliases = []
+    for candidate in (normalize_host_name(host), short_host_after_dash(host)):
+        if candidate and candidate not in aliases:
+            aliases.append(candidate)
+    return aliases
+
+def hosts_match(zabbix_host: str, csv_host: str) -> bool:
+    csv_key = normalize_host_name(csv_host)
+    return bool(csv_key and csv_key in set(host_match_aliases(zabbix_host)))
+
 def _node_indexes(nodes):
     hosts, ips = set(), set()
     for node in nodes or []:
@@ -66,19 +89,40 @@ def _node_indexes(nodes):
             ips.add(ip)
     return hosts, ips
 
-def detect_node_version(host: str, ip: str, config: dict) -> str:
+def resolve_node_version_details(host: str, ip: str, config: dict) -> dict:
     cfg = (config or {}).get("live_zabbix_node_version_lists", config or {})
-    host_key = normalize_host_name(host)
+    aliases = host_match_aliases(host)
     ip_key = normalize_ip(ip)
     v1_hosts, v1_ips = _node_indexes(cfg.get("v1_nodes", []))
     v2_hosts, v2_ips = _node_indexes(cfg.get("v2_nodes", []))
-    in_v1 = (host_key and host_key in v1_hosts) or (ip_key and ip_key in v1_ips)
-    in_v2 = (host_key and host_key in v2_hosts) or (ip_key and ip_key in v2_ips)
-    if in_v2:
-        return "v2"
-    if in_v1:
-        return "v1"
-    return "unknown"
+    v1_host_alias = next((alias for alias in aliases if alias in v1_hosts), "")
+    v2_host_alias = next((alias for alias in aliases if alias in v2_hosts), "")
+    v1_ip_match = bool(ip_key and ip_key in v1_ips)
+    v2_ip_match = bool(ip_key and ip_key in v2_ips)
+    in_v1 = bool(v1_host_alias or v1_ip_match)
+    in_v2 = bool(v2_host_alias or v2_ip_match)
+    version = "v2" if in_v2 else ("v1" if in_v1 else "unknown")
+    matched_alias = v2_host_alias or v1_host_alias or ""
+    match_kind = "host" if matched_alias else ("ip" if (v2_ip_match or v1_ip_match) else "")
+    source = "csv_" + version if version in {"v1", "v2"} else ""
+    reason = ""
+    if in_v1 and in_v2:
+        reason = "node_version_conflict: найден в v1 и v2, выбран v2"
+    elif version == "unknown":
+        reason = "CSV v1/v2: совпадений нет"
+    return {
+        "version": version,
+        "source": source,
+        "matched_alias": matched_alias,
+        "match_kind": match_kind,
+        "aliases": aliases,
+        "ip": ip_key,
+        "conflict": bool(in_v1 and in_v2),
+        "reason": reason,
+    }
+
+def detect_node_version(host: str, ip: str, config: dict) -> str:
+    return resolve_node_version_details(host, ip, config).get("version", "unknown")
 
 def parse_detection_node_csv_bytes(data: bytes, version: str) -> list[dict]:
     raw = bytes(data or b"")

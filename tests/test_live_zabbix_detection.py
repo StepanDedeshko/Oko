@@ -6,6 +6,8 @@ from app.live_zabbix import (
     detection_cache_put,
     detect_node_version,
     extract_zabbix_detection_item_from_html,
+    host_match_aliases,
+    hosts_match,
     normalize_host_name,
     parse_detection_node_csv_bytes,
 )
@@ -38,6 +40,30 @@ class LiveZabbixDetectionCsvTests(unittest.TestCase):
         self.assertEqual(detect_node_version("host2", "", cfg), "v2")
         self.assertEqual(detect_node_version("both", "", cfg), "v2")
         self.assertEqual(detect_node_version("missing", "", cfg), "unknown")
+
+    def test_zabbix_extended_host_matches_csv_short_host_aliases(self):
+        cases = [
+            ("Описание - node01", "node01"),
+            ("Описание – node01", "node01"),
+            ("Описание — node01", "node01"),
+            ("prefix - group - node01", "node01"),
+            ("node01", "node01"),
+            ("Описание - NODE01", "node01"),
+            ("Описание -  node01  ", "node01"),
+        ]
+        for zabbix_host, csv_host in cases:
+            with self.subTest(zabbix_host=zabbix_host):
+                self.assertTrue(hosts_match(zabbix_host, csv_host))
+                self.assertIn("node01", host_match_aliases(zabbix_host))
+
+    def test_detect_versions_with_short_alias_conflict_ip_and_unknown(self):
+        cfg = {"live_zabbix_node_version_lists": {
+            "v1_nodes": parse_detection_node_csv_bytes(b"10.0.0.1;node01\n10.0.0.9;ip-only\n", "v1"),
+            "v2_nodes": parse_detection_node_csv_bytes(b"10.0.0.2;node01\n", "v2"),
+        }}
+        self.assertEqual(detect_node_version("prefix - group - node01", "", cfg), "v2")
+        self.assertEqual(detect_node_version("different-host", "10.0.0.9", cfg), "v1")
+        self.assertEqual(detect_node_version("Описание - missing", "10.0.0.99", cfg), "unknown")
 
 
 class LiveZabbixDetectionDiscoveryTests(unittest.TestCase):

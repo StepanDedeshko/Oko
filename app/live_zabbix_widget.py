@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter, detect_node_version, normalize_host_name, detection_cache_get
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter, detect_node_version, normalize_host_name, detection_cache_get, resolve_node_version_details
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
@@ -1048,8 +1048,9 @@ class LiveZabbixMonitorWidget(QWidget):
         ip = str(getattr(item, "host_ip", "") or "").strip()
         node_cfg = self.settings.get("live_zabbix_node_version_lists", {})
         discovery_cfg = self.settings.get("live_zabbix_detection_item_discovery", {})
-        version = detect_node_version(host, ip, {"live_zabbix_node_version_lists": node_cfg}) if node_cfg.get("enabled", True) else "unknown"
-        source = "csv_" + version if version in {"v1", "v2"} else "fallback"
+        details = resolve_node_version_details(host, ip, {"live_zabbix_node_version_lists": node_cfg}) if node_cfg.get("enabled", True) else {"version": "unknown", "source": "", "aliases": [], "matched_alias": "", "reason": "discovery disabled"}
+        version = details.get("version", "unknown")
+        source = details.get("source") or ("csv_" + version if version in {"v1", "v2"} else "fallback")
         cache = self.settings.setdefault("live_zabbix_detection_cache", {})
         entry = detection_cache_get(cache, host, int(discovery_cfg.get("discovery_ttl_sec", 86400) or 86400), int(discovery_cfg.get("negative_ttl_sec", 300) or 300))
         if version == "unknown" and not entry:
@@ -1067,6 +1068,9 @@ class LiveZabbixMonitorWidget(QWidget):
         aliases = discovery_cfg.get(f"{version}_item_aliases", []) if version in {"v1", "v2"} else []
         tooltip = "\n".join([
             f"Узел: {host or '-'}",
+            f"Полное имя Zabbix: {host or '-'}",
+            f"Short host для CSV: {details.get('matched_alias') or '-'}",
+            f"Проверяли alias: {', '.join(details.get('aliases') or []) or '-'}",
             f"IP: {ip or '-'}",
             f"Версия по CSV: {version}",
             f"Источник: {source}",
@@ -1075,10 +1079,10 @@ class LiveZabbixMonitorWidget(QWidget):
             f"Последнее значение: {(entry or {}).get('last_value', '-')}",
             f"Последнее время: {(entry or {}).get('last_timestamp', '-')}",
             f"Статус: {text}",
-            f"Причина: {reason}",
+            f"Причина: {details.get('reason') or reason}",
             ("Искали aliases: " + ", ".join(map(str, aliases)) if text == "itemid не найден" else ""),
         ]).strip()
-        return {"text": text, "tooltip": tooltip, "host": host, "ip": ip, "version": version, "source": source, "itemid": (entry or {}).get("itemid", "")}
+        return {"text": text, "tooltip": tooltip, "host": host, "ip": ip, "version": version, "source": source, "matched_alias": details.get("matched_alias", ""), "itemid": (entry or {}).get("itemid", "")}
 
     @staticmethod
     def _severity_color(level, severity_class="", severity_text=""):
