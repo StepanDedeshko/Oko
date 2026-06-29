@@ -1,4 +1,4 @@
-from app.app_users import ROLE_ADMIN, ROLE_OWNER, ROLE_USER, create_user, load_users, set_user_password, update_user
+from app.app_users import ROLE_ADMIN, ROLE_OWNER, ROLE_USER, ROLE_CUSTOM, create_user, load_users, set_user_password, update_user
 
 import hashlib
 import hmac
@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QApplication,
+    QListWidget,
+    QListWidgetItem,
 )
 
 from app.config import (
@@ -79,6 +81,11 @@ def clone(value):
     return json.loads(json.dumps(value, ensure_ascii=False))
 
 
+from app.permissions import (
+    ALL_SECTION_PERMISSIONS, SECTION_NAMES, can_open_section, visible_sections_for_user,
+    normalize_user_permissions, build_user_settings_export, ensure_duty_links,
+)
+
 def ensure_home_defaults(config):
     config.setdefault("products", [])
     settings = config.setdefault("settings", {})
@@ -92,6 +99,9 @@ def ensure_home_defaults(config):
     duty.setdefault("duty_service_checks_expected_task_title", "Дежурная проверка сервисов")
     duty.setdefault("expected_ticket_subject", duty.get("duty_zabbix_expected_task_title", "Дежурная проверка Zabbix / графиков"))
     ensure_service_checks_defaults(config)
+    ensure_duty_links(config)
+    if config.get("_current_user"):
+        config["_current_user"] = normalize_user_permissions(config.get("_current_user"))
     return config
 
 
@@ -1962,10 +1972,28 @@ class AdministrationWidget(QWidget):
         edit_form.addRow("Статус:", self.edit_active_input)
         users_layout.addLayout(edit_form)
 
+        self.permissions_list = QListWidget()
+        for permission, title in SECTION_NAMES.items():
+            item = QListWidgetItem(title)
+            item.setData(Qt.UserRole, permission)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.permissions_list.addItem(item)
+        users_layout.addWidget(QLabel("Доступные разделы:"))
+        users_layout.addWidget(self.permissions_list)
+
+        self.service_groups_list = QListWidget()
+        self.service_groups_list.setToolTip("Группы доступов берутся из технических настроек проверки сервисов.")
+        users_layout.addWidget(QLabel("Доступные группы сервисов:"))
+        users_layout.addWidget(self.service_groups_list)
+
         user_actions = QHBoxLayout()
         update_button = QPushButton("Сохранить изменения пользователя")
         update_button.clicked.connect(self.update_selected_user)
+        export_button = QPushButton("Экспортировать конфиг пользователя")
+        export_button.clicked.connect(self.export_selected_user_config)
         user_actions.addWidget(update_button)
+        user_actions.addWidget(export_button)
         user_actions.addStretch()
         users_layout.addLayout(user_actions)
 
@@ -2019,7 +2047,8 @@ class AdministrationWidget(QWidget):
 
     def _fill_role_combo(self, combo):
         combo.clear()
-        combo.addItem("Пользователь", ROLE_USER)
+        combo.addItem("Агент", ROLE_USER)
+        combo.addItem("Custom", ROLE_CUSTOM)
         combo.addItem("Администратор", ROLE_ADMIN)
         combo.addItem("Владелец", ROLE_OWNER)
 
@@ -2072,11 +2101,68 @@ class AdministrationWidget(QWidget):
             self.edit_display_name_input.clear()
             self._set_combo_data(self.edit_role_input, ROLE_USER)
             self.edit_active_input.setChecked(False)
+            self._set_checked_values(self.permissions_list, [])
+            self._reload_service_groups([])
             return
 
+        normalized = normalize_user_permissions(user)
         self.edit_display_name_input.setText(str(user.get("display_name", "") or user.get("login", "")))
         self._set_combo_data(self.edit_role_input, str(user.get("role", ROLE_USER)))
         self.edit_active_input.setChecked(bool(user.get("active", True)))
+        self._set_checked_values(self.permissions_list, normalized.get("section_permissions", []))
+        self._reload_service_groups(normalized.get("service_group_ids", []))
+
+
+    def _checked_values(self, widget):
+        values = []
+        for index in range(widget.count()):
+            item = widget.item(index)
+            if item.checkState() == Qt.Checked:
+                values.append(item.data(Qt.UserRole))
+        return values
+
+    def _set_checked_values(self, widget, values):
+        allowed = set(values or [])
+        for index in range(widget.count()):
+            item = widget.item(index)
+            item.setCheckState(Qt.Checked if item.data(Qt.UserRole) in allowed else Qt.Unchecked)
+
+    def _reload_service_groups(self, selected):
+        selected = set(selected or [])
+        self.service_groups_list.clear()
+        groups = (self.config.get("service_checks", {}) or {}).get("credential_groups", []) or []
+        for group in groups:
+            group_id = str(group.get("id", "") or "")
+            if not group_id:
+                continue
+            item = QListWidgetItem(str(group.get("name", "") or group_id))
+            item.setData(Qt.UserRole, group_id)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if group_id in selected else Qt.Unchecked)
+            self.service_groups_list.addItem(item)
+
+    def export_selected_user_config(self):
+        user = self._find_user(self._selected_login())
+        if not user:
+            QMessageBox.warning(self, "Администрирование", "Выберите пользователя.")
+            return
+        default_path = CONFIG_PATH.parent / f"oko_user_{user.get('login', 'agent')}_settings.json"
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт конфигурации пользователя",
+            str(default_path),
+            "JSON (*.json);;Все файлы (*)",
+        )
+        if not selected_path:
+            return
+        try:
+            payload = build_user_settings_export(self.config, user)
+            with open(selected_path, "w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            QMessageBox.warning(self, "Администрирование", f"Не удалось экспортировать конфиг пользователя:\n{exc}")
+            return
+        QMessageBox.information(self, "Администрирование", f"Конфиг пользователя экспортирован:\n{selected_path}")
 
     def create_new_user(self):
         login = self.new_login_input.text().strip()
@@ -2114,6 +2200,8 @@ class AdministrationWidget(QWidget):
                 role=self.edit_role_input.currentData() or ROLE_USER,
                 active=self.edit_active_input.isChecked(),
                 display_name=self.edit_display_name_input.text().strip(),
+                section_permissions=self._checked_values(self.permissions_list),
+                service_group_ids=self._checked_values(self.service_groups_list),
             )
         except Exception as exc:
             QMessageBox.warning(self, "Администрирование", str(exc))
@@ -2165,20 +2253,23 @@ class AppSettingsWidget(QWidget):
         self.stack = QStackedWidget()
         root.addWidget(self.stack, stretch=1)
 
-        self.add_section("Профиль", ProfileWidget(self.config, logout_callback=self.logout_callback))
-        if is_admin_user(self.config.get("_current_user")):
-            self.add_section("Администрирование", AdministrationWidget(self.config))
-        self.add_section("Продукты и страницы", ProductsWidget(self.config))
-        self.add_section("Настройки дежурки", DutyModeSettingsWidget(self.config, show_title=False))
-        self.add_section("Проверка сервисов", ServiceChecksSettingsWidget(self.config))
-        self.add_section("Перенос настроек", SettingsTransferWidget(self.config))
-        self.add_section("Шаблоны", TemplatesWidget(self.config))
-        self.add_section("Что нового", ChangelogWidget())
-        self.add_section("Тема", ThemeWidget(self.config))
-        self.add_section("Заметки", NotesWidget(self.config))
         self.update_widget = UpdateWidget(self.config, request_application_restart, show_title=False)
-        self.add_section("Обновление", self.update_widget)
-        self.add_section("Режим разработчика", DeveloperModeGateWidget(self.config, DeveloperToolsWidget(self.config)))
+        candidates = [
+            ("Профиль", lambda: ProfileWidget(self.config, logout_callback=self.logout_callback)),
+            ("Администрирование", lambda: AdministrationWidget(self.config)),
+            ("Продукты и страницы", lambda: ProductsWidget(self.config)),
+            ("Настройки дежурки", lambda: DutyModeSettingsWidget(self.config, show_title=False)),
+            ("Проверка сервисов", lambda: ServiceChecksSettingsWidget(self.config)),
+            ("Шаблоны", lambda: TemplatesWidget(self.config)),
+            ("Что нового", lambda: ChangelogWidget()),
+            ("Тема", lambda: ThemeWidget(self.config)),
+            ("Заметки", lambda: NotesWidget(self.config)),
+            ("Обновление", lambda: self.update_widget),
+            ("Режим разработчика", lambda: DeveloperModeGateWidget(self.config, DeveloperToolsWidget(self.config))),
+        ]
+        for name, factory in candidates:
+            if can_open_section(self.config.get("_current_user"), name):
+                self.add_section(name, factory())
 
         self.open_section("Продукты и страницы")
 
@@ -2199,9 +2290,11 @@ class AppSettingsWidget(QWidget):
         if section_name == "Профиль":
             self.rebuild_profile_section()
         index = self.section_indexes.get(section_name)
-        if index is None:
-            index = self.section_indexes.get("Продукты и страницы", 0)
-            section_name = "Продукты и страницы"
+        if index is None or not can_open_section(self.config.get("_current_user"), section_name):
+            QMessageBox.warning(self, "Нет доступа", "У текущего пользователя нет доступа к этому разделу.")
+            fallback = next(iter(self.section_indexes), "Профиль")
+            index = self.section_indexes.get(fallback, 0)
+            section_name = fallback
         self.stack.setCurrentIndex(index)
         self.title.setText(section_name)
 
@@ -2276,11 +2369,12 @@ class HomePageWidget(QWidget):
         self.fade_in()
 
     def visible_settings_sections(self):
-        if is_admin_user(self.config.get("_current_user")):
-            return list(self.SETTINGS_SECTIONS)
-        return [section for section in self.SETTINGS_SECTIONS if section != "Администрирование"]
+        return visible_sections_for_user(self.config.get("_current_user"), list(self.SETTINGS_SECTIONS))
 
     def open_settings_section(self, section_name):
+        if not can_open_section(self.config.get("_current_user"), section_name):
+            QMessageBox.warning(self, "Нет доступа", "У текущего пользователя нет доступа к этому разделу.")
+            return
         if self.open_settings_callback:
             self.open_settings_callback(section_name)
 

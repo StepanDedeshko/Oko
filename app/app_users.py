@@ -28,9 +28,11 @@ REMEMBER_FILE = USERS_DIR / "remember.local.json"
 
 ROLE_OWNER = "owner"
 ROLE_ADMIN = "admin"
-ROLE_USER = "user"
+ROLE_USER = "agent"
+ROLE_AGENT = "agent"
+ROLE_CUSTOM = "custom"
 ADMIN_ROLES = {ROLE_OWNER, ROLE_ADMIN}
-ALLOWED_ROLES = {ROLE_OWNER, ROLE_ADMIN, ROLE_USER}
+ALLOWED_ROLES = {ROLE_OWNER, ROLE_ADMIN, ROLE_USER, ROLE_AGENT, ROLE_CUSTOM}
 
 PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_HASH_ITERATIONS = 240_000
@@ -200,6 +202,8 @@ def create_user(
 
     salt = _new_salt()
     now = _utc_now()
+    from app.permissions import default_permissions_for_role
+
     user = {
         "id": str(uuid.uuid4()),
         "login": normalized_login,
@@ -207,6 +211,8 @@ def create_user(
         "display_name": str(display_name or normalized_login).strip() or normalized_login,
         "role": selected_role,
         "active": bool(active),
+        "section_permissions": default_permissions_for_role(selected_role),
+        "service_group_ids": [],
         "password_algorithm": PASSWORD_HASH_ALGORITHM,
         "password_iterations": PASSWORD_HASH_ITERATIONS,
         "password_salt": salt,
@@ -256,6 +262,8 @@ def update_user(
     role: str | None = None,
     active: bool | None = None,
     display_name: str | None = None,
+    section_permissions: list[str] | None = None,
+    service_group_ids: list[str] | None = None,
     path: str | Path | None = None,
 ) -> dict:
     data = load_users(path)
@@ -277,6 +285,14 @@ def update_user(
         user["active"] = bool(active)
     if display_name is not None:
         user["display_name"] = str(display_name or "").strip() or user.get("login", "")
+    if section_permissions is not None:
+        from app.permissions import ALL_SECTION_PERMISSIONS, default_permissions_for_role
+        if str(user.get("role", "")) in ADMIN_ROLES:
+            user["section_permissions"] = default_permissions_for_role(user.get("role"))
+        else:
+            user["section_permissions"] = sorted({p for p in section_permissions if p in ALL_SECTION_PERMISSIONS})
+    if service_group_ids is not None:
+        user["service_group_ids"] = sorted({str(g) for g in service_group_ids if str(g)})
 
     user["updated_at"] = _utc_now()
     save_users(data, path)
