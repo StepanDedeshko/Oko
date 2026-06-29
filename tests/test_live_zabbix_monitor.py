@@ -381,3 +381,55 @@ class LiveZabbixMonitorDutyFilterTests(unittest.TestCase):
             self.assertIn(marker, live_source)
         self.assertIn("row_index", trigger_source)
         self.assertIn('"duty_filter_enabled": true', config_example)
+
+class LiveZabbixMonitorSilentAuthAndFilterTests(unittest.TestCase):
+    def test_user_ui_does_not_contain_manual_login_or_manual_monitor_buttons(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        zabbix_login = "Войти в " + "Zabbix"
+        otrs_login = "Войти в " + "OTRS"
+        start_label = "С" + "тарт"
+        stop_label = "С" + "топ"
+        self.assertNotIn(zabbix_login, source)
+        self.assertNotIn(otrs_login, source)
+        self.assertNotIn(f'QPushButton("{start_label}")', source)
+        self.assertNotIn(f'QPushButton("{stop_label}")', source)
+
+    def test_auto_start_is_idempotent_and_internal_cleanup_exists(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("def showEvent", source)
+        self.assertIn("self.start_monitor()", source)
+        self.assertIn("if self._monitor_started and self.timer.isActive()", source)
+        self.assertIn("def hideEvent", source)
+        self.assertIn("self.timer.stop()", source)
+
+    def test_zabbix_auth_required_page_uses_data_login_url(self):
+        from app.live_zabbix import zabbix_auth_required_from_html
+        html = '''<output class="msg-bad msg-global">Вы не выполнили вход. Для просмотра этой страницы вы должны войти в систему. Возможно сессия просрочена или был изменен пароль.</output><button id="login" name="login" data-login-url="index.php?request=zabbix.php%3Faction%3Dproblem.view">Вход в систему</button>'''
+        result = zabbix_auth_required_from_html(html)
+        self.assertTrue(result["auth_required"])
+        self.assertEqual(result["login_url"], "index.php?request=zabbix.php%3Faction%3Dproblem.view")
+
+    def test_silent_autologin_markers_and_missing_credentials_status_are_present(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        live_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix.py").read_text(encoding="utf-8")
+        self.assertIn("_silent_zabbix_autologin(payload)", source)
+        self.assertIn("_zabbix_saved_credentials", source)
+        self.assertIn("data_login_url", source)
+        self.assertIn("missing_credentials", source)
+        self.assertIn("auth_required", live_source)
+        self.assertNotIn("password_json +", source)
+
+    def test_live_filters_today_7_days_unprocessed_combined_and_sorted(self):
+        from datetime import datetime
+        from app.live_zabbix import LIVE_PERIOD_7_DAYS, LIVE_PERIOD_TODAY, apply_live_zabbix_table_filters
+        now = datetime(2026, 6, 29, 12, 0, 0)
+        items = [
+            enrich_problem({}, {"event_id": "old", "started_at": "20.06.2026 12:00", "ack_text": "Нет"}),
+            enrich_problem({}, {"event_id": "today_yes", "started_at": "29.06.2026 08:00", "ack_text": "Да"}),
+            enrich_problem({}, {"event_id": "today_no_new", "started_at": "29.06.2026 11:00", "ack_text": "No"}),
+            enrich_problem({}, {"event_id": "week_no", "started_at": "25.06.2026 10:00", "ack_text": "нет"}),
+        ]
+        self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_TODAY, now=now)], ["today_no_new", "today_yes"])
+        self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_7_DAYS, now=now)], ["today_no_new", "today_yes", "week_no"])
+        self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, unprocessed_only=True, now=now)], ["today_no_new", "week_no", "old"])
+        self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_TODAY, unprocessed_only=True, now=now)], ["today_no_new"])

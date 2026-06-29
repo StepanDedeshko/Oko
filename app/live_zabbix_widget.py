@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, SnapshotDiff, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
@@ -119,6 +119,8 @@ class LiveZabbixMonitorWidget(QWidget):
         self._redmine_ip_lookup_total = 0
         self.last_separator_rows = []
         self._parse_attempts = []
+        self._monitor_started = False
+        self._zabbix_auth_retrying = False
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_now)
         self._build_ui()
@@ -158,8 +160,6 @@ class LiveZabbixMonitorWidget(QWidget):
         )
 
         controls = QHBoxLayout()
-        self.start_button = QPushButton("Старт")
-        self.stop_button = QPushButton("Стоп")
         self.check_dom_button = QPushButton("Проверить DOM")
         self.save_button = QPushButton("Сохранить")
         self.open_url_button = QPushButton("Открыть Zabbix")
@@ -167,23 +167,32 @@ class LiveZabbixMonitorWidget(QWidget):
         self.open_redmine_button = QPushButton("Открыть Redmine")
         self.poll_status_label = QLabel("Остановлен")
         self.updated_label = QLabel("Последнее обновление: —")
+        self.period_filter_combo = QComboBox()
+        self.period_filter_combo.addItem("Все", LIVE_PERIOD_ALL)
+        self.period_filter_combo.addItem("Сегодня", LIVE_PERIOD_TODAY)
+        self.period_filter_combo.addItem("7 дней", LIVE_PERIOD_7_DAYS)
+        saved_period = str(self.settings.get("period_filter", LIVE_PERIOD_ALL) or LIVE_PERIOD_ALL)
+        period_index = self.period_filter_combo.findData(saved_period)
+        self.period_filter_combo.setCurrentIndex(period_index if period_index >= 0 else 0)
+        self.period_filter_combo.currentIndexChanged.connect(self._on_table_filters_changed)
+        self.unprocessed_filter_checkbox = QCheckBox("Не обработано")
+        self.unprocessed_filter_checkbox.setChecked(bool(self.settings.get("unprocessed_filter_enabled", False)))
+        self.unprocessed_filter_checkbox.toggled.connect(self._on_table_filters_changed)
         self.duty_filter_checkbox = QCheckBox("Только интересующие")
         self.duty_filter_checkbox.setChecked(bool(self.settings.get("duty_filter_enabled", True)))
         self.duty_filter_checkbox.toggled.connect(self._on_duty_filter_toggled)
         self.counts_label = QLabel("Новые: 0 | Активные: 0 | Решённые: 0 | Обработанные: 0 | Всего: 0 | Показано: 0 | Скрыто фильтром: 0")
-        self.start_button.clicked.connect(self.start_monitor)
-        self.stop_button.clicked.connect(self.stop_monitor)
         self.check_dom_button.clicked.connect(self.check_dom_now)
         self.save_button.clicked.connect(self.save_monitor_settings)
         self.open_url_button.clicked.connect(self.open_configured_url)
         self.show_webview_button.clicked.connect(self.show_webview)
         self.open_redmine_button.clicked.connect(self.open_redmine_for_selected_row)
         normal_controls = [
-            self.start_button,
-            self.stop_button,
             self.open_url_button,
             self.open_redmine_button,
             self.duty_filter_checkbox,
+            self.period_filter_combo,
+            self.unprocessed_filter_checkbox,
             self.poll_status_label,
             self.updated_label,
         ]
@@ -259,6 +268,14 @@ class LiveZabbixMonitorWidget(QWidget):
         self.table.customContextMenuRequested.connect(self._show_table_context_menu)
         self._configure_table_columns()
         root.addWidget(self.table, stretch=1)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.start_monitor()
+
+    def hideEvent(self, event):
+        self.timer.stop()
+        super().hideEvent(event)
 
     def _configure_table_columns(self):
         header = self.table.horizontalHeader()
@@ -363,6 +380,8 @@ class LiveZabbixMonitorWidget(QWidget):
         self.settings["poll_interval_seconds"] = int(self.interval_input.value())
         self.settings["zabbix_id"] = str(self.zabbix_profile_combo.currentData() or "")
         self.settings["duty_filter_enabled"] = bool(self.duty_filter_checkbox.isChecked())
+        self.settings["period_filter"] = str(self.period_filter_combo.currentData() or LIVE_PERIOD_ALL)
+        self.settings["unprocessed_filter_enabled"] = bool(self.unprocessed_filter_checkbox.isChecked())
         save_config(self.config)
         self._recreate_web_view_if_needed()
         self._update_diagnostics({"safe_debug": {}, "items": []}, status_text="Настройки сохранены")
@@ -370,15 +389,40 @@ class LiveZabbixMonitorWidget(QWidget):
     def _on_duty_filter_toggled(self, checked):
         self.settings["duty_filter_enabled"] = bool(checked)
         save_config(self.config)
-        if self.all_snapshot:
-            visible, hidden = split_items_by_duty_filter(self.config, self.all_snapshot.values(), filter_enabled=bool(checked))
-            self.hidden_snapshot = {item.key: item for item in hidden}
-            self.current_snapshot = {item.key: item for item in visible}
-            self.last_filter_counts = {"raw": len(self.all_snapshot), "visible": len(visible), "hidden": len(hidden)}
-            diff = diff_snapshots(self.previous_snapshot.values(), visible, self.processed_keys)
-            self.last_diff = diff
-            self.previous_snapshot = dict(self.current_snapshot)
-            self._render(diff, {"items": [item.to_dict() for item in visible], "safe_debug": {}})
+        self._refresh_filtered_snapshot()
+
+    def _on_table_filters_changed(self, *_args):
+        self.settings["period_filter"] = str(self.period_filter_combo.currentData() or LIVE_PERIOD_ALL)
+        self.settings["unprocessed_filter_enabled"] = bool(self.unprocessed_filter_checkbox.isChecked())
+        save_config(self.config)
+        self._refresh_filtered_snapshot()
+
+    def _apply_current_filters(self, items):
+        duty_visible, duty_hidden = split_items_by_duty_filter(
+            self.config,
+            items,
+            filter_enabled=bool(self.settings.get("duty_filter_enabled", True)),
+        )
+        visible = apply_live_zabbix_table_filters(
+            duty_visible,
+            period=str(self.settings.get("period_filter", LIVE_PERIOD_ALL) or LIVE_PERIOD_ALL),
+            unprocessed_only=bool(self.settings.get("unprocessed_filter_enabled", False)),
+        )
+        visible_keys = {item.key for item in visible}
+        hidden = list(duty_hidden) + [item for item in duty_visible if item.key not in visible_keys]
+        return visible, hidden
+
+    def _refresh_filtered_snapshot(self):
+        if not self.all_snapshot:
+            return
+        visible, hidden = self._apply_current_filters(self.all_snapshot.values())
+        self.hidden_snapshot = {item.key: item for item in hidden}
+        self.current_snapshot = {item.key: item for item in visible}
+        self.last_filter_counts = {"raw": len(self.all_snapshot), "visible": len(visible), "hidden": len(hidden)}
+        diff = diff_snapshots(self.previous_snapshot.values(), visible, self.processed_keys)
+        self.last_diff = diff
+        self.previous_snapshot = dict(self.current_snapshot)
+        self._render(diff, {"items": [item.to_dict() for item in visible], "safe_debug": {}})
 
     def _filter_separators_for_visible_items(self, separators, visible_items):
         separators = [row for row in (separators or []) if str(row.get("text") or "").strip()]
@@ -415,6 +459,8 @@ class LiveZabbixMonitorWidget(QWidget):
         self.view.activateWindow()
 
     def start_monitor(self):
+        if self._monitor_started and self.timer.isActive():
+            return
         self.save_monitor_settings()
         url = self.problems_url()
         if not url:
@@ -426,9 +472,11 @@ class LiveZabbixMonitorWidget(QWidget):
             self._load_finished_connected = True
         self.view.load(QUrl(url))
         self.timer.start(int(self.settings.get("poll_interval_seconds", 60)) * 1000)
+        self._monitor_started = True
 
     def stop_monitor(self):
         self.timer.stop()
+        self._monitor_started = False
         self.poll_status_label.setText("Остановлен")
 
     def poll_now(self):
@@ -540,6 +588,9 @@ class LiveZabbixMonitorWidget(QWidget):
             self._parse_attempts.append(payload)
             self._update_diagnostics(payload, status_text=self._js_error_status(meta))
             return
+        if payload.get("auth_required") or (payload.get("safe_debug") or {}).get("auth_required"):
+            self._silent_zabbix_autologin(payload)
+            return
         raw_items = payload.get("items") or []
         raw_separators = payload.get("separators") or []
         self._parse_attempts.append(payload)
@@ -555,7 +606,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.graph_urls = [url for url in raw.get("graph_urls", []) if url]
             all_items.append(item)
         filter_enabled = bool(self.settings.get("duty_filter_enabled", True))
-        visible_items, hidden_items = split_items_by_duty_filter(self.config, all_items, filter_enabled=filter_enabled)
+        visible_items, hidden_items = self._apply_current_filters(all_items)
         self.last_filter_counts = {"raw": len(all_items), "visible": len(visible_items), "hidden": len(hidden_items)}
         self.last_separator_rows = self._filter_separators_for_visible_items(raw_separators, visible_items)
         payload["raw_problem_count"] = len(all_items)
@@ -577,6 +628,77 @@ class LiveZabbixMonitorWidget(QWidget):
         self._write_history(diff)
         self.previous_snapshot = dict(self.current_snapshot)
         self._render(diff, payload)
+
+    def _zabbix_saved_credentials(self):
+        credentials = self.credentials or {}
+        candidates = []
+        if self.current_zabbix_id:
+            candidates.append(credentials.get(self.current_zabbix_id))
+        candidates.extend([credentials.get("zabbix"), credentials.get("Zabbix"), credentials])
+        for value in candidates:
+            if not isinstance(value, dict):
+                continue
+            login = value.get("login") or value.get("username") or value.get("user") or ""
+            password = value.get("password") or value.get("pass") or value.get("secret") or ""
+            if login and password:
+                return {"login": str(login), "password": str(password)}
+        return {"login": "", "password": ""}
+
+    def _silent_zabbix_autologin(self, payload):
+        if self._zabbix_auth_retrying:
+            return
+        creds = self._zabbix_saved_credentials()
+        if not creds.get("login") or not creds.get("password"):
+            self.poll_status_label.setText("Zabbix: нет сохранённых доступов")
+            self._update_diagnostics(payload or {"safe_debug": {"auth_status": "missing_credentials"}, "items": []}, status_text="missing_credentials")
+            return
+        login_url = str(payload.get("data_login_url") or (payload.get("safe_debug") or {}).get("data_login_url") or "")
+        self._zabbix_auth_retrying = True
+        if login_url and self.view is not None:
+            self.poll_status_label.setText("Zabbix: тихое восстановление сессии…")
+            self.view.load(self.view.url().resolved(QUrl(login_url)))
+            QTimer.singleShot(1500, lambda: self._fill_zabbix_login_form(creds, 1))
+        else:
+            self._fill_zabbix_login_form(creds, 1)
+
+    def _fill_zabbix_login_form(self, creds, attempt=1):
+        page = self.view.page() if self.view is not None else None
+        if page is None:
+            self._zabbix_auth_retrying = False
+            return
+        login_json = json.dumps(creds.get("login", ""), ensure_ascii=False)
+        password_json = json.dumps(creds.get("password", ""), ensure_ascii=False)
+        js = f"""
+(function() {{
+  const loginValue = {login_json};
+  const passwordValue = {password_json};
+  function fire(el) {{ if (!el) return; ["input", "change", "blur"].forEach(function(t) {{ try {{ el.dispatchEvent(new Event(t, {{bubbles: true}})); }} catch(e) {{}} }}); }}
+  function setValue(el, value) {{ if (!el) return false; el.value = value; fire(el); return true; }}
+  const user = document.querySelector('input[name="name"], input[name="username"], input#name, input#username, input[type="text"]');
+  const pass = document.querySelector('input[name="password"], input#password, input[type="password"]');
+  const button = document.querySelector('button[type="submit"], input[type="submit"], button[name="enter"], input[name="enter"], button#enter, button#login');
+  const userSet = setValue(user, loginValue);
+  const passSet = setValue(pass, passwordValue);
+  if (userSet && passSet) {{ if (button) button.click(); else if (pass && pass.form) pass.form.submit(); }}
+  return JSON.stringify({{login_form_found: !!(user || pass), submitted: !!(userSet && passSet)}});
+}})();
+"""
+        def after(result):
+            if '"submitted":true' in str(result or ""):
+                self.poll_status_label.setText("Zabbix: проверяю сессию…")
+                QTimer.singleShot(2500, self._finish_zabbix_autologin)
+            elif attempt < 6:
+                QTimer.singleShot(1000, lambda: self._fill_zabbix_login_form(creds, attempt + 1))
+            else:
+                self._zabbix_auth_retrying = False
+                self.poll_status_label.setText("Zabbix: нет сохранённых доступов")
+        page.runJavaScript(js, after)
+
+    def _finish_zabbix_autologin(self):
+        self._zabbix_auth_retrying = False
+        self.poll_status_label.setText("Zabbix: OK")
+        if self.view is not None:
+            self.view.load(QUrl(self.problems_url()))
 
     def _write_history(self, diff):
         for event_name, items in (("new", diff.new), ("active", diff.active), ("resolved", diff.resolved), ("processed", diff.processed)):
