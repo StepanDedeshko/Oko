@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QApplication,
+    QListWidget,
+    QListWidgetItem,
 )
 
 from app.config import (
