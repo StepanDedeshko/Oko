@@ -433,3 +433,18 @@ class LiveZabbixMonitorSilentAuthAndFilterTests(unittest.TestCase):
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_7_DAYS, now=now)], ["today_no_new", "today_yes", "week_no"])
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, unprocessed_only=True, now=now)], ["today_no_new", "week_no", "old"])
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_TODAY, unprocessed_only=True, now=now)], ["today_no_new"])
+
+class ThemeTooltipTests(unittest.TestCase):
+    def test_nextgen_theme_tooltips_use_readable_explicit_colors(self):
+        theme_source = (Path(__file__).resolve().parents[1] / "app" / "theme.py").read_text(encoding="utf-8")
+
+        self.assertIn("def get_tooltip_colors", theme_source)
+        self.assertIn('normalized_theme == "dark_1"', theme_source)
+        self.assertIn('"background": "#05070c"', theme_source)
+        self.assertIn('"text": "#ffffff"', theme_source)
+        self.assertIn('normalized_theme == "white_1"', theme_source)
+        self.assertIn('"background": "#ffffff"', theme_source)
+        self.assertIn('"text": "#000000"', theme_source)
+        self.assertIn("QToolTip", theme_source)
+        self.assertIn("QPalette.ToolTipBase", theme_source)
+        self.assertIn("QPalette.ToolTipText", theme_source)

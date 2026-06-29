@@ -2,6 +2,22 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
 
+def get_tooltip_colors(theme_name: str) -> dict:
+    """Return readable tooltip colors for the active Oko theme."""
+    normalized_theme = str(theme_name or "").casefold()
+
+    if normalized_theme == "white_1":
+        return {"background": "#ffffff", "text": "#000000", "border": "#b9d7e7"}
+    if normalized_theme == "dark_1":
+        return {"background": "#05070c", "text": "#ffffff", "border": "#6d8fb3"}
+
+    p = _theme(normalized_theme)
+    is_light = normalized_theme == "light_standard" or normalized_theme.startswith("white") or "light" in normalized_theme or "свет" in normalized_theme
+    if is_light:
+        return {"background": "#ffffff", "text": "#111827", "border": p["border_dark"]}
+    return {"background": p["bg_card"], "text": p["text_title"], "border": p["border_dark"]}
+
+
 THEMES = {
     "light_standard": {
         "label": "Светлая стандартная",
@@ -209,14 +225,15 @@ def _theme(theme_name: str) -> dict:
 
 def build_palette(theme_name: str) -> QPalette:
     p = _theme(theme_name)
+    tooltip = get_tooltip_colors(theme_name)
 
     palette = QPalette()
     palette.setColor(QPalette.Window, QColor(p["bg_main"]))
     palette.setColor(QPalette.WindowText, QColor(p["text"]))
     palette.setColor(QPalette.Base, QColor(p["bg_field"]))
     palette.setColor(QPalette.AlternateBase, QColor(p["bg_card"]))
-    palette.setColor(QPalette.ToolTipBase, QColor(p["bg_card"]))
-    palette.setColor(QPalette.ToolTipText, QColor(p["text"]))
+    palette.setColor(QPalette.ToolTipBase, QColor(tooltip["background"]))
+    palette.setColor(QPalette.ToolTipText, QColor(tooltip["text"]))
     palette.setColor(QPalette.Text, QColor(p["text"]))
     palette.setColor(QPalette.Button, QColor(p["bg_card"]))
     palette.setColor(QPalette.ButtonText, QColor(p["text_title"]))
@@ -228,6 +245,7 @@ def build_palette(theme_name: str) -> QPalette:
 
 def build_stylesheet(theme_name: str) -> str:
     p = _theme(theme_name)
+    tooltip = get_tooltip_colors(theme_name)
 
     return f"""
     * {{
@@ -243,6 +261,15 @@ def build_stylesheet(theme_name: str) -> str:
 
     QMainWindow {{
         border: 1px solid {p['border_dark']};
+    }}
+
+    QToolTip {{
+        background-color: {tooltip['background']};
+        color: {tooltip['text']};
+        border: 1px solid {tooltip['border']};
+        border-radius: 6px;
+        padding: 6px;
+        opacity: 255;
     }}
 
     QLabel {{
