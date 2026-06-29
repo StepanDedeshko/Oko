@@ -227,10 +227,23 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
                 or self.settings.get("show_developer_tools", False)
             )
         )
+        self.autostart_checkbox = QCheckBox("Автозапуск мониторинга при открытии")
+        self.autostart_checkbox.setChecked(bool(self.settings.get("autostart_on_open", True)))
+        self.default_period_combo = QComboBox()
+        self.default_period_combo.addItem("Все", "all")
+        self.default_period_combo.addItem("Сегодня", "today")
+        self.default_period_combo.addItem("7 дней", "week")
+        period_index = self.default_period_combo.findData(self.settings.get("default_period_filter", "all"))
+        self.default_period_combo.setCurrentIndex(max(0, period_index))
+        self.default_unprocessed_checkbox = QCheckBox("Показывать только необработанные по умолчанию")
+        self.default_unprocessed_checkbox.setChecked(bool(self.settings.get("unprocessed_filter_enabled", False)))
 
         form.addRow("URL Zabbix Problems:", self.url_input)
         form.addRow("Интервал опроса:", self.interval_input)
         form.addRow("Профиль Zabbix:", self.profile_input)
+        form.addRow("", self.autostart_checkbox)
+        form.addRow("Период по умолчанию:", self.default_period_combo)
+        form.addRow("", self.default_unprocessed_checkbox)
         form.addRow("", self.show_diagnostics_checkbox)
         self.mm_otrs_create_url_input = QLineEdit()
         self.mm_otrs_create_url_input.setText(str(self.settings.get("mm_otrs_create_url", "") or ""))
@@ -257,6 +270,9 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         self.settings["zabbix_profile_id"] = profile_id
         self.settings["profile_id"] = profile_id
         self.settings["show_live_zabbix_diagnostics"] = self.show_diagnostics_checkbox.isChecked()
+        self.settings["autostart_on_open"] = self.autostart_checkbox.isChecked()
+        self.settings["default_period_filter"] = str(self.default_period_combo.currentData() or "all")
+        self.settings["unprocessed_filter_enabled"] = self.default_unprocessed_checkbox.isChecked()
         self.settings["mm_otrs_create_url"] = self.mm_otrs_create_url_input.text().strip()
 
         save_config(self.config)
@@ -1062,6 +1078,8 @@ class ProfileWidget(QWidget):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         self.logout_callback = logout_callback
+        self.session_check_callback = session_check_callback
+        self.session_auth_callback = session_auth_callback
         self.saved_credentials = load_saved_credentials()
         self.saved_zabbix_credentials = self.saved_credentials
         self.zabbix_inputs = {}
@@ -2247,10 +2265,12 @@ class AdministrationWidget(QWidget):
         QMessageBox.information(self, "Администрирование", "Пароль обновлён.")
 
 class AppSettingsWidget(QWidget):
-    def __init__(self, config, logout_callback=None, parent=None):
+    def __init__(self, config, logout_callback=None, session_check_callback=None, session_auth_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         self.logout_callback = logout_callback
+        self.session_check_callback = session_check_callback
+        self.session_auth_callback = session_auth_callback
         self.section_indexes = {}
 
         root = QVBoxLayout(self)
@@ -2266,7 +2286,7 @@ class AppSettingsWidget(QWidget):
             ("Профиль", lambda: ProfileWidget(self.config, logout_callback=self.logout_callback)),
             ("Администрирование", lambda: AdministrationWidget(self.config)),
             ("Продукты и страницы", lambda: ProductsWidget(self.config)),
-            ("Настройки дежурки", lambda: DutyModeSettingsWidget(self.config, show_title=False)),
+            ("Настройки дежурки", lambda: DutyModeSettingsWidget(self.config, show_title=False, session_check_callback=self.session_check_callback, session_auth_callback=self.session_auth_callback)),
             ("Проверка сервисов", lambda: ServiceChecksSettingsWidget(self.config)),
             ("Шаблоны", lambda: TemplatesWidget(self.config)),
             ("Что нового", lambda: ChangelogWidget()),

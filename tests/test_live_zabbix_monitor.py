@@ -381,3 +381,55 @@ class LiveZabbixMonitorDutyFilterTests(unittest.TestCase):
             self.assertIn(marker, live_source)
         self.assertIn("row_index", trigger_source)
         self.assertIn('"duty_filter_enabled": true', config_example)
+
+class LiveZabbixMonitorFiltersAndUiTests(unittest.TestCase):
+    def test_forbidden_manual_login_and_start_stop_buttons_are_absent_from_user_ui(self):
+        app_root = Path(__file__).resolve().parents[1] / "app"
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in app_root.glob("*.py"))
+        self.assertNotIn("Войти в " + "Zabbix", combined)
+        self.assertNotIn("Войти в " + "OTRS", combined)
+        widget_source = (app_root / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertNotIn("QPushButton(\"" + "С" + "тарт\")", widget_source)
+        self.assertNotIn("QPushButton(\"" + "С" + "топ\")", widget_source)
+
+    def test_period_filters_sort_newest_first_and_unprocessed_variants(self):
+        from datetime import datetime, timedelta
+        from app.live_zabbix import apply_live_zabbix_filters
+        from app.trigger_model import ZabbixProblemSnapshotItem
+
+        now = datetime(2026, 6, 29, 15, 0)
+        items = [
+            ZabbixProblemSnapshotItem(key="old", started_at="2026-06-20 12:00", ack_text="Нет"),
+            ZabbixProblemSnapshotItem(key="today-old", started_at="08:00", ack_text="no"),
+            ZabbixProblemSnapshotItem(key="today-new", started_at="2026-06-29 14:30", ack_text="Нет"),
+            ZabbixProblemSnapshotItem(key="acked", started_at="2026-06-29 14:50", ack_text="Да"),
+            ZabbixProblemSnapshotItem(key="week", started_at=(now - timedelta(days=3)).strftime("%Y-%m-%d %H:%M"), ack_text="No"),
+        ]
+        today = apply_live_zabbix_filters(items, period="today", now=now)
+        self.assertEqual([item.key for item in today], ["acked", "today-new", "today-old"])
+        week = apply_live_zabbix_filters(items, period="week", unprocessed=True, now=now)
+        self.assertEqual([item.key for item in week], ["today-new", "today-old", "week"])
+
+    def test_unprocessed_filter_handles_missing_ack_column_safely(self):
+        from app.live_zabbix import apply_live_zabbix_filters
+        item = {"key": "dict-row", "started_at": "2026-06-29 10:00"}
+        self.assertEqual(apply_live_zabbix_filters([item], period="all", unprocessed=True), [item])
+
+    def test_interesting_unprocessed_today_combination(self):
+        from datetime import datetime
+        from app.live_zabbix import apply_live_zabbix_filters
+        from app.trigger_model import ZabbixProblemSnapshotItem
+        now = datetime(2026, 6, 29, 15, 0)
+        items = [
+            ZabbixProblemSnapshotItem(key="keep", started_at="2026-06-29 14:00", ack_text="нет", trigger_kind="special"),
+            ZabbixProblemSnapshotItem(key="drop-kind", started_at="2026-06-29 13:00", ack_text="нет", trigger_kind="standard"),
+            ZabbixProblemSnapshotItem(key="drop-ack", started_at="2026-06-29 12:00", ack_text="Да", trigger_kind="special"),
+        ]
+        result = apply_live_zabbix_filters(
+            items,
+            period="today",
+            unprocessed=True,
+            interesting_filter=lambda item: item.trigger_kind == "special",
+            now=now,
+        )
+        self.assertEqual([item.key for item in result], ["keep"])

@@ -10,6 +10,7 @@ from app.redmine_triggers import default_special_redmine_triggers_config, ensure
 from app.trigger_model import default_trigger_catalog_config, ensure_trigger_catalog_defaults
 from app.live_zabbix import default_live_monitor_config, ensure_live_monitor_defaults
 from app.permissions import ensure_duty_links, build_user_settings_export, import_user_settings_payload
+from app.session_warmup import ensure_session_warmup_defaults
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 CONFIG_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "config.example.json"
@@ -146,6 +147,7 @@ def ensure_duty_mode_defaults(config):
     ensure_special_redmine_triggers_defaults(config)
     ensure_live_monitor_defaults(config)
     ensure_duty_links(config)
+    ensure_session_warmup_defaults(config)
     settings.setdefault("otrs", {})
     settings["otrs"].setdefault("create_url", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentNewTicketForm;NewTicketFormID=6")
     settings["otrs"].setdefault("note_url_base", "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=")
@@ -207,6 +209,7 @@ def _default_config():
         "live_zabbix_monitor": default_live_monitor_config(),
         "service_checks": default_service_checks_config(),
         "duty_links": {},
+        "session_warmup": ensure_session_warmup_defaults({}),
         "zabbix_trigger_catalog": {"version": 1, "triggers": []},
         "app": {"name": "Око"},
     }
@@ -243,6 +246,7 @@ EXPORTABLE_CONFIG_KEYS = (
     "templates",
     "zabbix_trigger_catalog",
     "duty_links",
+    "session_warmup",
     "app",
 )
 

@@ -37,6 +37,7 @@ from app.app_info import APP_NAME
 from app.logger import get_logger
 from app.screen_utils import clamp_rect_to_available, rect_fits_available, safe_window_size
 from app.webengine_lifecycle import current_rss_mb, register_web_view, safe_delete_web_view, tracked_web_view_count
+from app.session_warmup import SessionWarmupManager, WarmupStatus, MODE_SILENT, SYSTEM_ZABBIX, SYSTEM_OTRS
 
 
 class MainWindow(QMainWindow):
@@ -77,6 +78,8 @@ class MainWindow(QMainWindow):
         self.auth_page_index = None
         self.auth_web_views = []
         self._last_memory_warning = False
+        self.session_warmup_manager = None
+        self.session_status_label = QLabel("")
 
         self.is_updating_selectors = False
         self.metrics_provider = SystemMetricsProvider()
@@ -119,7 +122,49 @@ class MainWindow(QMainWindow):
         self.populate_product_combo()
         self.select_first_dashboard()
 
+        self.setup_session_warmup()
         self.apply_initial_window_mode()
+
+
+    def setup_session_warmup(self):
+        self.session_warmup_manager = SessionWarmupManager(self.config, profiles=self.profiles, credentials=self.credentials, parent=self)
+        self.session_warmup_manager.status_message.connect(self.update_session_warmup_status)
+        self.session_warmup_manager.result_ready.connect(self.on_session_warmup_result)
+        settings = self.config.get("session_warmup", {}) if isinstance(self.config, dict) else {}
+        if settings.get("warmup_on_startup", True):
+            QTimer.singleShot(1200, lambda: self.session_warmup_manager.start(mode=MODE_SILENT))
+
+    def update_session_warmup_status(self, message):
+        self.session_status_label.setText(str(message or ""))
+
+    def on_session_warmup_result(self, result):
+        name = "Zabbix" if result.system == "zabbix" else "OTRS"
+        if result.status == WarmupStatus.OK:
+            self.session_status_label.setText(f"{name}: OK")
+        elif result.status == WarmupStatus.AUTH_REQUIRED:
+            if result.reason == "missing_credentials":
+                self.session_status_label.setText(f"{name}: нет сохранённых доступов")
+            else:
+                self.session_status_label.setText(f"{name}: ошибка авторизации")
+        elif result.status == WarmupStatus.SKIPPED_NO_URL:
+            self.session_status_label.setText(f"{name}: не настроено")
+        else:
+            self.session_status_label.setText(f"{name}: ошибка сети")
+
+
+    def start_session_warmup_now(self):
+        if self.session_warmup_manager is not None:
+            self.session_warmup_manager.start(mode=MODE_SILENT)
+
+    def open_manual_session_auth(self, system):
+        if self.session_warmup_manager is not None:
+            self.session_warmup_manager.open_manual_auth(system)
+
+    def ensure_sessions_before_action(self, systems=("zabbix", "otrs")):
+        settings = self.config.get("session_warmup", {}) if isinstance(self.config, dict) else {}
+        if not settings.get("check_before_tasks", True) or self.session_warmup_manager is None:
+            return True
+        return self.session_warmup_manager.ensure_fresh_or_start(systems)
 
     def logout_user(self):
         message = "Выйти из аккаунта Око на этом компьютере? Сохранённый вход будет удалён. После выхода приложение закроется."
@@ -270,6 +315,8 @@ class MainWindow(QMainWindow):
         self.time_label_action = self.toolbar.addWidget(QLabel("Период: "))
         self.time_combo_action = self.toolbar.addWidget(self.time_combo)
         self.toolbar.addSeparator()
+        self.session_status_label.setToolTip("Статус прогрева сессий Zabbix/OTRS")
+        self.toolbar.addWidget(self.session_status_label)
 
     def configure_toolbar_combo(self, combo, minimum_width, maximum_width):
         combo.setMinimumWidth(minimum_width)
@@ -328,7 +375,11 @@ class MainWindow(QMainWindow):
         self.page_has_time_buttons[self.auth_page_index] = False
 
     def create_settings_page(self):
-        settings_widget = AppSettingsWidget(config=self.config, logout_callback=self.logout_user)
+        settings_widget = AppSettingsWidget(
+            config=self.config,
+            logout_callback=self.logout_user,
+            session_check_callback=self.start_session_warmup_now,
+        )
 
         self.settings_page_index = self.stack.addWidget(settings_widget)
         self.page_has_time_buttons[self.settings_page_index] = False
@@ -477,6 +528,7 @@ class MainWindow(QMainWindow):
             self.log_memory_status()
 
     def open_duty_page(self, target_type="duty_mode"):
+        self.ensure_sessions_before_action(("zabbix", "otrs"))
         page = self._find_duty_page(target_type or "duty_mode")
         if not page:
             return

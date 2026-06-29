@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, SnapshotDiff, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, SnapshotDiff, apply_live_zabbix_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
@@ -123,7 +123,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self.timer.timeout.connect(self.poll_now)
         self._build_ui()
         self._create_web_view()
-        self._update_diagnostics({"safe_debug": {}, "items": []}, status_text="Остановлен")
+        self._update_diagnostics({"safe_debug": {}, "items": []}, status_text="Ожидание открытия монитора")
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -158,32 +158,38 @@ class LiveZabbixMonitorWidget(QWidget):
         )
 
         controls = QHBoxLayout()
-        self.start_button = QPushButton("Старт")
-        self.stop_button = QPushButton("Стоп")
         self.check_dom_button = QPushButton("Проверить DOM")
         self.save_button = QPushButton("Сохранить")
         self.open_url_button = QPushButton("Открыть Zabbix")
         self.show_webview_button = QPushButton("Показать WebView")
         self.open_redmine_button = QPushButton("Открыть Redmine")
-        self.poll_status_label = QLabel("Остановлен")
+        self.poll_status_label = QLabel("Ожидание открытия монитора")
         self.updated_label = QLabel("Последнее обновление: —")
         self.duty_filter_checkbox = QCheckBox("Только интересующие")
         self.duty_filter_checkbox.setChecked(bool(self.settings.get("duty_filter_enabled", True)))
-        self.duty_filter_checkbox.toggled.connect(self._on_duty_filter_toggled)
+        self.duty_filter_checkbox.toggled.connect(self._on_live_filters_changed)
+        self.period_filter_combo = QComboBox()
+        self.period_filter_combo.addItem("Все", "all")
+        self.period_filter_combo.addItem("Сегодня", "today")
+        self.period_filter_combo.addItem("7 дней", "week")
+        period_index = self.period_filter_combo.findData(self.settings.get("default_period_filter", "all"))
+        self.period_filter_combo.setCurrentIndex(max(0, period_index))
+        self.period_filter_combo.currentIndexChanged.connect(self._on_live_filters_changed)
+        self.unprocessed_filter_checkbox = QCheckBox("Не обработано")
+        self.unprocessed_filter_checkbox.setChecked(bool(self.settings.get("unprocessed_filter_enabled", False)))
+        self.unprocessed_filter_checkbox.toggled.connect(self._on_live_filters_changed)
         self.counts_label = QLabel("Новые: 0 | Активные: 0 | Решённые: 0 | Обработанные: 0 | Всего: 0 | Показано: 0 | Скрыто фильтром: 0")
-        self.start_button.clicked.connect(self.start_monitor)
-        self.stop_button.clicked.connect(self.stop_monitor)
         self.check_dom_button.clicked.connect(self.check_dom_now)
         self.save_button.clicked.connect(self.save_monitor_settings)
         self.open_url_button.clicked.connect(self.open_configured_url)
         self.show_webview_button.clicked.connect(self.show_webview)
         self.open_redmine_button.clicked.connect(self.open_redmine_for_selected_row)
         normal_controls = [
-            self.start_button,
-            self.stop_button,
             self.open_url_button,
             self.open_redmine_button,
             self.duty_filter_checkbox,
+            self.period_filter_combo,
+            self.unprocessed_filter_checkbox,
             self.poll_status_label,
             self.updated_label,
         ]
@@ -363,15 +369,19 @@ class LiveZabbixMonitorWidget(QWidget):
         self.settings["poll_interval_seconds"] = int(self.interval_input.value())
         self.settings["zabbix_id"] = str(self.zabbix_profile_combo.currentData() or "")
         self.settings["duty_filter_enabled"] = bool(self.duty_filter_checkbox.isChecked())
+        self.settings["default_period_filter"] = str(self.period_filter_combo.currentData() or "all")
+        self.settings["unprocessed_filter_enabled"] = bool(self.unprocessed_filter_checkbox.isChecked())
         save_config(self.config)
         self._recreate_web_view_if_needed()
         self._update_diagnostics({"safe_debug": {}, "items": []}, status_text="Настройки сохранены")
 
-    def _on_duty_filter_toggled(self, checked):
-        self.settings["duty_filter_enabled"] = bool(checked)
+    def _on_live_filters_changed(self, *_args):
+        self.settings["duty_filter_enabled"] = bool(self.duty_filter_checkbox.isChecked())
+        self.settings["default_period_filter"] = str(self.period_filter_combo.currentData() or "all")
+        self.settings["unprocessed_filter_enabled"] = bool(self.unprocessed_filter_checkbox.isChecked())
         save_config(self.config)
         if self.all_snapshot:
-            visible, hidden = split_items_by_duty_filter(self.config, self.all_snapshot.values(), filter_enabled=bool(checked))
+            visible, hidden = self._apply_live_filters(list(self.all_snapshot.values()))
             self.hidden_snapshot = {item.key: item for item in hidden}
             self.current_snapshot = {item.key: item for item in visible}
             self.last_filter_counts = {"raw": len(self.all_snapshot), "visible": len(visible), "hidden": len(hidden)}
@@ -379,6 +389,16 @@ class LiveZabbixMonitorWidget(QWidget):
             self.last_diff = diff
             self.previous_snapshot = dict(self.current_snapshot)
             self._render(diff, {"items": [item.to_dict() for item in visible], "safe_debug": {}})
+
+    def _apply_live_filters(self, all_items):
+        duty_visible, duty_hidden = split_items_by_duty_filter(self.config, all_items, filter_enabled=bool(self.duty_filter_checkbox.isChecked()))
+        period = str(self.period_filter_combo.currentData() or "all")
+        unprocessed = bool(self.unprocessed_filter_checkbox.isChecked())
+        visible = apply_live_zabbix_filters(duty_visible, period=period, unprocessed=unprocessed)
+        visible_keys = {item.key for item in visible}
+        hidden = [item for item in all_items if item.key not in visible_keys]
+        self.logger.info("Live Zabbix filters applied: total=%s visible=%s period=%s interesting=%s unprocessed=%s", len(all_items), len(visible), period, bool(self.duty_filter_checkbox.isChecked()), unprocessed)
+        return visible, hidden
 
     def _filter_separators_for_visible_items(self, separators, visible_items):
         separators = [row for row in (separators or []) if str(row.get("text") or "").strip()]
@@ -415,21 +435,25 @@ class LiveZabbixMonitorWidget(QWidget):
         self.view.activateWindow()
 
     def start_monitor(self):
+        if self.timer.isActive():
+            self.logger.info("Live Zabbix monitor already running")
+            return
         self.save_monitor_settings()
         url = self.problems_url()
         if not url:
             self.poll_status_label.setText("Ошибка: URL Zabbix Problems не задан")
             return
-        self.poll_status_label.setText("Запуск")
+        self.poll_status_label.setText("Мониторинг запущен")
         if not self._load_finished_connected:
             self.view.loadFinished.connect(self._on_loaded)
             self._load_finished_connected = True
         self.view.load(QUrl(url))
         self.timer.start(int(self.settings.get("poll_interval_seconds", 60)) * 1000)
+        self.logger.info("Live Zabbix monitor auto-started")
 
     def stop_monitor(self):
         self.timer.stop()
-        self.poll_status_label.setText("Остановлен")
+        self.poll_status_label.setText("Ожидание открытия монитора")
 
     def poll_now(self):
         if self.view is not None:
@@ -555,7 +579,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.graph_urls = [url for url in raw.get("graph_urls", []) if url]
             all_items.append(item)
         filter_enabled = bool(self.settings.get("duty_filter_enabled", True))
-        visible_items, hidden_items = split_items_by_duty_filter(self.config, all_items, filter_enabled=filter_enabled)
+        visible_items, hidden_items = self._apply_live_filters(all_items)
         self.last_filter_counts = {"raw": len(all_items), "visible": len(visible_items), "hidden": len(hidden_items)}
         self.last_separator_rows = self._filter_separators_for_visible_items(raw_separators, visible_items)
         payload["raw_problem_count"] = len(all_items)
@@ -898,7 +922,7 @@ class LiveZabbixMonitorWidget(QWidget):
 
             table_row += 1
 
-        self.counts_label.setText(f"Новые: {len(diff.new)} | Активные: {len(diff.active)} | Решённые: {len(diff.resolved)} | Обработанные: {len(diff.processed)} | Всего: {self.last_filter_counts.get('raw', len(all_items))} | Показано: {self.last_filter_counts.get('visible', len(all_items))} | Скрыто фильтром: {self.last_filter_counts.get('hidden', 0)}")
+        self.counts_label.setText(f"Отображено: {self.last_filter_counts.get('visible', len(all_items))} из {self.last_filter_counts.get('raw', len(all_items))}")
         self.updated_label.setText("Последнее обновление: " + datetime.now().strftime("%H:%M:%S"))
         if all_items:
             self.poll_status_label.setText(f"ОК: проблем {len(all_items)}")
@@ -3235,11 +3259,17 @@ class LiveZabbixMonitorWidget(QWidget):
             append_history_event(self._history_path(), "processed", item)
             self._render(diff_snapshots([], self.current_snapshot.values(), self.processed_keys), {"items": list(self.current_snapshot.values()), "safe_debug": {"problem_count": len(self.current_snapshot)}})
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if bool(self.settings.get("autostart_on_open", True)):
+            self.start_monitor()
+
     def pause_refresh(self):
         self.stop_monitor()
 
     def resume_refresh(self):
-        pass
+        if bool(self.settings.get("autostart_on_open", True)):
+            self.start_monitor()
 
     def cleanup(self):
         self.stop_monitor()

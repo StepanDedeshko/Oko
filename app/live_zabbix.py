@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from pathlib import Path
 import json
 
@@ -19,7 +19,7 @@ LIVE_MONITOR_CONFIG_KEY = "live_zabbix_monitor"
 
 
 def default_live_monitor_config() -> dict:
-    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 60, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True}
+    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 60, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True, "autostart_on_open": True, "default_period_filter": "all", "unprocessed_filter_enabled": False}
 
 
 def ensure_live_monitor_defaults(config: dict) -> dict:
@@ -45,6 +45,75 @@ def problem_to_duty_filter_row(problem: ZabbixProblemSnapshotItem | dict) -> dic
         "tags": str(payload.get("tags") or ""),
         "raw_text": " ".join(str(payload.get(key) or "") for key in ("started_at", "severity", "host", "trigger_name", "tags", "info", "actions_text")),
     }
+
+
+def parse_live_problem_datetime(value, now=None):
+    """Parse Zabbix problem time using local date when Zabbix provides time only."""
+    now = now or datetime.now()
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = " ".join(text.replace("\xa0", " ").split())
+    formats = (
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+        "%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M",
+        "%d.%m.%y %H:%M:%S", "%d.%m.%y %H:%M",
+        "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M",
+    )
+    for fmt in formats:
+        try:
+            return datetime.strptime(normalized, fmt)
+        except ValueError:
+            pass
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed_time = datetime.strptime(normalized, fmt).time()
+            return datetime.combine(now.date(), parsed_time)
+        except ValueError:
+            pass
+    return None
+
+
+def _acknowledged_text(item) -> str:
+    payload = item.to_dict() if isinstance(item, ZabbixProblemSnapshotItem) else dict(item or {})
+    text = str(payload.get("ack_text") or "").strip()
+    if text:
+        return text
+    if bool(payload.get("acknowledged", False)):
+        return "Да"
+    return "Нет"
+
+
+def is_unprocessed_live_problem(item) -> bool:
+    return _acknowledged_text(item).strip().casefold() in {"нет", "no"}
+
+
+def apply_live_zabbix_filters(items, period="all", interesting_filter=None, unprocessed=False, now=None):
+    """Apply Live Zabbix period/unprocessed filters and sort newest first.
+
+    ``interesting_filter`` can be a callable applied before period/unprocessed filters.
+    It keeps this helper pure and independent from duty keyword settings.
+    """
+    now = now or datetime.now()
+    period = str(period or "all").lower()
+    result = []
+    for item in list(items or []):
+        if interesting_filter and not interesting_filter(item):
+            continue
+        parsed_at = parse_live_problem_datetime(getattr(item, "started_at", "") if hasattr(item, "started_at") else dict(item or {}).get("started_at", ""), now=now)
+        if period == "today":
+            start = datetime.combine(now.date(), time.min)
+            if parsed_at is None or not (start <= parsed_at <= now):
+                continue
+        elif period in {"week", "7d", "7days"}:
+            start = now - timedelta(days=7)
+            if parsed_at is None or not (start <= parsed_at <= now):
+                continue
+        if unprocessed and not is_unprocessed_live_problem(item):
+            continue
+        result.append((parsed_at or datetime.min, item))
+    result.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _parsed, item in result]
 
 
 def split_items_by_duty_filter(config: dict, items, filter_enabled=True):
