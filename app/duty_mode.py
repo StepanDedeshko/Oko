@@ -49,6 +49,20 @@ from app.logger import get_logger
 from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.redmine_triggers import format_graph_links, special_redmine_graph_urls
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
+from app.duty_tasks import (
+    TASK_LABELS,
+    TASK_SERVICES,
+    TASK_SHORT_LABELS,
+    TASK_ZABBIX,
+    current_task_binding,
+    duty_tasks_button_enabled,
+    has_current_task,
+    parse_ticket_url,
+    planned_actions,
+    save_task_binding as save_duty_task_binding,
+    selected_task_types,
+    smart_action_text,
+)
 from app.service_checks import (
     AUTH_HTML_FORM,
     AUTH_EXTERNAL_BROWSER_GROUP,
@@ -3814,84 +3828,132 @@ class DutyTasksDialog(QDialog):
         super().__init__(parent)
         self.config = config
         self.on_changed = on_changed
+        self.logger = get_logger()
+        self.inputs = {}
+        self.task_types = selected_task_types(ensure_duty_mode_defaults(self.config))
+        self._running = False
         self.setWindowTitle("Задачи дежурства")
-        self.resize(820, 360)
+        self.resize(860, 300)
 
         root = QVBoxLayout(self)
         title = QLabel("Задачи дежурства")
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
-        settings = ensure_duty_mode_defaults(self.config)
-        zabbix_enabled = bool(settings.get("check_zabbix_enabled", True))
-        services_enabled = bool(settings.get("check_services_enabled", settings.get("duty_service_checks_enabled", False)))
-
-        if zabbix_enabled:
-            root.addWidget(self._build_task_group(
-                task_type="zabbix",
-                title="Задача для проверки Zabbix / графиков",
-                link_label="Ссылка на задачу Zabbix / графиков",
-                create_label="Создать задачу Zabbix / графиков",
-            ))
-        if services_enabled:
-            root.addWidget(self._build_task_group(
-                task_type="service_checks",
-                title="Задача для проверки сервисов",
-                link_label="Ссылка на задачу проверки сервисов",
-                create_label="Создать задачу проверки сервисов",
-            ))
-        if not zabbix_enabled and not services_enabled:
+        if not self.task_types:
             hint = QLabel("Сначала выберите, что проверять в дежурстве: Zabbix / проблемы и графики, Сервисы или оба варианта.")
             hint.setWordWrap(True)
             root.addWidget(hint)
+        else:
+            card = QFrame()
+            card.setObjectName("DutyTasksCard")
+            card.setFrameShape(QFrame.StyledPanel)
+            card_layout = QVBoxLayout(card)
+            card_layout.setSpacing(10)
+            for task_type in self.task_types:
+                card_layout.addLayout(self._build_task_row(task_type))
+            root.addWidget(card)
+
+        self.result_label = QLabel("")
+        self.result_label.setWordWrap(True)
+        root.addWidget(self.result_label)
         root.addStretch(1)
 
-        close_row = QHBoxLayout()
-        close_row.addStretch(1)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.apply_button = QPushButton("")
+        self.apply_button.setObjectName("PrimaryAction")
+        self.apply_button.clicked.connect(self.apply_tasks)
+        self.apply_button.setVisible(bool(self.task_types))
         close_button = QPushButton("Закрыть")
         close_button.clicked.connect(self.accept)
-        close_row.addWidget(close_button)
-        root.addLayout(close_row)
+        actions.addWidget(self.apply_button)
+        actions.addWidget(close_button)
+        root.addLayout(actions)
+        self._refresh_action_text()
 
-    def _build_task_group(self, task_type, title, link_label, create_label):
-        group = QGroupBox(title)
-        layout = QVBoxLayout(group)
+    def _build_task_row(self, task_type):
         settings = ensure_duty_mode_defaults(self.config)
-        stored_url = settings.get("duty_service_checks_task_url" if task_type == "service_checks" else "duty_zabbix_task_url", "")
-        input_widget = QLineEdit()
-        input_widget.setPlaceholderText("https://itsm.stdpr.ru/itsm/index.pl?...TicketID=... или номер задачи")
-        input_widget.setText(stored_url)
-        input_widget.setMinimumWidth(620)
-        input_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        layout.addWidget(QLabel(link_label + ":"))
-        layout.addWidget(input_widget)
+        binding = current_task_binding(settings, task_type)
         row = QHBoxLayout()
-        attach_button = QPushButton("Привязать")
-        attach_button.clicked.connect(lambda _checked=False, tt=task_type, field=input_widget: self._open_attach(tt, field.text().strip()))
-        create_button = QPushButton(create_label)
-        create_button.clicked.connect(lambda _checked=False, tt=task_type: self._open_create(tt))
-        row.addWidget(attach_button)
-        row.addWidget(create_button)
-        row.addStretch(1)
-        layout.addLayout(row)
-        return group
+        label = QLabel(TASK_SHORT_LABELS[task_type])
+        label.setStyleSheet("font-size: 10px; font-weight: 700; letter-spacing: 0.08em;")
+        label.setMinimumWidth(125)
+        field = QLineEdit()
+        field.setPlaceholderText("Ссылка на существующий тикет, или пусто — для создания нового")
+        field.setText(binding.get("url") or binding.get("number") or "")
+        field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        field.textChanged.connect(lambda _text: self._refresh_action_text())
+        self.inputs[task_type] = field
+        row.addWidget(label)
+        row.addWidget(field, stretch=1)
+        return row
 
-    def _open_attach(self, task_type, url):
-        if not str(url or "").strip():
-            QMessageBox.warning(self, "Привязка задачи", "Введите ссылку или номер задачи.")
+    def _input_values(self):
+        return {task_type: field.text().strip() for task_type, field in self.inputs.items()}
+
+    def _refresh_action_text(self):
+        if hasattr(self, "apply_button"):
+            self.apply_button.setText(smart_action_text(self._input_values(), self.task_types))
+
+    def _set_running(self, running):
+        self._running = bool(running)
+        self.apply_button.setEnabled(not running)
+
+    def _format_success(self, task_type, action, parsed=None):
+        label = TASK_LABELS[task_type]
+        parsed = parsed or {}
+        number = parsed.get("number") or parsed.get("id") or ""
+        if action == "link":
+            prefix = f"#{number} " if number else ""
+            return f"✓ {prefix}«{label}» — привязана к смене"
+        return f"✓ Создан тикет «{label}» — привязан к смене"
+
+    def apply_tasks(self):
+        if self._running:
             return
-        dialog = AttachExistingTaskDialog(self.config, parent=self, task_type=task_type)
-        dialog.url_input.setText(url)
-        QTimer.singleShot(0, dialog.bind_task_from_input)
-        dialog.exec()
-        if self.on_changed:
-            self.on_changed()
-
-    def _open_create(self, task_type):
-        dialog = OtrsCreateTaskDialog(self.config, parent=self, task_type=task_type)
-        dialog.exec()
-        if self.on_changed:
-            self.on_changed()
+        self._set_running(True)
+        settings = ensure_duty_mode_defaults(self.config)
+        values = self._input_values()
+        actions = planned_actions(values, self.task_types)
+        results = []
+        errors = []
+        try:
+            for task_type in self.task_types:
+                action = actions[task_type]
+                if action == "link":
+                    parsed = parse_ticket_url(values.get(task_type, ""))
+                    if not parsed.get("id") and not parsed.get("url"):
+                        errors.append(f"✗ {TASK_LABELS[task_type]}: не удалось распознать ссылку.")
+                        continue
+                    save_duty_task_binding(settings, task_type, parsed, status="linked")
+                    self.logger.info("Duty task linked: task_type=%s system=%s ticket_id=%s", task_type, parsed.get("system") or "unknown", parsed.get("id") or "not_set")
+                    results.append(self._format_success(task_type, "link", parsed))
+                else:
+                    if has_current_task(settings, task_type):
+                        binding = current_task_binding(settings, task_type)
+                        results.append(f"✓ «{TASK_LABELS[task_type]}» уже привязана к смене")
+                        field = self.inputs.get(task_type)
+                        if field and not field.text().strip():
+                            field.setText(binding.get("url") or binding.get("number") or "")
+                        continue
+                    self.logger.info("Duty task create opened: task_type=%s", task_type)
+                    dialog = OtrsCreateTaskDialog(self.config, parent=self, task_type=task_type)
+                    dialog.exec()
+                    if has_current_task(settings, task_type):
+                        results.append(self._format_success(task_type, "create"))
+                    else:
+                        errors.append(f"✗ {TASK_LABELS[task_type]}: создание открыто, привязка ещё не сохранена. Создайте тикет вручную и привяжите номер/URL.")
+            save_config(self.config)
+            if self.on_changed:
+                self.on_changed()
+            self.result_label.setText("<br>".join(results + errors) or "Нет действий.")
+            self._refresh_action_text()
+        except Exception as exc:
+            self.logger.exception("Duty tasks action failed")
+            self.result_label.setText(f"✗ Ошибка: {exc}")
+        finally:
+            self._set_running(False)
 
 
 class DutyNoteDialog(QDialog):
@@ -4235,6 +4297,11 @@ class DutyModeWidget(QWidget):
         save_config(self.config)
         self.update_dashboard_summary()
 
+    def _update_tasks_button_state(self):
+        enabled = duty_tasks_button_enabled(self.get_settings())
+        self.tasks_button.setEnabled(enabled)
+        self.tasks_button.setToolTip("" if enabled else "Выберите хотя бы одну проверку в блоке «Что проверяем в дежурстве».")
+
     def save_manual_duty_note(self):
         self.get_settings()["manual_duty_note"] = self.manual_duty_note_text
         save_config(self.config)
@@ -4500,6 +4567,8 @@ class DutyModeWidget(QWidget):
                 f"OK={stats['ok']}, Ошибки={stats['errors']}, Таймауты={stats['timeouts']}"
             )
         self._render_status_panels()
+        if hasattr(self, "tasks_button"):
+            self._update_tasks_button_state()
 
     def _set_service_check_running(self, running):
         self.service_check_running = bool(running)
@@ -5093,6 +5162,8 @@ class DutyModeWidget(QWidget):
         if hasattr(self, "services_state_value"):
             self.services_state_value.setText(str(len(self.enabled_services())))
         self._render_status_panels()
+        if hasattr(self, "tasks_button"):
+            self._update_tasks_button_state()
 
     def update_task_label(self):
         self.update_dashboard_summary()
