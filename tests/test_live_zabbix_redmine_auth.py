@@ -56,6 +56,20 @@ class LiveZabbixRedmineAuthTests(unittest.TestCase):
         self.assertIn("layout.addWidget(self.view, stretch=1)", self.widget_source)
         self.assertIn("self.status_label.setVisible(False)", self.widget_source)
 
+    def test_qsizepolicy_is_imported_for_redmine_dialogs(self):
+        imports_block = self.widget_source[
+            self.widget_source.index("from PySide6.QtWidgets import ("):
+            self.widget_source.index(")\n\nfrom app.config import save_config")
+        ]
+        self.assertIn("QSizePolicy", imports_block)
+        self.assertIn("QSizePolicy.Expanding", self.widget_source)
+        self.assertIn("QSizePolicy.Fixed", self.widget_source)
+
+    def test_redmine_create_dialog_open_path_has_no_qsizepolicy_name_error(self):
+        self.assertIn("dialog = RedmineCreateDialog(", self.widget_source)
+        self.assertIn("dialog.show()", self.widget_source)
+        self.assertIn("self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)", self.widget_source)
+
     def test_broken_nginx_page_routes_to_redmine_auth_dialog(self):
         for marker in ["default error page for nginx", "/usr/share/nginx/html/50x.html", "Red Hat Enterprise Linux"]:
             self.assertIn(marker, self.widget_source)
