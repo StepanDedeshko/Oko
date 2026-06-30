@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from app.detection_matcher import match_zabbix_host_to_node
-from app.live_zabbix import build_live_zabbix_detection_status, match_live_zabbix_detection_host
+from app.live_zabbix import build_live_zabbix_detection_status, extract_live_zabbix_itemid_from_url, match_live_zabbix_detection_host
 
 
 class CombinedLiveZabbixFixesTests(unittest.TestCase):
@@ -78,6 +78,50 @@ class CombinedLiveZabbixFixesTests(unittest.TestCase):
         self.assertEqual(result["matched_by"], "dash_alias")
 
 
+
+    def test_extract_detection_itemid_from_live_zabbix_urls(self):
+        cases = [
+            "https://z/history.php?action=showgraph&itemids[]=12345",
+            "https://z/history.php?action=showgraph&itemids=12345",
+            "https://z/chart.php?itemids=12345",
+        ]
+        for url in cases:
+            self.assertEqual(extract_live_zabbix_itemid_from_url(url)["itemid"], "12345")
+
+    def test_build_detection_status_uses_row_graph_urls_for_itemid(self):
+        cfg = {
+            "live_zabbix_monitor": {
+                "live_zabbix_node_version_lists": {
+                    "v1_nodes": [{"host": "kitai_1", "normalized_host": "kitai_1", "version": "v1"}],
+                    "v2_nodes": [],
+                }
+            }
+        }
+        status = build_live_zabbix_detection_status(
+            cfg,
+            "китай 1 - kitai_1",
+            "",
+            graph_urls=["https://z/history.php?action=showgraph&itemids[]=12345"],
+        )
+        self.assertEqual(status["itemid"], "12345")
+        self.assertEqual(status["text"], "сработок нет")
+
+    def test_build_detection_status_has_specific_itemid_failure_reasons(self):
+        cfg = {
+            "live_zabbix_monitor": {
+                "live_zabbix_node_version_lists": {
+                    "v1_nodes": [{"host": "kitai_1", "normalized_host": "kitai_1", "version": "v1"}],
+                    "v2_nodes": [],
+                }
+            }
+        }
+        no_urls = build_live_zabbix_detection_status(cfg, "китай 1 - kitai_1", "")
+        self.assertEqual(no_urls["text"], "itemid не найден: нет graph_urls/problem_url")
+        graphid_only = build_live_zabbix_detection_status(
+            cfg, "китай 1 - kitai_1", "", graph_urls=["https://z/chart.php?graphid=999"]
+        )
+        self.assertEqual(graphid_only["text"], "itemid не найден: найден graphid без itemid")
+
     def test_build_detection_status_returns_final_states(self):
         cfg = {
             "live_zabbix_monitor": {
@@ -95,7 +139,7 @@ class CombinedLiveZabbixFixesTests(unittest.TestCase):
         self.assertEqual(build_live_zabbix_detection_status(cfg, "missing", "")["text"], "узел не найден в CSV")
         self.assertEqual(build_live_zabbix_detection_status(cfg, "китай 1 - kitai_1", "")["text"], "сработок нет")
         self.assertEqual(build_live_zabbix_detection_status(cfg, "китай 2 - kitai_2", "")["text"], "есть сработки")
-        self.assertEqual(build_live_zabbix_detection_status(cfg, "китай 3 - kitai_3", "")["text"], "itemid не найден")
+        self.assertEqual(build_live_zabbix_detection_status(cfg, "китай 3 - kitai_3", "")["text"], "itemid не найден: нет graph_urls/problem_url")
 
     def test_live_zabbix_detection_column_and_empty_status_render_helpers(self):
         source = Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py"
@@ -112,6 +156,7 @@ class CombinedLiveZabbixFixesTests(unittest.TestCase):
             "нет имени узла",
             "build_live_zabbix_detection_status",
             "return self._complete_detection_check",
+            "_start_detection_graph_lookup",
             "проверяется",
         ]:
             self.assertIn(marker, text)
@@ -138,6 +183,8 @@ class LiveZabbixDetectionSourceRegressionTests(unittest.TestCase):
         self.assertIn("return self._complete_detection_check", source[check_end:rediscover_end])
         self.assertNotIn("Manual detection check requested", source[check_start:rediscover_end])
         self.assertNotIn("Manual detection itemid rediscovery requested", source[check_start:rediscover_end])
+        self.assertIn("force_rediscover=True", source[check_end:rediscover_end])
+        self.assertIn("_start_detection_graph_lookup", source)
 
 
 if __name__ == "__main__":

@@ -1105,11 +1105,53 @@ class LiveZabbixMonitorWidget(QWidget):
         item = self._detection_item_for_key(key)
         host = str(getattr(item, "host", "") or "").strip() if item is not None else ""
         ip = self._detection_host_ip_for_item(item)
-        status = build_live_zabbix_detection_status(self.config, host, ip, force_rediscover=force_rediscover)
+        status = build_live_zabbix_detection_status(
+            self.config,
+            host,
+            ip,
+            force_rediscover=force_rediscover,
+            graph_urls=list(getattr(item, "graph_urls", []) or []) if item is not None else [],
+            problem_url=str(getattr(item, "problem_url", "") or "") if item is not None else "",
+        )
         self._record_detection_status(key, status)
         if update_cell:
             self._update_detection_cell_for_key(key)
+        if (
+            item is not None
+            and status.get("status") == "NO_ITEMID"
+            and str(getattr(item, "problem_url", "") or "").strip()
+            and not self._detection_itemid_from_graph_urls(item)
+            and (force_rediscover or status.get("text") == "itemid не найден: график не найден на странице")
+        ):
+            self._start_detection_graph_lookup(key, item)
         return status
+
+    @staticmethod
+    def _detection_itemid_from_graph_urls(item):
+        from app.live_zabbix import extract_live_zabbix_itemid_from_url
+        for url in list(getattr(item, "graph_urls", []) or []):
+            itemid = extract_live_zabbix_itemid_from_url(url).get("itemid", "")
+            if itemid:
+                return itemid
+        return ""
+
+    def _start_detection_graph_lookup(self, key, item):
+        self._record_detection_status(key, {"text": "поиск itemid", "status": "LOOKUP", "matched": True})
+        self._update_detection_cell_for_key(key)
+
+        def after_lookup(_items):
+            status = build_live_zabbix_detection_status(
+                self.config,
+                str(getattr(item, "host", "") or ""),
+                self._detection_host_ip_for_item(item),
+                force_rediscover=True,
+                graph_urls=list(getattr(item, "graph_urls", []) or []),
+                problem_url=str(getattr(item, "problem_url", "") or ""),
+            )
+            self._record_detection_status(key, status)
+            self._update_detection_cell_for_key(key)
+
+        self._enrich_redmine_graph_links([item], after_lookup)
 
     def _update_detection_cell_for_key(self, key):
         if not hasattr(self, "table") or self.table is None:
