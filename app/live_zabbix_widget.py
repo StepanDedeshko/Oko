@@ -3829,8 +3829,11 @@ class LiveZabbixMonitorWidget(QWidget):
   function formReadyPayload() { return JSON.stringify({ok:true, form_ready:true, status:'Форма подтверждения Zabbix найдена', diagnostics:diagnostics()}); }
   var message = document.querySelector('.overlay-dialogue #acknowledge_form textarea#message');
   if (step === 'inspect') {
-    if (duplicate()) return JSON.stringify({ok:true, duplicate:true, status:'Комментарий Zabbix уже есть, пропускаю', diagnostics:diagnostics()});
-    if (message) return formReadyPayload();
+    var hasDuplicate = duplicate();
+    var alreadyAcknowledged = acknowledgedFromPage();
+    if (hasDuplicate && alreadyAcknowledged) return JSON.stringify({ok:true, duplicate:true, already_acknowledged:true, status:'Комментарий Zabbix уже есть, пропускаю', diagnostics:diagnostics()});
+    if (hasDuplicate && !alreadyAcknowledged) console.log('task comment exists but problem is not acknowledged; acknowledging only');
+    if (message) return JSON.stringify({ok:true, form_ready:true, existing_comment:hasDuplicate, already_acknowledged:alreadyAcknowledged, status:'Форма подтверждения Zabbix найдена', diagnostics:diagnostics()});
     var links = acknowledgeLinks();
     var preferred = links.find(function(el) { return String(el.getAttribute('onclick') || '').indexOf('acknowledgePopUp') !== -1; }) || links[0];
     if (!preferred) return JSON.stringify({ok:false, error:'acknowledge link not found', diagnostics:diagnostics()});
@@ -3838,23 +3841,30 @@ class LiveZabbixMonitorWidget(QWidget):
     return JSON.stringify({ok:true, clicked_popup:true, status:'Открываю форму подтверждения Zabbix', diagnostics:diagnostics()});
   }
   if (step === 'check_form') {
-    if (duplicate()) return JSON.stringify({ok:true, duplicate:true, status:'Комментарий Zabbix уже есть, пропускаю', diagnostics:diagnostics()});
-    if (message) return formReadyPayload();
-    return JSON.stringify({ok:true, waiting:true, diagnostics:diagnostics()});
+    var hasDuplicate = duplicate();
+    var alreadyAcknowledged = acknowledgedFromPage();
+    if (hasDuplicate && alreadyAcknowledged) return JSON.stringify({ok:true, duplicate:true, already_acknowledged:true, status:'Комментарий Zabbix уже есть, пропускаю', diagnostics:diagnostics()});
+    if (message) return JSON.stringify({ok:true, form_ready:true, existing_comment:hasDuplicate, already_acknowledged:alreadyAcknowledged, status:'Форма подтверждения Zabbix найдена', diagnostics:diagnostics()});
+    return JSON.stringify({ok:true, waiting:true, existing_comment:hasDuplicate, already_acknowledged:alreadyAcknowledged, diagnostics:diagnostics()});
   }
   if (step === 'submit') {
-    if (duplicate()) return JSON.stringify({ok:true, duplicate:true, status:'Комментарий Zabbix уже есть, пропускаю', diagnostics:diagnostics()});
-    if (!message) return JSON.stringify({ok:false, error:'textarea not found', diagnostics:diagnostics()});
-    message.focus(); message.value = comment; message.dispatchEvent(new Event('input', {bubbles:true})); message.dispatchEvent(new Event('change', {bubbles:true}));
-    var ack = document.querySelector('.overlay-dialogue #acknowledge_form input#acknowledge_problem');
+    var hasDuplicate = duplicate();
     var alreadyAcknowledged = acknowledgedFromPage();
+    if (hasDuplicate && alreadyAcknowledged) return JSON.stringify({ok:true, duplicate:true, already_acknowledged:true, status:'Комментарий Zabbix уже есть, пропускаю', diagnostics:diagnostics()});
+    if (!message) return JSON.stringify({ok:false, error:'textarea not found', diagnostics:diagnostics()});
+    if (!hasDuplicate) {
+      message.focus(); message.value = comment; message.dispatchEvent(new Event('input', {bubbles:true})); message.dispatchEvent(new Event('change', {bubbles:true}));
+    } else {
+      message.focus(); message.value = ''; message.dispatchEvent(new Event('input', {bubbles:true})); message.dispatchEvent(new Event('change', {bubbles:true}));
+    }
+    var ack = document.querySelector('.overlay-dialogue #acknowledge_form input#acknowledge_problem');
     if (acknowledgeMissing && !alreadyAcknowledged && ack && !ack.checked) ack.click();
     var close = document.querySelector('.overlay-dialogue #acknowledge_form input#close_problem');
-    if (close && close.checked) close.click();
+    // close_problem is intentionally never checked or clicked.
     var button = updateButtons()[0];
     if (!button) return JSON.stringify({ok:false, error:'update button not found', diagnostics:diagnostics()});
     button.click();
-    return JSON.stringify({ok:true, submitted:true, already_acknowledged:alreadyAcknowledged, status:'Комментарий Zabbix отправлен', diagnostics:diagnostics()});
+    return JSON.stringify({ok:true, submitted:true, existing_comment:hasDuplicate, already_acknowledged:alreadyAcknowledged, acknowledge_only:hasDuplicate && !alreadyAcknowledged, status:'Комментарий Zabbix отправлен', diagnostics:diagnostics()});
   }
   if (step === 'check_submit') {
     var bodyText = text(document.body);
@@ -3955,7 +3965,7 @@ class LiveZabbixMonitorWidget(QWidget):
         status = str(payload.get("status") or "")
         if payload.get("duplicate"):
             self.poll_status_label.setText(status or "Комментарий Zabbix уже есть, пропускаю")
-            self.logger.info("duplicate comment skipped: %s", self._zbx_active_url)
+            self.logger.info("duplicate comment skipped because already acknowledged: %s", self._zbx_active_url)
             self._finish_zbx_item("skipped")
             return
         if not payload.get("ok"):
@@ -3972,13 +3982,20 @@ class LiveZabbixMonitorWidget(QWidget):
             self._run_zbx_step("submit")
             return
         if payload.get("submitted"):
-            if payload.get("already_acknowledged"):
+            if payload.get("acknowledge_only"):
+                self.logger.info("task comment exists but problem is not acknowledged; acknowledging only: %s", self._zbx_active_url)
+            elif payload.get("already_acknowledged"):
                 self.logger.info("already acknowledged; adding missing comment only: %s", self._zbx_active_url)
+            self._zbx_submitted_acknowledge_only = bool(payload.get("acknowledge_only"))
             self.poll_status_label.setText(status or "Комментарий Zabbix отправлен")
             self._start_zbx_poll("check_submit", 300, 10000)
             return
         if payload.get("submitted_done"):
             self.poll_status_label.setText(status or "Комментарий Zabbix добавлен")
+            if getattr(self, "_zbx_submitted_acknowledge_only", False):
+                self.logger.info("problem acknowledged with existing comment: %s", self._zbx_active_url)
+            else:
+                self.logger.info("comment copied and problem acknowledged: %s", self._zbx_active_url)
             self.logger.info("ack/comment success: %s", self._zbx_active_url)
             self._finish_zbx_item("success")
             return
@@ -4061,7 +4078,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 if not ok:
                     return
             self._process_zabbix_comments(
-                self._task_comment_scan_items, comment, acknowledge_missing=False,
+                self._task_comment_scan_items, comment, acknowledge_missing=True,
                 progress_prefix="Копирую комментарий задачи в Zabbix",
                 summary_prefix="Копирование комментария Zabbix",
             )

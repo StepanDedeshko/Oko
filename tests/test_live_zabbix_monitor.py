@@ -553,5 +553,24 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("Zabbix JS returned empty result", self.widget_source)
         self.assertIn("_finish_zbx_item", self.widget_source)
 
+    def test_manual_copy_acknowledges_missing_acknowledgement(self):
+        self.assertIn("self._task_comment_scan_items, comment, acknowledge_missing=True", self.widget_source)
+
+    def test_duplicate_comment_skips_only_when_already_acknowledged(self):
+        self.assertIn("hasDuplicate && alreadyAcknowledged", self.widget_source)
+        self.assertIn("hasDuplicate && !alreadyAcknowledged", self.widget_source)
+        self.assertIn("task comment exists but problem is not acknowledged; acknowledging only", self.widget_source)
+        self.assertIn("duplicate comment skipped because already acknowledged", self.widget_source)
+
+    def test_existing_comment_unacknowledged_submits_acknowledge_only_without_duplicate_message(self):
+        self.assertIn("acknowledge_only:hasDuplicate && !alreadyAcknowledged", self.widget_source)
+        self.assertIn("message.value = ''", self.widget_source)
+        self.assertIn("problem acknowledged with existing comment", self.widget_source)
+        self.assertIn("comment copied and problem acknowledged", self.widget_source)
+
+    def test_close_problem_is_never_clicked(self):
+        self.assertIn("close_problem is intentionally never checked or clicked", self.widget_source)
+        self.assertNotIn("close.click()", self.widget_source)
+
     def test_app_version_unchanged(self):
         self.assertIn('APP_VERSION = "0.3.1"', self.app_info)
