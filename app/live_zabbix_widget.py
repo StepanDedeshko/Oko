@@ -124,6 +124,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self._redmine_graph_lookup_queue = []
         self._redmine_graph_lookup_items = []
         self._redmine_graph_lookup_callback = None
+        self._redmine_graph_lookup_load_slot = None
         self._redmine_ip_lookup_queue = []
         self._redmine_ip_lookup_items = []
         self._redmine_ip_lookup_callback = None
@@ -1468,7 +1469,7 @@ class LiveZabbixMonitorWidget(QWidget):
         if self.redmine_graph_lookup_view is not None:
             return
         self.redmine_graph_lookup_view = register_web_view(QWebEngineView())
-        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        profile = self._redmine_profile()
         if profile is not None:
             page = QWebEnginePage(profile, self.redmine_graph_lookup_view)
             self.redmine_graph_lookup_view.setPage(page)
@@ -1478,6 +1479,7 @@ class LiveZabbixMonitorWidget(QWidget):
         if self.redmine_graph_lookup_view is not None:
             safe_delete_web_view(self.redmine_graph_lookup_view, logger=self.logger, context="LiveZabbixMonitorWidget Redmine graph lookup")
             self.redmine_graph_lookup_view = None
+        self._redmine_graph_lookup_load_slot = None
         self.zabbix_ack_view = None
         self._zabbix_ack_queue = []
         self._zabbix_ack_stats = {"success": 0, "skipped": 0, "errors": 0}
@@ -1515,6 +1517,7 @@ class LiveZabbixMonitorWidget(QWidget):
             callback = self._redmine_graph_lookup_callback
             items = self._redmine_graph_lookup_items
             self._redmine_graph_lookup_callback = None
+            self._redmine_graph_lookup_load_slot = None
             self.poll_status_label.setText("Ссылки на графики обработаны")
             if callback:
                 callback(items)
@@ -1530,14 +1533,14 @@ class LiveZabbixMonitorWidget(QWidget):
         left = len(self._redmine_graph_lookup_queue)
         self.poll_status_label.setText(f"Ищу ссылку на график: {total - left}/{total}")
 
-        try:
-            self.redmine_graph_lookup_view.loadFinished.disconnect()
-        except (TypeError, RuntimeError):
-            pass
+        if self._redmine_graph_lookup_load_slot is not None:
+            try:
+                self.redmine_graph_lookup_view.loadFinished.disconnect(self._redmine_graph_lookup_load_slot)
+            except (TypeError, RuntimeError):
+                pass
 
-        self.redmine_graph_lookup_view.loadFinished.connect(
-            lambda ok, current_item=item: self._on_redmine_graph_lookup_loaded(ok, current_item)
-        )
+        self._redmine_graph_lookup_load_slot = lambda ok, current_item=item: self._on_redmine_graph_lookup_loaded(ok, current_item)
+        self.redmine_graph_lookup_view.loadFinished.connect(self._redmine_graph_lookup_load_slot)
         self.redmine_graph_lookup_view.load(QUrl(url))
 
     def _on_redmine_graph_lookup_loaded(self, ok, item):
@@ -2069,8 +2072,148 @@ class LiveZabbixMonitorWidget(QWidget):
             ) == QMessageBox.Open:
                 self.open_graphs(graph_urls)
 
+        self._log_redmine_url_diagnostics(redmine_url, items)
+        self._open_redmine_with_auth_check(redmine_url, items)
+
+    def _redmine_profile(self):
+        return self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+
+    def _redmine_page_state_from_payload(self, payload):
+        href = str(payload.get("href") or "")
+        title = str(payload.get("title") or "")
+        text = str(payload.get("text") or "")
+        lowered = " ".join([href, title, text]).casefold()
+        error_markers = (
+            "default error page for nginx",
+            "/usr/share/nginx/html/50x.html",
+            "red hat enterprise linux",
+        )
+        login_markers = ("login", "вход", "имя пользователя", "пароль", "sign in")
+        return {
+            "href": href,
+            "login_required": any(marker in lowered for marker in login_markers),
+            "nginx_error": any(marker in lowered for marker in error_markers),
+        }
+
+    def _redmine_page_probe_script(self):
+        return """
+(function() {
+  return JSON.stringify({
+    href: String(window.location.href || ''),
+    title: String(document.title || ''),
+    text: String((document.body && (document.body.innerText || document.body.textContent)) || '').slice(0, 7000)
+  });
+})();
+"""
+
+    def _log_redmine_url_diagnostics(self, redmine_url, items):
+        is_special = any(str(getattr(item, "trigger_kind", "") or "").casefold() == SPECIAL_TRIGGER_KIND for item in items or [])
+        template = get_redmine_task_template(self.config, special=is_special)
+        configured_url = str(template.get("create_url") or "")
+        parsed = urlparse(redmine_url or "")
+        fields = sorted({key for key, _value in parse_qsl(parsed.query, keep_blank_values=True)})
+        self.logger.info(
+            "Redmine URL diagnostics: configured_create_url=%s final_scheme=%s final_host=%s final_path=%s query_length=%s total_url_length=%s field_names=%s",
+            configured_url,
+            parsed.scheme,
+            parsed.hostname or "",
+            parsed.path,
+            len(parsed.query or ""),
+            len(redmine_url or ""),
+            fields,
+        )
+
+    def _open_redmine_with_auth_check(self, redmine_url, items):
+        profile = self._redmine_profile()
+        view = register_web_view(QWebEngineView(self))
+        view.hide()
+        if profile is not None:
+            view.setPage(QWebEnginePage(profile, view))
+
+        def loaded(ok, current_view=view):
+            if not ok:
+                safe_delete_web_view(current_view, logger=self.logger, context="LiveZabbixMonitorWidget Redmine auth warmup")
+                QMessageBox.warning(self, "Redmine", "Redmine не открыл форму создания задачи. Проверьте авторизацию Redmine во встроенном браузере Око и URL шаблона Redmine.")
+                return
+            page = current_view.page() if current_view is not None else None
+            if page is None:
+                safe_delete_web_view(current_view, logger=self.logger, context="LiveZabbixMonitorWidget Redmine auth warmup")
+                return
+            page.runJavaScript(self._redmine_page_probe_script(), lambda result, v=current_view: self._on_redmine_auth_warmup_checked(result, v, redmine_url, items))
+
+        view.loadFinished.connect(loaded)
+        view.load(QUrl(redmine_url))
+
+    def _on_redmine_auth_warmup_checked(self, result, view, redmine_url, items):
+        try:
+            payload = json.loads(str(result or "{}"))
+        except (TypeError, ValueError):
+            payload = {}
+        state = self._redmine_page_state_from_payload(payload)
+        safe_delete_web_view(view, logger=self.logger, context="LiveZabbixMonitorWidget Redmine auth warmup")
+        if state.get("nginx_error"):
+            QMessageBox.warning(self, "Redmine", "Redmine не открыл форму создания задачи. Проверьте авторизацию Redmine во встроенном браузере Око и URL шаблона Redmine.")
+            return
+        if state.get("login_required"):
+            self._show_redmine_login_dialog(redmine_url, items)
+            return
         self._open_redmine_creation_dialog(redmine_url, items)
 
+    def _show_redmine_login_dialog(self, redmine_url, items):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Авторизация Redmine")
+        dialog.resize(1100, 760)
+        root = QVBoxLayout(dialog)
+        status_label = QLabel("Войдите в Redmine во встроенном окне Око, затем повторите создание задачи.")
+        status_label.setWordWrap(True)
+        root.addWidget(status_label)
+        view = register_web_view(QWebEngineView(dialog))
+        profile = self._redmine_profile()
+        if profile is not None:
+            view.setPage(QWebEnginePage(profile, view))
+        root.addWidget(view, stretch=1)
+        state = {"retried": False}
+
+        def loaded(ok, current_dialog=dialog, current_view=view):
+            if not ok:
+                status_label.setText("Redmine не открыл форму создания задачи. Проверьте авторизацию Redmine во встроенном браузере Око и URL шаблона Redmine.")
+                return
+            page = current_view.page() if current_view is not None else None
+            if page is None:
+                return
+            page.runJavaScript(self._redmine_page_probe_script(), lambda result, d=current_dialog, v=current_view: self._on_redmine_login_dialog_checked(result, d, v, status_label, state, redmine_url, items))
+
+        def cleanup(_result=0, current_dialog=dialog, current_view=view):
+            try:
+                self.redmine_dialogs.remove(current_dialog)
+            except ValueError:
+                pass
+            safe_delete_web_view(current_view, logger=self.logger, context="LiveZabbixMonitorWidget Redmine login")
+
+        view.loadFinished.connect(loaded)
+        dialog.finished.connect(cleanup)
+        self.redmine_dialogs.append(dialog)
+        dialog.show()
+        view.load(QUrl(redmine_url))
+
+    def _on_redmine_login_dialog_checked(self, result, dialog, view, status_label, state, redmine_url, items):
+        if state.get("retried"):
+            return
+        try:
+            payload = json.loads(str(result or "{}"))
+        except (TypeError, ValueError):
+            payload = {}
+        page_state = self._redmine_page_state_from_payload(payload)
+        if page_state.get("nginx_error"):
+            status_label.setText("Redmine не открыл форму создания задачи. Проверьте авторизацию Redmine во встроенном браузере Око и URL шаблона Redmine.")
+            return
+        if page_state.get("login_required"):
+            status_label.setText("Войдите в Redmine во встроенном окне Око, затем повторите создание задачи.")
+            return
+        state["retried"] = True
+        status_label.setText("Авторизация Redmine выполнена. Открываю создание задачи...")
+        dialog.accept()
+        QTimer.singleShot(300, lambda: self._open_redmine_creation_dialog(redmine_url, items))
 
     def _open_redmine_creation_dialog(self, redmine_url, items):
         dialog = QDialog(self)
@@ -2082,7 +2225,7 @@ class LiveZabbixMonitorWidget(QWidget):
         root.addWidget(status_label)
 
         view = register_web_view(QWebEngineView(dialog))
-        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        profile = self._redmine_profile()
         if profile is not None:
             page = QWebEnginePage(profile, view)
             view.setPage(page)
@@ -2094,8 +2237,7 @@ class LiveZabbixMonitorWidget(QWidget):
             if not ok:
                 status_label.setText("Страница Redmine открылась с ошибкой. Проверьте доступ/авторизацию.")
                 return
-            status_label.setText("Redmine открыт. Создайте задачу; после страницы созданной задачи Zabbix обновится автоматически.")
-            self._detect_redmine_created_issue(view, status_label, current_items, state)
+            self._detect_redmine_creation_page_state(view, status_label, current_items, state)
 
         view.loadFinished.connect(on_loaded)
 
@@ -2110,6 +2252,25 @@ class LiveZabbixMonitorWidget(QWidget):
         self.redmine_dialogs.append(dialog)
         dialog.show()
         view.load(QUrl(redmine_url))
+
+
+    def _detect_redmine_creation_page_state(self, view, status_label, items, state):
+        page = view.page() if view is not None else None
+        if page is None:
+            return
+        page.runJavaScript(self._redmine_page_probe_script(), lambda result: self._on_redmine_creation_page_state_checked(result, view, status_label, items, state))
+
+    def _on_redmine_creation_page_state_checked(self, result, view, status_label, items, state):
+        try:
+            payload = json.loads(str(result or "{}"))
+        except (TypeError, ValueError):
+            payload = {}
+        page_state = self._redmine_page_state_from_payload(payload)
+        if page_state.get("nginx_error") or page_state.get("login_required"):
+            status_label.setText("Redmine не открыл форму создания задачи. Проверьте авторизацию Redmine во встроенном браузере Око и URL шаблона Redmine.")
+            return
+        status_label.setText("Redmine открыт. Создайте задачу; после страницы созданной задачи Zabbix обновится автоматически.")
+        self._detect_redmine_created_issue(view, status_label, items, state)
 
     def _detect_redmine_created_issue(self, view, status_label, items, state):
         if state.get("ack_started"):

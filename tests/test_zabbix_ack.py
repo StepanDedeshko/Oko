@@ -141,6 +141,25 @@ class ZabbixAutomaticAcknowledgementTests(unittest.TestCase):
         self.assertEqual(APP_VERSION, "0.3.1")
         self.assertIn('APP_VERSION = "0.3.1"', (Path(__file__).resolve().parents[1] / "app" / "app_info.py").read_text(encoding="utf-8"))
 
+
+    def test_redmine_auth_warmup_and_safe_diagnostics_are_present(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("_open_redmine_with_auth_check", source)
+        self.assertIn("Авторизация Redmine", source)
+        self.assertIn("Войдите в Redmine во встроенном окне Око, затем повторите создание задачи.", source)
+        self.assertIn("Redmine не открыл форму создания задачи. Проверьте авторизацию Redmine во встроенном браузере Око и URL шаблона Redmine.", source)
+        for marker in ["default error page for nginx", "/usr/share/nginx/html/50x.html", "red hat enterprise linux", "имя пользователя", "пароль", "sign in"]:
+            self.assertIn(marker, source.casefold())
+        for marker in ["configured_create_url", "final_scheme", "final_host", "final_path", "query_length", "total_url_length", "field_names"]:
+            self.assertIn(marker, source)
+        self.assertNotIn("QDesktopServices.openUrl(QUrl(redmine_url))", source)
+
+    def test_redmine_graph_lookup_disconnects_stored_slot_only(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("self._redmine_graph_lookup_load_slot", source)
+        self.assertIn("loadFinished.disconnect(self._redmine_graph_lookup_load_slot)", source)
+        self.assertNotIn("redmine_graph_lookup_view.loadFinished.disconnect()", source)
+
     def test_widget_has_task_creation_detection_integration_points(self):
         source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
         self.assertIn("_open_redmine_creation_dialog", source)
