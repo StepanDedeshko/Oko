@@ -36,12 +36,15 @@ def _prefer_live_zabbix_v1_first(settings: dict) -> bool:
     return bool((settings or {}).get("prefer_v1_first", False))
 
 
-def match_live_zabbix_detection_host(config: dict, host: str, ip: str = "") -> dict:
-    """Match a Live Zabbix host against configured v2/v1 detection node lists."""
+def live_zabbix_detection_node_lists(config: dict) -> dict:
     monitor_settings = (config or {}).get(LIVE_MONITOR_CONFIG_KEY, {}) if isinstance(config, dict) else {}
     version_lists = monitor_settings.get("live_zabbix_node_version_lists", {}) if isinstance(monitor_settings, dict) else {}
-    if not isinstance(version_lists, dict):
-        version_lists = {}
+    return version_lists if isinstance(version_lists, dict) else {}
+
+
+def match_live_zabbix_detection_host(config: dict, host: str, ip: str = "") -> dict:
+    """Match a Live Zabbix host against configured v2/v1 detection node lists."""
+    version_lists = live_zabbix_detection_node_lists(config)
 
     order = ("v1", "v2") if _prefer_live_zabbix_v1_first(version_lists) else ("v2", "v1")
     for version in order:
@@ -54,6 +57,77 @@ def match_live_zabbix_detection_host(config: dict, host: str, ip: str = "") -> d
             return result
 
     return {"matched": False, "version": "", "source": "unknown", "matched_by": "", "matched_alias": ""}
+
+
+def _live_zabbix_node_value(node, *keys):
+    if not isinstance(node, dict):
+        return ""
+    for key in keys:
+        value = node.get(key)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def live_zabbix_detection_itemid_from_node(node):
+    itemid = _live_zabbix_node_value(node, "itemid", "item_id", "detection_itemid", "detect_itemid", "history_itemid")
+    if itemid:
+        return str(itemid).strip()
+    items = node.get("items") if isinstance(node, dict) else None
+    if isinstance(items, dict):
+        for key in ("detections", "detects", "history", "default"):
+            if items.get(key):
+                return str(items[key]).strip()
+    return ""
+
+
+def live_zabbix_detection_result_text_from_node(node):
+    explicit = _live_zabbix_node_value(node, "detection_text", "check_text", "status_text")
+    if explicit:
+        return str(explicit).strip()
+    status = str(_live_zabbix_node_value(node, "detection_status", "check_status", "status") or "").strip().casefold()
+    if status in {"alert", "problem", "detections", "triggered"}:
+        return "есть сработки"
+    if status in {"ok", "no_detections", "none", "clear"}:
+        return "сработок нет"
+    has_detections = _live_zabbix_node_value(node, "has_detections", "detections_found")
+    if isinstance(has_detections, bool):
+        return "есть сработки" if has_detections else "сработок нет"
+    count = _live_zabbix_node_value(node, "detections_count", "detection_count", "alerts_count")
+    try:
+        return "есть сработки" if int(count) > 0 else "сработок нет"
+    except (TypeError, ValueError):
+        return "сработок нет"
+
+
+def build_live_zabbix_detection_status(config: dict, host: str, ip: str = "", *, force_rediscover: bool = False) -> dict:
+    host = str(host or "").strip()
+    ip = str(ip or "").strip()
+    if not host:
+        return {"text": "нет имени узла", "status": "NO_HOST", "matched": False}
+    match = match_live_zabbix_detection_host(config, host, ip)
+    if not match.get("matched"):
+        return {"text": "узел не найден в CSV", "status": "UNMATCHED", "matched": False}
+    node = match.get("node") if isinstance(match.get("node"), dict) else {}
+    itemid = live_zabbix_detection_itemid_from_node(node)
+    base = {
+        "matched": True,
+        "matched_by": match.get("matched_by", ""),
+        "matched_alias": match.get("matched_alias", ""),
+        "version": match.get("version", ""),
+        "source": match.get("source", ""),
+        "ip": ip or str(_live_zabbix_node_value(node, "ip") or ""),
+    }
+    if not itemid:
+        return {**base, "text": "itemid не найден", "status": "NO_ITEMID"}
+    text = live_zabbix_detection_result_text_from_node(node)
+    return {
+        **base,
+        "text": text,
+        "status": "ALERT" if text == "есть сработки" else "OK",
+        "itemid": itemid,
+        "rediscovered": bool(force_rediscover),
+    }
 
 
 def zabbix_auth_required_from_html(html: str) -> dict:

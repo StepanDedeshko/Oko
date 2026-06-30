@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from app.detection_matcher import match_zabbix_host_to_node
-from app.live_zabbix import match_live_zabbix_detection_host
+from app.live_zabbix import build_live_zabbix_detection_status, match_live_zabbix_detection_host
 
 
 class CombinedLiveZabbixFixesTests(unittest.TestCase):
@@ -77,6 +77,26 @@ class CombinedLiveZabbixFixesTests(unittest.TestCase):
         self.assertTrue(result["matched"])
         self.assertEqual(result["matched_by"], "dash_alias")
 
+
+    def test_build_detection_status_returns_final_states(self):
+        cfg = {
+            "live_zabbix_monitor": {
+                "live_zabbix_node_version_lists": {
+                    "v1_nodes": [
+                        {"host": "kitai_1", "normalized_host": "kitai_1", "version": "v1", "itemid": "100", "detections_count": 0},
+                        {"host": "kitai_2", "normalized_host": "kitai_2", "version": "v1", "itemid": "200", "detections_count": 3},
+                        {"host": "kitai_3", "normalized_host": "kitai_3", "version": "v1"},
+                    ],
+                    "v2_nodes": [],
+                }
+            }
+        }
+        self.assertEqual(build_live_zabbix_detection_status(cfg, "", "")["text"], "нет имени узла")
+        self.assertEqual(build_live_zabbix_detection_status(cfg, "missing", "")["text"], "узел не найден в CSV")
+        self.assertEqual(build_live_zabbix_detection_status(cfg, "китай 1 - kitai_1", "")["text"], "сработок нет")
+        self.assertEqual(build_live_zabbix_detection_status(cfg, "китай 2 - kitai_2", "")["text"], "есть сработки")
+        self.assertEqual(build_live_zabbix_detection_status(cfg, "китай 3 - kitai_3", "")["text"], "itemid не найден")
+
     def test_live_zabbix_detection_column_and_empty_status_render_helpers(self):
         source = Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py"
         text = source.read_text(encoding="utf-8")
@@ -90,6 +110,8 @@ class CombinedLiveZabbixFixesTests(unittest.TestCase):
             "Открыть history",
             "Copy host/IP/itemid",
             "нет имени узла",
+            "build_live_zabbix_detection_status",
+            "return self._complete_detection_check",
             "проверяется",
         ]:
             self.assertIn(marker, text)
@@ -104,6 +126,18 @@ class CombinedLiveZabbixFixesTests(unittest.TestCase):
     def test_app_version_unchanged(self):
         source = Path(__file__).resolve().parents[1] / "app" / "app_info.py"
         self.assertIn('APP_VERSION = "0.3.1"', source.read_text(encoding="utf-8"))
+
+
+class LiveZabbixDetectionSourceRegressionTests(unittest.TestCase):
+    def test_manual_detection_methods_are_not_log_only_placeholders(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        check_start = source.index("def check_detection_now")
+        check_end = source.index("def rediscover_detection_itemid", check_start)
+        rediscover_end = source.index("def open_detection_history", check_end)
+        self.assertIn("return self._complete_detection_check", source[check_start:check_end])
+        self.assertIn("return self._complete_detection_check", source[check_end:rediscover_end])
+        self.assertNotIn("Manual detection check requested", source[check_start:rediscover_end])
+        self.assertNotIn("Manual detection itemid rediscovery requested", source[check_start:rediscover_end])
 
 
 if __name__ == "__main__":

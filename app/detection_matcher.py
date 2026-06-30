@@ -74,4 +74,5 @@ def _match_result(node, matched_by, alias):
         "version": _node_value(node, "version"),
         "matched_by": matched_by,
         "matched_alias": str(alias or ""),
+        "node": node,
     }
