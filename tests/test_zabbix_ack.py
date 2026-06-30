@@ -8,6 +8,7 @@ from app.zabbix_ack import (
     extract_mm_otrs_reference,
     extract_redmine_reference,
     extract_task_ack_comments,
+    items_missing_acknowledgement_urls,
     mm_otrs_ack_comment,
     needs_acknowledgement,
     plan_zabbix_update,
@@ -56,6 +57,20 @@ class ZabbixAutomaticAcknowledgementTests(unittest.TestCase):
         Задача Redmine #12345: https://redmine.example/issues/12345
         """
         self.assertEqual(extract_task_ack_comments(text), ["Задача Redmine #12345: https://redmine.example/issues/12345"])
+
+
+    def test_copy_comment_flow_cancels_when_any_selected_row_lacks_ack_url(self):
+        items = [
+            {"ack_url": "https://z/ack/1", "problem_url": "", "host": "h1"},
+            {"ack_url": "", "problem_url": "", "host": "h2"},
+            {"ack_url": "", "problem_url": "https://z/problem/3", "host": "h3"},
+        ]
+        missing = items_missing_acknowledgement_urls(items)
+        self.assertEqual(missing, [items[1]])
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("missing_url_items = items_missing_acknowledgement_urls(items)", source)
+        self.assertIn("Копирование комментария Zabbix отменено: не у всех выбранных проблем есть URL подтверждения.", source)
+        self.assertLess(source.index("missing_url_items = items_missing_acknowledgement_urls(items)"), source.index("self._scan_next_zabbix_task_comment()"))
 
     def test_multiple_different_task_comments_require_choice_dialog(self):
         comments = extract_task_ack_comments(

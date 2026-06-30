@@ -39,7 +39,7 @@ from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
-from app.zabbix_ack import deduplicate_ack_targets, extract_mm_otrs_reference, extract_redmine_reference, extract_task_ack_comments, mm_otrs_ack_comment, redmine_ack_comment, zabbix_acknowledgement_js
+from app.zabbix_ack import deduplicate_ack_targets, extract_mm_otrs_reference, extract_redmine_reference, extract_task_ack_comments, items_missing_acknowledgement_urls, mm_otrs_ack_comment, redmine_ack_comment, zabbix_acknowledgement_js
 
 DOM_PARSER_SCRIPT = DOM_PARSER_SCRIPT_PLACEHOLDER
 WEBENGINE_JS_ERROR_MESSAGE = "Ошибка диагностики WebEngine: JS не вернул document.location.href. Проверьте выполнение runJavaScript, page.url/view.url и выбранный WebEngine profile."
@@ -3381,6 +3381,12 @@ class LiveZabbixMonitorWidget(QWidget):
         items = self._selected_live_problem_items()
         if len(items) < 2:
             QMessageBox.information(self, "Zabbix", "Выберите две или больше проблем Live Zabbix Monitor.")
+            return
+        missing_url_items = items_missing_acknowledgement_urls(items)
+        if missing_url_items:
+            QMessageBox.warning(self, "Zabbix", "У одной или нескольких выбранных проблем нет URL подтверждения Zabbix. Копирование отменено.")
+            self.poll_status_label.setText("Копирование комментария Zabbix отменено: не у всех выбранных проблем есть URL подтверждения.")
+            self.logger.warning("Zabbix task comment copy cancelled: missing ack URL items=%s", len(missing_url_items))
             return
         targets = deduplicate_ack_targets(items)
         if not targets:

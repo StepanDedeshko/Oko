@@ -104,12 +104,22 @@ def needs_acknowledgement(item) -> bool:
     return acknowledged is False
 
 
+def item_acknowledgement_url(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("ack_url") or item.get("problem_url") or "").strip()
+    return str(getattr(item, "ack_url", "") or getattr(item, "problem_url", "") or "").strip()
+
+
+def items_missing_acknowledgement_urls(items) -> list:
+    return [item for item in items or [] if not item_acknowledgement_url(item)]
+
+
 def deduplicate_ack_targets(items) -> list[ZabbixAckTarget]:
     targets = []
     seen = set()
     for item in items or []:
         get = item.get if isinstance(item, dict) else lambda key, default="": getattr(item, key, default)
-        url = str(get("ack_url", "") or get("problem_url", "") or "").strip()
+        url = item_acknowledgement_url(item)
         if not url or url in seen:
             continue
         seen.add(url)
