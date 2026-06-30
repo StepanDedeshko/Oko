@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+import csv
+import hashlib
+import io
 import json
+import re
 
 from app.trigger_model import ZabbixProblemSnapshotItem, build_problem_key
 from app.duty_zabbix import (
@@ -93,7 +97,16 @@ def apply_live_zabbix_table_filters(items, *, period=LIVE_PERIOD_ALL, unprocesse
 
 
 def default_live_monitor_config() -> dict:
-    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 60, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True}
+    return {
+        "enabled": False,
+        "zabbix_id": "",
+        "problems_url": "",
+        "poll_interval_seconds": 60,
+        "history_path": "data/live_zabbix_history.jsonl",
+        "duty_filter_enabled": True,
+        "live_zabbix_node_version_lists": {"v1_nodes": [], "v2_nodes": []},
+        "live_zabbix_detection_item_discovery": {"enabled": False, "prefer_v2_on_conflict": True},
+    }
 
 
 def ensure_live_monitor_defaults(config: dict) -> dict:
@@ -101,11 +114,130 @@ def ensure_live_monitor_defaults(config: dict) -> dict:
     defaults = default_live_monitor_config()
     for key, value in defaults.items():
         settings.setdefault(key, value)
+    settings.setdefault("live_zabbix_node_version_lists", {"v1_nodes": [], "v2_nodes": []})
+    settings.setdefault("live_zabbix_detection_item_discovery", {"enabled": False, "prefer_v2_on_conflict": True})
     try:
         settings["poll_interval_seconds"] = max(60, min(3600, int(settings.get("poll_interval_seconds", 60))))
     except (TypeError, ValueError):
         settings["poll_interval_seconds"] = 60
     return settings
+
+
+DASH_SEPARATORS = "-–—‑‒―−"
+HEADER_TITLES = {
+    "ip сервера", "ip сервера", "ip server", "имя сервера", "имя узла", "сервер", "узел"
+}
+
+
+def normalize_detection_text(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").replace("_", " ").strip()).casefold()
+
+
+def compact_detection_text(value: str) -> str:
+    return re.sub(r"[\s_\-–—‑‒―−.]+", "", str(value or "").strip()).casefold()
+
+
+def safe_detection_identifier(value: str) -> dict:
+    text = str(value or "")
+    normalized = normalize_detection_text(text)
+    return {"sha256_12": hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12], "length": len(text), "normalized_length": len(normalized)}
+
+
+def is_live_zabbix_node_header(value: str) -> bool:
+    normalized = normalize_detection_text(value)
+    return normalized in HEADER_TITLES
+
+
+def parse_live_zabbix_node_list(text: str) -> list[str]:
+    result = []
+    seen = set()
+    sample = str(text or "")
+    try:
+        dialect = csv.Sniffer().sniff(sample[:2048], delimiters=",;\t") if sample.strip() else csv.excel
+    except csv.Error:
+        dialect = csv.excel
+    for row in csv.reader(io.StringIO(sample), dialect):
+        for raw_cell in row:
+            cell = str(raw_cell or "").strip().strip("\ufeff")
+            if not cell or is_live_zabbix_node_header(cell):
+                continue
+            key = normalize_detection_text(cell)
+            if key not in seen:
+                seen.add(key)
+                result.append(cell)
+    return result
+
+
+def zabbix_host_aliases(host: str) -> dict:
+    full = str(host or "").strip()
+    normalized_full = normalize_detection_text(full)
+    parts = re.split(rf"\s*[{re.escape(DASH_SEPARATORS)}]\s*", full)
+    right = parts[-1].strip() if len(parts) > 1 else full
+    aliases = []
+    for value in (full, normalized_full, right, normalize_detection_text(right), compact_detection_text(right)):
+        if value and value not in aliases:
+            aliases.append(value)
+    return {
+        "full": full,
+        "normalized_full": normalized_full,
+        "dash_alias": right,
+        "normalized_dash_alias": normalize_detection_text(right),
+        "compact_dash_alias": compact_detection_text(right),
+        "aliases": aliases,
+    }
+
+
+def _node_indexes(nodes):
+    exact = {}
+    compact = {}
+    for node in nodes or []:
+        text = str(node or "").strip()
+        if not text or is_live_zabbix_node_header(text):
+            continue
+        exact[normalize_detection_text(text)] = text
+        compact[compact_detection_text(text)] = text
+    return exact, compact
+
+
+def match_live_zabbix_detection_host(config: dict, host: str, ip: str = "") -> dict:
+    settings = ensure_live_monitor_defaults(config or {})
+    lists = settings.get("live_zabbix_node_version_lists") or {}
+    prefer_v2 = bool((settings.get("live_zabbix_detection_item_discovery") or {}).get("prefer_v2_on_conflict", True))
+    versions = [("v2", lists.get("v2_nodes") or []), ("v1", lists.get("v1_nodes") or [])] if prefer_v2 else [("v1", lists.get("v1_nodes") or []), ("v2", lists.get("v2_nodes") or [])]
+    aliases = zabbix_host_aliases(host)
+    diagnostics = {"host": safe_detection_identifier(host), "alias_count": len(aliases["aliases"]), "dash_alias": aliases["dash_alias"]}
+    checks = [
+        ("exact_full", aliases["normalized_full"], "exact"),
+        ("dash_alias", aliases["dash_alias"], "exact"),
+        ("normalized_dash_alias", aliases["normalized_dash_alias"], "exact"),
+        ("compact_dash_alias", aliases["compact_dash_alias"], "compact"),
+        ("suffix", aliases["normalized_dash_alias"], "suffix"),
+        ("compact_suffix", aliases["compact_dash_alias"], "compact_suffix"),
+    ]
+    for matched_by, candidate, mode in checks:
+        candidate_norm = normalize_detection_text(candidate)
+        candidate_compact = compact_detection_text(candidate)
+        if not candidate_norm and not candidate_compact:
+            continue
+        for version, nodes in versions:
+            exact, compact = _node_indexes(nodes)
+            if mode == "exact" and candidate_norm in exact:
+                return {"matched": True, "version": version, "source": version, "matched_by": matched_by, "matched_alias": exact[candidate_norm], "aliases": aliases, "diagnostics": diagnostics}
+            if mode == "compact" and candidate_compact in compact:
+                return {"matched": True, "version": version, "source": version, "matched_by": matched_by, "matched_alias": compact[candidate_compact], "aliases": aliases, "diagnostics": diagnostics}
+            if mode == "suffix":
+                for key, node in exact.items():
+                    if candidate_norm.endswith(key) or key.endswith(candidate_norm):
+                        return {"matched": True, "version": version, "source": version, "matched_by": matched_by, "matched_alias": node, "aliases": aliases, "diagnostics": diagnostics}
+            if mode == "compact_suffix":
+                for key, node in compact.items():
+                    if candidate_compact.endswith(key) or key.endswith(candidate_compact):
+                        return {"matched": True, "version": version, "source": version, "matched_by": matched_by, "matched_alias": node, "aliases": aliases, "diagnostics": diagnostics}
+    if ip:
+        for version, nodes in versions:
+            if str(ip).strip() in {str(node).strip() for node in nodes or []}:
+                return {"matched": True, "version": version, "source": version, "matched_by": "ip", "matched_alias": str(ip).strip(), "aliases": aliases, "diagnostics": diagnostics}
+    return {"matched": False, "version": "", "source": "unknown", "matched_by": "", "matched_alias": "", "aliases": aliases, "diagnostics": diagnostics}
 
 
 def problem_to_duty_filter_row(problem: ZabbixProblemSnapshotItem | dict) -> dict:

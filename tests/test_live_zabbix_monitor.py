@@ -433,3 +433,56 @@ class LiveZabbixMonitorSilentAuthAndFilterTests(unittest.TestCase):
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_7_DAYS, now=now)], ["today_no_new", "today_yes", "week_no"])
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, unprocessed_only=True, now=now)], ["today_no_new", "week_no", "old"])
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_TODAY, unprocessed_only=True, now=now)], ["today_no_new"])
+
+class LiveZabbixDetectionAliasTests(unittest.TestCase):
+    def _config(self, node="Kitai_1"):
+        return {"live_zabbix_monitor": {"live_zabbix_node_version_lists": {"v1_nodes": [node], "v2_nodes": []}, "live_zabbix_detection_item_discovery": {"enabled": True}}}
+
+    def test_csv_kitai_matches_ascii_dash_host(self):
+        from app.live_zabbix import match_live_zabbix_detection_host
+        result = match_live_zabbix_detection_host(self._config(), "Китай 1 - Kitai_1")
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["version"], "v1")
+        self.assertEqual(result["matched_by"], "dash_alias")
+
+    def test_csv_kitai_matches_en_dash_host(self):
+        from app.live_zabbix import match_live_zabbix_detection_host
+        self.assertEqual(match_live_zabbix_detection_host(self._config(), "Китай 1 – Kitai_1")["matched_by"], "dash_alias")
+
+    def test_csv_kitai_matches_em_dash_host(self):
+        from app.live_zabbix import match_live_zabbix_detection_host
+        self.assertEqual(match_live_zabbix_detection_host(self._config(), "Китай 1 — Kitai_1")["matched_by"], "dash_alias")
+
+    def test_csv_kitai_matches_minus_sign_host(self):
+        from app.live_zabbix import match_live_zabbix_detection_host
+        self.assertEqual(match_live_zabbix_detection_host(self._config(), "Китай 1 − Kitai_1")["matched_by"], "dash_alias")
+
+    def test_csv_kitai_matches_case_insensitively(self):
+        from app.live_zabbix import match_live_zabbix_detection_host
+        result = match_live_zabbix_detection_host(self._config("kitai_1"), "Китай 1 - Kitai_1")
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["matched_by"], "dash_alias")
+
+    def test_dash_alias_is_preferred_before_suffix_and_compact(self):
+        from app.live_zabbix import match_live_zabbix_detection_host
+        config = {"live_zabbix_monitor": {"live_zabbix_node_version_lists": {"v1_nodes": ["Kitai_1", "1"], "v2_nodes": []}, "live_zabbix_detection_item_discovery": {"enabled": True}}}
+        self.assertEqual(match_live_zabbix_detection_host(config, "Китай 1 - Kitai_1")["matched_by"], "dash_alias")
+
+    def test_safe_detection_identifier_does_not_expose_host_text(self):
+        from app.live_zabbix import safe_detection_identifier
+        logged = repr(safe_detection_identifier("Китай 1 - Kitai_1"))
+        self.assertNotIn("Китай", logged)
+        self.assertNotIn("Kitai_1", logged)
+
+    def test_headers_are_skipped_on_import(self):
+        from app.live_zabbix import parse_live_zabbix_node_list
+        self.assertEqual(parse_live_zabbix_node_list("имя_узла\nKitai_1\nсервер\n"), ["Kitai_1"])
+
+    def test_unmatched_and_missing_host_statuses_are_distinct(self):
+        from app.live_zabbix import match_live_zabbix_detection_host
+        self.assertFalse(match_live_zabbix_detection_host(self._config(), "Китай 2 - Other")["matched"])
+        self.assertEqual(match_live_zabbix_detection_host(self._config(), "")["matched"], False)
+
+    def test_app_version_unchanged(self):
+        from app.app_info import APP_VERSION
+        self.assertEqual(APP_VERSION, "0.3.1")

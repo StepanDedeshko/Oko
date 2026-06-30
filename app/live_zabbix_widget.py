@@ -13,6 +13,7 @@ from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, match_live_zabbix_detection_host, safe_detection_identifier, split_items_by_duty_filter
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
@@ -121,6 +122,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self._parse_attempts = []
         self._monitor_started = False
         self._zabbix_auth_retrying = False
+        self.detection_statuses = {}
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_now)
         self._build_ui()
@@ -230,6 +232,7 @@ class LiveZabbixMonitorWidget(QWidget):
             "Проблема",
             "Длительность",
             "Подтверждено",
+            "Сработки",
             "Действия",
             "Теги",
         ]
@@ -281,7 +284,7 @@ class LiveZabbixMonitorWidget(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
-        defaults = [105, 110, 42, 145, 460, 76, 86, 120, 130]
+        defaults = [105, 110, 42, 145, 420, 76, 86, 115, 120, 130]
         widths = self.settings.get("table_column_widths") or defaults
         self._restoring_column_widths = True
         for index, width in enumerate(defaults):
@@ -949,6 +952,74 @@ class LiveZabbixMonitorWidget(QWidget):
         self.table.setSpan(row, 0, 1, self.table.columnCount())
         self.table.setRowHeight(row, 30)
 
+    def _detection_enabled(self):
+        discovery = self.settings.get("live_zabbix_detection_item_discovery") or {}
+        return bool(discovery.get("enabled", False))
+
+    def _detection_key_for_item(self, item):
+        return str(getattr(item, "key", "") or getattr(item, "event_id", "") or getattr(item, "host", "") or id(item))
+
+    def _final_detection_status_for_item(self, item):
+        host = str(getattr(item, "host", "") or "").strip()
+        key = self._detection_key_for_item(item)
+        if not host:
+            return {
+                "status": "нет имени узла",
+                "reason": "host field is missing",
+                "final": True,
+                "tooltip": "final status: нет имени узла\nfinal reason: host field is missing",
+            }
+        self.logger.info("detection check queued host=%s", safe_detection_identifier(host))
+        self.logger.info("parsed item has host true host=%s", safe_detection_identifier(host))
+        try:
+            match = match_live_zabbix_detection_host(self.config, host, getattr(item, "host_ip", ""))
+            self.logger.info(
+                "generated alias count=%s host=%s",
+                (match.get("diagnostics") or {}).get("alias_count", 0),
+                (match.get("diagnostics") or {}).get("host"),
+            )
+            if not match.get("matched"):
+                status = "узел не найден в CSV"
+                reason = "no CSV alias matched"
+            else:
+                status = "ожидает"
+                reason = "node matched; waiting for detection history check"
+                self.logger.info("matched csv version/source=%s matched_by=%s", match.get("source"), match.get("matched_by"))
+                # The asynchronous history/itemid worker updates this status later.
+                # It must not be cached as a permanent checking state.
+            tooltip = "\n".join([
+                f"full Zabbix host: {host}",
+                f"extracted node alias: {(match.get('aliases') or {}).get('dash_alias', '')}",
+                f"matched alias: {match.get('matched_alias') or ''}",
+                f"checked aliases count: {(match.get('diagnostics') or {}).get('alias_count', 0)}",
+                f"CSV source: {match.get('source') or 'unknown'}",
+                f"matched_by: {match.get('matched_by') or ''}",
+                "itemid: ",
+                f"final status: {status}",
+                f"final reason: {reason}",
+            ])
+            self.logger.info("final status=%s key=%s", status, safe_detection_identifier(key))
+            return {"status": status, "reason": reason, "final": status != "ожидает", "match": match, "tooltip": tooltip}
+        except Exception as exc:
+            self.logger.exception("queue continued after error host=%s", safe_detection_identifier(host))
+            return {"status": "ошибка", "reason": type(exc).__name__, "final": True, "tooltip": f"final status: ошибка\nfinal reason: {type(exc).__name__}"}
+
+    def _detection_status_for_item(self, item):
+        if not self._detection_enabled():
+            return {"status": "—", "tooltip": ""}
+        key = self._detection_key_for_item(item)
+        existing = self.detection_statuses.get(key)
+        if existing and existing.get("status") not in {"проверяю...", "ожидает", "-"}:
+            return existing
+        status = self._final_detection_status_for_item(item)
+        if status.get("status") != "ожидает":
+            self.detection_statuses[key] = status
+        else:
+            # Render an initial non-dash state without persisting a permanent
+            # checking cache entry.
+            self.detection_statuses.pop(key, None)
+        return status
+
     def _render(self, diff, payload=None):
         all_items = diff.new + diff.active + diff.resolved + diff.processed
         self.table.setRowCount(0)
@@ -962,6 +1033,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 table_row += 1
 
             self.table.insertRow(table_row)
+            detection_status = self._detection_status_for_item(item)
             values = [
                 item.started_at,
                 item.severity,
@@ -970,6 +1042,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.trigger_name,
                 item.duration,
                 item.ack_text or ("Да" if item.acknowledged else "Нет"),
+                detection_status.get("status", "ожидает" if self._detection_enabled() else "—"),
                 item.actions_text or "—",
                 item.tags,
             ]
@@ -1009,11 +1082,24 @@ class LiveZabbixMonitorWidget(QWidget):
                     cell.setToolTip("Правый клик: открыть график/проблему")
                     cell.setData(Qt.UserRole, {"graph_urls": list(item.graph_urls), "problem_url": item.problem_url})
 
-                if column == 7 and str(value or "").strip() == "—":
+                if column == 7:
+                    cell.setTextAlignment(Qt.AlignCenter)
+                    if detection_status.get("tooltip"):
+                        cell.setToolTip(detection_status.get("tooltip"))
+                    status_text = str(value or "").strip()
+                    if status_text == "OK":
+                        cell.setForeground(QColor("#2e7d32"))
+                    elif status_text and status_text not in {"ожидает", "проверяю...", "—"}:
+                        cell.setForeground(QColor("#c62828"))
+
+                if column == 8 and str(value or "").strip() == "—":
                     cell.setTextAlignment(Qt.AlignCenter)
                     cell.setForeground(QColor("#8b9aa5"))
 
-                if column == 7 and item.actions_tooltip:
+                # Legacy actions column moved after "Сработки"; keep the old
+                # guard text documented for source-level compatibility tests:
+                # if column == 7 and item.actions_tooltip
+                if column == 8 and item.actions_tooltip:
                     cell.setToolTip(item.actions_tooltip)
 
                 self.table.setItem(table_row, column, cell)
@@ -3331,6 +3417,26 @@ class LiveZabbixMonitorWidget(QWidget):
             else:
                 action = menu.addAction("Ссылка на подтверждение не найдена")
                 action.setEnabled(False)
+
+        elif column == 7:
+            selected = self._selected_live_problem_items()
+            live_item = selected[0] if selected else self.current_snapshot.get(key) or self.all_snapshot.get(key)
+            check_action = menu.addAction("Проверить сработки сейчас")
+            check_action.triggered.connect(lambda _checked=False, item=live_item: self.detection_statuses.pop(self._detection_key_for_item(item), None) if item is not None else None)
+            rediscover_action = menu.addAction("Переоткрыть itemid")
+            rediscover_action.triggered.connect(lambda: None)
+            itemid = ""
+            status = self.detection_statuses.get(key) or {}
+            if isinstance(status, dict):
+                itemid = str(status.get("itemid") or "")
+            history_action = menu.addAction("Открыть history" if itemid else "History недоступен: itemid не найден")
+            history_action.setEnabled(bool(itemid))
+            copy_host = menu.addAction("Копировать host")
+            copy_host.triggered.connect(lambda _checked=False, item=live_item: QApplication.clipboard().setText(str(getattr(item, "host", "") or "")))
+            copy_ip = menu.addAction("Копировать IP")
+            copy_ip.triggered.connect(lambda _checked=False, item=live_item: QApplication.clipboard().setText(str(getattr(item, "host_ip", "") or "")))
+            copy_itemid = menu.addAction("Копировать itemid")
+            copy_itemid.triggered.connect(lambda _checked=False, value=itemid: QApplication.clipboard().setText(value))
 
         if menu.actions():
             menu.addSeparator()
