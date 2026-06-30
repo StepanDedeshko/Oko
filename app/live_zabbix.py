@@ -93,7 +93,7 @@ def apply_live_zabbix_table_filters(items, *, period=LIVE_PERIOD_ALL, unprocesse
 
 
 def default_live_monitor_config() -> dict:
-    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 60, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True}
+    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 60, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True, "auto_ack_after_task_enabled": True, "auto_ack_after_redmine_enabled": True, "auto_ack_after_mm_otrs_enabled": True}
 
 
 def ensure_live_monitor_defaults(config: dict) -> dict:
