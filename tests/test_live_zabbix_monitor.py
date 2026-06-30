@@ -572,5 +572,17 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("close_problem is intentionally never checked or clicked", self.widget_source)
         self.assertNotIn("close.click()", self.widget_source)
 
+    def test_manual_scanner_accepts_any_message_row_text(self):
+        self.assertIn("copy ANY non-empty Zabbix message", self.widget_source)
+        self.assertIn("raw_message_candidates", self.widget_source)
+        self.assertIn("message_row_snippets", self.widget_source)
+        self.assertIn("if (messageText)", self.widget_source)
+        self.assertIn("addUnique(comments, messageText)", self.widget_source)
+
+    def test_manual_scanner_does_not_copy_arbitrary_row_text(self):
+        self.assertIn("Fallback only when the Message/Command column cannot be detected", self.widget_source)
+        self.assertIn("normalizeCandidate(rowText, false)", self.widget_source)
+        self.assertNotIn("addUnique(comments, rowText)", self.widget_source)
+
     def test_app_version_unchanged(self):
         self.assertIn('APP_VERSION = "0.3.1"', self.app_info)

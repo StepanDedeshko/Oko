@@ -4105,12 +4105,14 @@ class LiveZabbixMonitorWidget(QWidget):
             comments = [str(value) for value in payload.get("comments", []) if str(value or "").strip()]
             self._task_comment_scan_found.extend(comments)
             self.logger.info(
-                "Task comment scan diagnostics: current_url=%s hat_eventactions_widget_exists=%s action_rows=%s message_rows=%s extracted=%s selected_unique=%s",
+                "Task comment scan diagnostics: current_url=%s hat_eventactions_widget_exists=%s action_rows=%s message_rows=%s extracted=%s raw_message_candidates=%s message_row_snippets=%s selected_unique=%s",
                 payload.get("current_url", url),
                 payload.get("hat_eventactions_widget_exists"),
                 payload.get("action_rows"),
                 payload.get("message_rows"),
                 comments,
+                payload.get("raw_message_candidates", []),
+                payload.get("message_row_snippets", []),
                 sorted(set(self._task_comment_scan_found)),
             )
             self._scan_next_task_comment_page()
@@ -4128,63 +4130,112 @@ class LiveZabbixMonitorWidget(QWidget):
   function titleText(element) {
     if (!element) return '';
     var parts = [text(element), String(element.getAttribute('title') || '')];
-    Array.from(element.querySelectorAll('[title]')).forEach(function(child) { parts.push(String(child.getAttribute('title') || '')); });
+    Array.from(element.querySelectorAll('[title]')).forEach(function(child) {
+      parts.push(String(child.getAttribute('title') || ''));
+    });
     return parts.join(' ');
+  }
+  function addUnique(list, value) {
+    var cleaned = String(value || '').replace(/\s+/g, ' ').trim();
+    if (cleaned && list.indexOf(cleaned) === -1) list.push(cleaned);
   }
   function normalizeCandidate(value, allowPlainNumber) {
     var source = String(value || '').replace(/\s+/g, ' ').trim();
     if (!source) return [];
     var found = [];
+
     var redmine = source.match(/Задача\s+Redmine\s+#(\d+)\s*:\s*(https?:\/\/\S+)/i);
     if (redmine) found.push('Задача Redmine #' + redmine[1] + ': ' + redmine[2]);
+
     var mmHashUrl = source.match(/Задача\s+на\s+ММ\s+#(\d+)\s*:\s*(https?:\/\/\S+)/i);
     if (mmHashUrl) found.push('Задача на ММ #' + mmHashUrl[1] + ': ' + mmHashUrl[2]);
+
     var mmHash = source.match(/Задача\s+на\s+ММ\s+#(\d{6,})\b/i);
     if (mmHash && !mmHashUrl) found.push('Задача на ММ: ' + mmHash[1]);
+
     var labelNumber = source.match(/(?:Задача\s+на\s+ММ|Задача\s+ММ|ММ|OTRS)\s*:\s*(\d{6,})\b/i);
     if (labelNumber) found.push('Задача на ММ: ' + labelNumber[1]);
+
     if (allowPlainNumber) {
       var plain = source.match(/^\D*(\d{6,})\D*$/);
       if (plain) found.push('Задача на ММ: ' + plain[1]);
     }
+
     return found;
   }
   function headerIndexes(table) {
-    var headers = Array.from(table.querySelectorAll('thead th')).map(function(th) { return text(th).toLowerCase(); });
+    var headers = Array.from(table.querySelectorAll('thead th')).map(function(th) {
+      return text(th).toLowerCase();
+    });
     return {
       action: headers.findIndex(function(value) { return /действие|action/.test(value); }),
       message: headers.findIndex(function(value) { return /сообщение\s*\/\s*команда|message|command/.test(value); })
     };
   }
+
   var widget = document.querySelector('#hat_eventactions_widget, #hat_eventactions');
-  var rows = widget ? Array.from(widget.querySelectorAll('tbody tr, tr')).filter(function(row) { return row.querySelectorAll('td').length; }) : [];
+  var rows = widget ? Array.from(widget.querySelectorAll('tbody tr, tr')).filter(function(row) {
+    return row.querySelectorAll('td').length;
+  }) : [];
+
   var comments = [];
+  var rawMessageCandidates = [];
+  var messageRowSnippets = [];
   var messageRows = 0;
+
   rows.forEach(function(row) {
     var table = row.closest('table');
     var indexes = table ? headerIndexes(table) : {action: -1, message: -1};
     var cells = Array.from(row.querySelectorAll('td'));
     var actionCell = indexes.action >= 0 ? cells[indexes.action] : row;
     var messageCell = indexes.message >= 0 ? cells[indexes.message] : null;
+
     var markerText = titleText(actionCell);
     var hasMessageMarker = !!row.querySelector('.icon-action-msg') || /Сообщение|Message/i.test(markerText);
     if (!hasMessageMarker) return;
+
     messageRows += 1;
+
     var messageText = messageCell ? text(messageCell) : '';
     var rowText = text(row);
-    normalizeCandidate(messageText, true).concat(normalizeCandidate(rowText, false)).forEach(function(comment) {
-      if (comments.indexOf(comment) === -1) comments.push(comment);
+    var snippet = (messageText || rowText).slice(0, 200);
+    if (snippet) messageRowSnippets.push(snippet);
+
+    var normalized = normalizeCandidate(messageText, true);
+
+    if (normalized.length) {
+      normalized.forEach(function(comment) { addUnique(comments, comment); });
+      return;
+    }
+
+    // Main rule: copy ANY non-empty Zabbix message from the real Message/Command column.
+    // This is intentionally not template-based. It accepts comments like:
+    // "Создана задача на метрополис: ...", "Переоткрыл заявку ...", etc.
+    if (messageText) {
+      addUnique(comments, messageText);
+      addUnique(rawMessageCandidates, messageText);
+      return;
+    }
+
+    // Fallback only when the Message/Command column cannot be detected:
+    // do NOT copy arbitrary row text, only known normalized task formats.
+    normalizeCandidate(rowText, false).forEach(function(comment) {
+      addUnique(comments, comment);
     });
   });
+
   return JSON.stringify({
     current_url: String(window.location.href || ''),
     hat_eventactions_widget_exists: !!widget,
     action_rows: rows.length,
     message_rows: messageRows,
+    raw_message_candidates: rawMessageCandidates,
+    message_row_snippets: messageRowSnippets.slice(0, 20),
     comments: comments
   });
 })();
 """
+
 
 
     def open_graphs(self, urls):
