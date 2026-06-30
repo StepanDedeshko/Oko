@@ -23,6 +23,121 @@ LIVE_PERIOD_TODAY = "today"
 LIVE_PERIOD_7_DAYS = "7_days"
 
 
+_NODE_HEADER_VALUES = {
+    "ip",
+    "ip адрес",
+    "ip-address",
+    "ip address",
+    "host",
+    "hostname",
+    "normalized_host",
+    "version",
+    "узел сети",
+    "узел",
+}
+
+
+def _normalize_node_text(value) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _compact_node_text(value) -> str:
+    return "".join(ch for ch in _normalize_node_text(value) if ch.isalnum())
+
+
+def _is_node_header_like(value) -> bool:
+    text = _normalize_node_text(value)
+    return not text or text in _NODE_HEADER_VALUES
+
+
+def _node_indexes(nodes) -> dict:
+    """Build host and IP lookup indexes for plain-string and imported dict nodes."""
+    exact_hosts = {}
+    compact_hosts = {}
+    ips = {}
+    for node in nodes or []:
+        host_candidates = []
+        ip_candidates = []
+        if isinstance(node, dict):
+            host_candidates.extend([node.get("host"), node.get("normalized_host")])
+            ip_candidates.append(node.get("ip"))
+        else:
+            host_candidates.append(node)
+
+        for candidate in host_candidates:
+            if _is_node_header_like(candidate):
+                continue
+            text = str(candidate or "").strip()
+            normalized = _normalize_node_text(text)
+            compact = _compact_node_text(text)
+            exact_hosts.setdefault(normalized, text)
+            if compact:
+                compact_hosts.setdefault(compact, text)
+
+        for candidate in ip_candidates:
+            if _is_node_header_like(candidate):
+                continue
+            text = str(candidate or "").strip()
+            ips.setdefault(text, text)
+
+    return {"exact_hosts": exact_hosts, "compact_hosts": compact_hosts, "ips": ips}
+
+
+def _live_zabbix_node_version_lists(config: dict) -> dict:
+    settings = (config or {}).get(LIVE_MONITOR_CONFIG_KEY, {}) if isinstance(config, dict) else {}
+    lists = settings.get("live_zabbix_node_version_lists", {}) if isinstance(settings, dict) else {}
+    return lists if isinstance(lists, dict) and lists.get("enabled", False) else {}
+
+
+def _host_alias_candidates(host: str) -> list[tuple[str, str]]:
+    text = str(host or "").strip()
+    candidates = []
+    for separator in (" - ", " – ", " — "):
+        if separator in text:
+            candidates.extend(("dash_alias", part.strip()) for part in text.split(separator))
+    candidates.append(("host", text))
+    seen = set()
+    result = []
+    for matched_by, candidate in candidates:
+        key = _normalize_node_text(candidate)
+        if key and key not in seen:
+            seen.add(key)
+            result.append((matched_by, candidate))
+    return result
+
+
+def match_live_zabbix_detection_host(config: dict, host: str, ip: str = "") -> dict:
+    """Match a live Zabbix host against configured v1/v2 node lists."""
+    lists = _live_zabbix_node_version_lists(config)
+    result = {"matched": False, "version": "", "matched_by": "", "matched_alias": ""}
+    if not lists:
+        return result
+
+    versions = []
+    for key, value in lists.items():
+        if key.endswith("_nodes") and isinstance(value, list):
+            versions.append((key[:-6], value))
+
+    for version, nodes in versions:
+        indexes = _node_indexes(nodes)
+        for matched_by, candidate in _host_alias_candidates(host):
+            normalized = _normalize_node_text(candidate)
+            compact = _compact_node_text(candidate)
+            matched_alias = indexes["exact_hosts"].get(normalized)
+            if matched_alias:
+                return {"matched": True, "version": version, "matched_by": matched_by, "matched_alias": matched_alias}
+            matched_alias = indexes["compact_hosts"].get(compact)
+            if matched_alias:
+                return {"matched": True, "version": version, "matched_by": "compact_host", "matched_alias": matched_alias}
+
+        ip_text = str(ip or "").strip()
+        matched_ip = indexes["ips"].get(ip_text)
+        if matched_ip:
+            return {"matched": True, "version": version, "matched_by": "ip", "matched_alias": matched_ip}
+
+    return result
+
+
 def zabbix_auth_required_from_html(html: str) -> dict:
     """Detect Zabbix expired-session pages without exposing page text or secrets."""
     text = str(html or "")

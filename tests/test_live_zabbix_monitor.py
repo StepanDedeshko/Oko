@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.live_zabbix import diff_snapshots
+from app.live_zabbix import diff_snapshots, match_live_zabbix_detection_host
 from app.trigger_model import (
     SPECIAL_TRIGGER_KIND,
     append_history_event,
@@ -15,6 +15,46 @@ from app.trigger_model import (
 
 
 class LiveZabbixMonitorModelTests(unittest.TestCase):
+    def test_live_zabbix_host_matching_supports_plain_string_nodes(self):
+        cfg = {
+            "live_zabbix_monitor": {
+                "live_zabbix_node_version_lists": {
+                    "enabled": True,
+                    "v1_nodes": ["kitai_1"],
+                    "v2_nodes": [],
+                    "prefer_csv_version": True,
+                }
+            }
+        }
+
+        result = match_live_zabbix_detection_host(cfg, "китай 1 - kitai_1", "")
+
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["version"], "v1")
+        self.assertEqual(result["matched_by"], "dash_alias")
+        self.assertEqual(result["matched_alias"], "kitai_1")
+
+    def test_live_zabbix_host_matching_supports_imported_dict_nodes(self):
+        cfg = {
+            "live_zabbix_monitor": {
+                "live_zabbix_node_version_lists": {
+                    "enabled": True,
+                    "v1_nodes": [
+                        {"ip": "", "host": "kitai_1", "normalized_host": "kitai_1", "version": "v1"}
+                    ],
+                    "v2_nodes": [],
+                    "prefer_csv_version": True,
+                }
+            }
+        }
+
+        result = match_live_zabbix_detection_host(cfg, "китай 1 - kitai_1", "")
+
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["version"], "v1")
+        self.assertEqual(result["matched_by"], "dash_alias")
+        self.assertEqual(result["matched_alias"], "kitai_1")
+
     def test_build_problem_key_prefers_stable_id_and_has_fallback(self):
         self.assertEqual(build_problem_key({"event_id": "100500", "host": "h"}), "100500")
         fallback = build_problem_key({"host": " Server 01 ", "trigger_name": " CPU High ", "started_at": "10:00", "severity": "High"})
