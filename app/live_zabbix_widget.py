@@ -3869,8 +3869,32 @@ class LiveZabbixMonitorWidget(QWidget):
   if (step === 'check_submit') {
     var bodyText = text(document.body);
     var error = document.querySelector('.msg-bad, .message-error, .alert-danger');
+    var form = document.querySelector('#acknowledge_form');
+    var textarea = document.querySelector('.overlay-dialogue #acknowledge_form textarea#message, #acknowledge_form textarea, textarea#message');
+    var eventActions = eventActionsText();
+    var acknowledgedNow = acknowledgedFromPage();
+    var hasDuplicateNow = duplicate();
+
     if (error && visible(error)) return JSON.stringify({ok:false, error:text(error), diagnostics:diagnostics()});
-    if (!document.querySelector('.overlay-dialogue') || /успеш|success|acknowledge\.create/i.test(bodyText)) return JSON.stringify({ok:true, submitted_done:true, status:'Комментарий Zabbix добавлен', diagnostics:diagnostics()});
+
+    // Zabbix may keep an overlay/sidebar shell after submit, but the actual
+    // acknowledge form disappears. Treat this as successful completion.
+    if (!form && !textarea) {
+      return JSON.stringify({
+        ok:true,
+        submitted_done:true,
+        form_disappeared:true,
+        acknowledged_now:acknowledgedNow,
+        duplicate_now:hasDuplicateNow,
+        status:'Комментарий Zabbix добавлен',
+        diagnostics:diagnostics()
+      });
+    }
+
+    if (!document.querySelector('.overlay-dialogue') || /успеш|success|acknowledge\.create/i.test(bodyText)) {
+      return JSON.stringify({ok:true, submitted_done:true, status:'Комментарий Zabbix добавлен', diagnostics:diagnostics()});
+    }
+
     return JSON.stringify({ok:true, waiting:true, diagnostics:diagnostics()});
   }
   return JSON.stringify({ok:false, error:'unknown zabbix comment step', diagnostics:diagnostics()});
