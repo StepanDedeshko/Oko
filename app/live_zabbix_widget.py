@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QHeaderView,
     QLineEdit,
+    QInputDialog,
     QMessageBox,
     QMenu,
     QPlainTextEdit,
@@ -36,6 +37,7 @@ from app.config import save_config
 from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
+from app.zabbix_ack import extract_task_ack_comments, has_exact_task_ack_comment
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 
@@ -117,6 +119,11 @@ class LiveZabbixMonitorWidget(QWidget):
         self._redmine_ip_lookup_items = []
         self._redmine_ip_lookup_callback = None
         self._redmine_ip_lookup_total = 0
+        self._task_comment_copy_view = None
+        self._task_comment_copy_queue = []
+        self._task_comment_copy_items = []
+        self._task_comment_copy_comment = ""
+        self._task_comment_copy_stats = {"success": 0, "skipped": 0, "errors": 0}
         self.last_separator_rows = []
         self._parse_attempts = []
         self._monitor_started = False
@@ -165,6 +172,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self.open_url_button = QPushButton("Открыть Zabbix")
         self.show_webview_button = QPushButton("Показать WebView")
         self.open_redmine_button = QPushButton("Открыть Redmine")
+        self.copy_task_comment_button = QPushButton("Скопировать комментарий задачи на выбранные")
         self.poll_status_label = QLabel("Остановлен")
         self.updated_label = QLabel("Последнее обновление: —")
         self.period_filter_combo = QComboBox()
@@ -187,9 +195,11 @@ class LiveZabbixMonitorWidget(QWidget):
         self.open_url_button.clicked.connect(self.open_configured_url)
         self.show_webview_button.clicked.connect(self.show_webview)
         self.open_redmine_button.clicked.connect(self.open_redmine_for_selected_row)
+        self.copy_task_comment_button.clicked.connect(self.copy_task_comment_to_selected)
         normal_controls = [
             self.open_url_button,
             self.open_redmine_button,
+            self.copy_task_comment_button,
             self.duty_filter_checkbox,
             self.period_filter_combo,
             self.unprocessed_filter_checkbox,
@@ -3252,6 +3262,153 @@ class LiveZabbixMonitorWidget(QWidget):
         page.runJavaScript(js, after_fill)
 
 
+    def copy_task_comment_to_selected(self):
+        items = self._selected_live_problem_items()
+        if len(items) < 2:
+            QMessageBox.information(self, "Zabbix", "Выберите две или более строки проблемы в Live Zabbix Monitor.")
+            return
+
+        actionable = [item for item in items if item.ack_url or item.problem_url]
+        if len(actionable) != len(items):
+            QMessageBox.information(self, "Zabbix", "У выбранных проблем нет ссылки подтверждения Zabbix.")
+            return
+
+        self.poll_status_label.setText("Ищу комментарии задач в выбранных проблемах...")
+        self._task_comment_copy_items = actionable
+        self._task_comment_copy_queue = list(actionable)
+        self._task_comment_copy_stats = {"success": 0, "skipped": 0, "errors": 0}
+        self._task_comment_scan_results = {}
+        self._ensure_task_comment_copy_view()
+        self._scan_next_task_comment_page()
+
+    def _ensure_task_comment_copy_view(self):
+        if self._task_comment_copy_view is not None:
+            return
+        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        self._task_comment_copy_view = register_web_view(QWebEngineView())
+        if profile is not None:
+            self._task_comment_copy_view.setPage(QWebEnginePage(profile, self._task_comment_copy_view))
+        self._task_comment_copy_view.hide()
+
+    def _scan_next_task_comment_page(self):
+        if not self._task_comment_copy_queue:
+            comments = []
+            for found in self._task_comment_scan_results.values():
+                comments.extend(found)
+            unique_comments = self._unique_text_values(comments)
+            if not unique_comments:
+                QMessageBox.information(self, "Zabbix", "В выбранных проблемах не найден комментарий задачи Redmine/ММ.")
+                self.poll_status_label.setText("В выбранных проблемах не найден комментарий задачи Redmine/ММ.")
+                return
+            if len(unique_comments) == 1:
+                self._apply_task_comment_to_selected(unique_comments[0])
+                return
+            comment, ok = QInputDialog.getItem(self, "Zabbix", "Выберите комментарий задачи для копирования:", unique_comments, 0, False)
+            if ok and comment:
+                self._apply_task_comment_to_selected(comment)
+            return
+
+        item = self._task_comment_copy_queue.pop(0)
+        url = item.ack_url or item.problem_url
+        if not url:
+            self._scan_next_task_comment_page()
+            return
+        page = self._task_comment_copy_view.page() if self._task_comment_copy_view is not None else None
+        if page is None:
+            self._task_comment_scan_results[item.key] = []
+            self._scan_next_task_comment_page()
+            return
+
+        def after_load(_ok=False, current_item=item):
+            try:
+                page.loadFinished.disconnect(after_load)
+            except (TypeError, RuntimeError):
+                pass
+            page.runJavaScript("document.body ? document.body.innerText : ''", lambda text, i=current_item: self._task_comment_page_text_read(i, text))
+
+        page.loadFinished.connect(after_load)
+        self._task_comment_copy_view.load(QUrl(str(url)))
+
+    def _task_comment_page_text_read(self, item, text):
+        self._task_comment_scan_results[item.key] = extract_task_ack_comments(text or "")
+        self._scan_next_task_comment_page()
+
+    def _apply_task_comment_to_selected(self, comment):
+        self._task_comment_copy_comment = str(comment or "").strip()
+        self._task_comment_copy_queue = list(self._task_comment_copy_items)
+        self._task_comment_copy_stats = {"success": 0, "skipped": 0, "errors": 0}
+        self._apply_next_task_comment_page()
+
+    def _apply_next_task_comment_page(self):
+        total = len(self._task_comment_copy_items)
+        done = total - len(self._task_comment_copy_queue)
+        if not self._task_comment_copy_queue:
+            stats = self._task_comment_copy_stats
+            message = f"Копирование комментария Zabbix: успешно {stats['success']}, пропущено {stats['skipped']}, ошибок {stats['errors']}"
+            self.poll_status_label.setText(message)
+            QMessageBox.information(self, "Zabbix", message)
+            self.poll_now()
+            return
+
+        item = self._task_comment_copy_queue.pop(0)
+        self.poll_status_label.setText(f"Копирую комментарий задачи в Zabbix: {done + 1}/{total}")
+        url = item.ack_url or item.problem_url
+        if not url:
+            self._task_comment_copy_stats["skipped"] += 1
+            self._apply_next_task_comment_page()
+            return
+        page = self._task_comment_copy_view.page() if self._task_comment_copy_view is not None else None
+        if page is None:
+            self._task_comment_copy_stats["errors"] += 1
+            self._apply_next_task_comment_page()
+            return
+
+        def after_load(_ok=False, current_item=item):
+            try:
+                page.loadFinished.disconnect(after_load)
+            except (TypeError, RuntimeError):
+                pass
+            page.runJavaScript("document.body ? document.body.innerText : ''", lambda text, i=current_item: self._submit_task_comment_if_missing(i, text))
+
+        page.loadFinished.connect(after_load)
+        self._task_comment_copy_view.load(QUrl(str(url)))
+
+    def _submit_task_comment_if_missing(self, item, page_text):
+        if has_exact_task_ack_comment(page_text or "", self._task_comment_copy_comment):
+            self._task_comment_copy_stats["skipped"] += 1
+            self._apply_next_task_comment_page()
+            return
+        comment_json = json.dumps(self._task_comment_copy_comment)
+        js = f"""
+(() => {{
+  const comment = {comment_json};
+  const textarea = document.querySelector('#acknowledge_form textarea, textarea[name="message"], textarea');
+  if (!textarea) return JSON.stringify({{ok:false, reason:'textarea_not_found'}});
+  textarea.value = comment;
+  textarea.dispatchEvent(new Event('input', {{bubbles:true}}));
+  textarea.dispatchEvent(new Event('change', {{bubbles:true}}));
+  const acknowledge = document.querySelector('input[name="acknowledge_problem"]');
+  if (acknowledge && !acknowledge.checked) acknowledge.click();
+  const submit = document.querySelector('#acknowledge_form button[type="submit"], #acknowledge_form input[type="submit"], button[type="submit"], input[type="submit"]');
+  if (!submit) return JSON.stringify({{ok:false, reason:'submit_not_found'}});
+  submit.click();
+  return JSON.stringify({{ok:true}});
+}})();
+"""
+        page = self._task_comment_copy_view.page() if self._task_comment_copy_view is not None else None
+        if page is None:
+            self._task_comment_copy_stats["errors"] += 1
+            self._apply_next_task_comment_page()
+            return
+        page.runJavaScript(js, lambda result: self._task_comment_submit_finished(result))
+
+    def _task_comment_submit_finished(self, result):
+        if '"ok":true' in str(result or ""):
+            self._task_comment_copy_stats["success"] += 1
+        else:
+            self._task_comment_copy_stats["errors"] += 1
+        QTimer.singleShot(500, self._apply_next_task_comment_page)
+
     def open_acknowledgement(self, url):
         if not url:
             return
@@ -3339,6 +3496,8 @@ class LiveZabbixMonitorWidget(QWidget):
         redmine_action.triggered.connect(self.open_redmine_for_selected_row)
         mm_otrs_action = menu.addAction("Создать задачу на ММ")
         mm_otrs_action.triggered.connect(self.open_mm_otrs_for_selected_row)
+        copy_comment_action = menu.addAction("Скопировать комментарий задачи на выбранные")
+        copy_comment_action.triggered.connect(self.copy_task_comment_to_selected)
 
         menu.exec(self.table.viewport().mapToGlobal(position))
 
