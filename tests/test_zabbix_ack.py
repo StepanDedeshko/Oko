@@ -7,6 +7,7 @@ from app.zabbix_ack import (
     deduplicate_ack_targets,
     extract_mm_otrs_reference,
     extract_redmine_reference,
+    extract_task_ack_comments,
     mm_otrs_ack_comment,
     needs_acknowledgement,
     plan_zabbix_update,
@@ -31,6 +32,45 @@ class ZabbixAutomaticAcknowledgementTests(unittest.TestCase):
         )
         self.assertEqual(mm_otrs_ack_comment("67890", ""), "")
         self.assertEqual(mm_otrs_ack_comment("", "https://itsm.example/Ticket/67890"), "")
+
+    def test_extract_task_ack_comments_from_zabbix_text(self):
+        text = """История
+Задача Redmine #12345: https://redmine.example/issues/12345
+Задача на ММ #123456: https://itsm.example/Ticket/123456
+"""
+        self.assertEqual(
+            extract_task_ack_comments(text),
+            [
+                "Задача Redmine #12345: https://redmine.example/issues/12345",
+                "Задача на ММ #123456: https://itsm.example/Ticket/123456",
+            ],
+        )
+
+    def test_extract_task_ack_comments_ignores_partial_fragments_and_deduplicates(self):
+        text = """
+        Задача Redmine #12345
+        Задача Redmine: https://redmine.example/issues/12345
+        Задача на ММ #123456
+        Задача на ММ: https://itsm.example/Ticket/123456
+        Задача Redmine #12345: https://redmine.example/issues/12345
+        Задача Redmine #12345: https://redmine.example/issues/12345
+        """
+        self.assertEqual(extract_task_ack_comments(text), ["Задача Redmine #12345: https://redmine.example/issues/12345"])
+
+    def test_multiple_different_task_comments_require_choice_dialog(self):
+        comments = extract_task_ack_comments(
+            "Задача Redmine #12345: https://redmine.example/issues/12345\n"
+            "Задача на ММ #123456: https://itsm.example/Ticket/123456"
+        )
+        self.assertEqual(len(comments), 2)
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("QInputDialog.getItem", source)
+        self.assertIn("Выберите комментарий задачи для копирования", source)
+
+    def test_existing_same_comment_is_skipped_by_duplicate_result(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("elif duplicate and not ack_required:", source)
+        self.assertIn("Комментарий Zabbix уже есть, пропуск", source)
 
     def test_idempotency_existing_comment_prevents_duplicate(self):
         existing = "История\nЗадача Redmine #12345: https://redmine.example/issues/12345\n"
@@ -94,6 +134,9 @@ class ZabbixAutomaticAcknowledgementTests(unittest.TestCase):
         self.assertIn("Redmine issue detected", source)
         self.assertIn("MM/OTRS ticket detected", source)
         self.assertNotIn("QDesktopServices.openUrl(QUrl(redmine_url))", source)
+        self.assertIn("Скопировать комментарий задачи на выбранные", source)
+        self.assertIn("Ищу комментарии задач в выбранных проблемах", source)
+        self.assertIn("Копирование комментария Zabbix", source)
 
     def test_widget_success_requires_zabbix_submit_or_duplicate(self):
         source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")

@@ -72,6 +72,24 @@ def extract_mm_otrs_reference(text: str, url: str = "") -> dict:
     return {"number": number, "url": ticket_url}
 
 
+def extract_task_ack_comments(text: str) -> list[str]:
+    """Extract strict full Redmine/MM task comments from Zabbix history text."""
+    value = str(text or "")
+    pattern = re.compile(
+        r"Задача\s+(?:Redmine|на\s+ММ)\s+#\d+\s*:\s*https?://[^\s<>'\"]+",
+        re.IGNORECASE,
+    )
+    result = []
+    seen = set()
+    for match in pattern.finditer(value):
+        comment = match.group(0).rstrip('.,;)')
+        if comment in seen:
+            continue
+        seen.add(comment)
+        result.append(comment)
+    return result
+
+
 def comment_already_present(existing_text: str, comment: str) -> bool:
     return bool(comment and str(comment) in str(existing_text or ""))
 
