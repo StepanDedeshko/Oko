@@ -207,6 +207,10 @@
     "problems_url": "",
     "poll_interval_seconds": 10,
     "history_path": "data/live_zabbix_history.jsonl",
-    "duty_filter_enabled": true
+    "duty_filter_enabled": true,
+    "redmine_login_url": "https://redmine.stdpr.ru/login?back_url=https%3A%2F%2Fredmine.stdpr.ru%2Fprojects",
+    "redmine_username": "",
+    "redmine_password": "",
+    "redmine_save_credentials": false
   }
 }

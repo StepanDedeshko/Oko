@@ -21,6 +21,7 @@ LIVE_MONITOR_CONFIG_KEY = "live_zabbix_monitor"
 LIVE_PERIOD_ALL = "all"
 LIVE_PERIOD_TODAY = "today"
 LIVE_PERIOD_7_DAYS = "7_days"
+DEFAULT_REDMINE_LOGIN_URL = "https://redmine.stdpr.ru/login?back_url=https%3A%2F%2Fredmine.stdpr.ru%2Fprojects"
 
 
 def zabbix_auth_required_from_html(html: str) -> dict:
@@ -93,7 +94,18 @@ def apply_live_zabbix_table_filters(items, *, period=LIVE_PERIOD_ALL, unprocesse
 
 
 def default_live_monitor_config() -> dict:
-    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 60, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True}
+    return {
+        "enabled": False,
+        "zabbix_id": "",
+        "problems_url": "",
+        "poll_interval_seconds": 60,
+        "history_path": "data/live_zabbix_history.jsonl",
+        "duty_filter_enabled": True,
+        "redmine_login_url": DEFAULT_REDMINE_LOGIN_URL,
+        "redmine_username": "",
+        "redmine_password": "",
+        "redmine_save_credentials": False,
+    }
 
 
 def ensure_live_monitor_defaults(config: dict) -> dict:
