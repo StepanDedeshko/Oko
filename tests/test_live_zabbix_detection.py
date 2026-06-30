@@ -2,12 +2,14 @@ import time
 import unittest
 
 from app.live_zabbix import (
+    DetectionCheckQueue,
     detection_cache_get,
     detection_cache_put,
     detect_node_version,
     extract_zabbix_detection_item_from_html,
     host_match_aliases,
     hosts_match,
+    live_zabbix_node_version_lists_from_config,
     normalize_host_name,
     parse_detection_node_csv_bytes,
 )
@@ -30,6 +32,28 @@ class LiveZabbixDetectionCsvTests(unittest.TestCase):
 
     def test_normalize_host(self):
         self.assertEqual(normalize_host_name("  SERVER   Name "), "server name")
+
+    def test_import_csv_russian_server_headers_are_skipped(self):
+        nodes = parse_detection_node_csv_bytes("ip сервера;Имя_сервера\n10.0.0.5;node5\n".encode(), "v2")
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["ip"], "10.0.0.5")
+        self.assertEqual(nodes[0]["host"], "node5")
+
+    def test_import_csv_russian_node_headers_with_spaces_are_skipped(self):
+        nodes = parse_detection_node_csv_bytes("IP сервера;Имя узла\n10.0.0.6;node6\n".encode(), "v1")
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["normalized_host"], "node6")
+
+    def test_header_normalization_handles_spaces_and_underscores(self):
+        spaced = parse_detection_node_csv_bytes("ip сервера;имя сервера\n10.0.0.7;node7\n".encode(), "v1")
+        underscored = parse_detection_node_csv_bytes("ip_сервера;имя_узла\n10.0.0.8;node8\n".encode(), "v2")
+        self.assertEqual(spaced[0]["host"], "node7")
+        self.assertEqual(underscored[0]["host"], "node8")
+
+    def test_nested_live_zabbix_node_lists_are_read(self):
+        nested = {"live_zabbix_monitor": {"live_zabbix_node_version_lists": {"v1_nodes": [], "v2_nodes": [{"ip": "", "host": "node-nested", "normalized_host": "node-nested", "version": "v2"}]}}}
+        self.assertEqual(live_zabbix_node_version_lists_from_config(nested)["v2_nodes"][0]["host"], "node-nested")
+        self.assertEqual(detect_node_version("Описание - node-nested", "", nested), "v2")
 
     def test_detect_versions_conflict_prefers_v2_and_unknown(self):
         cfg = {"live_zabbix_node_version_lists": {
@@ -64,6 +88,46 @@ class LiveZabbixDetectionCsvTests(unittest.TestCase):
         self.assertEqual(detect_node_version("prefix - group - node01", "", cfg), "v2")
         self.assertEqual(detect_node_version("different-host", "10.0.0.9", cfg), "v1")
         self.assertEqual(detect_node_version("Описание - missing", "10.0.0.99", cfg), "unknown")
+
+
+class LiveZabbixDetectionStateTests(unittest.TestCase):
+    def test_detection_timeout_does_not_leave_status_checking(self):
+        queue = DetectionCheckQueue()
+        queue.queue_check("a")
+        result = queue.timeout("a")
+        self.assertEqual(result["status"], "timeout")
+        self.assertFalse(result["checking"])
+        self.assertNotIn("a", queue.checking)
+
+    def test_load_finished_false_does_not_leave_status_checking(self):
+        queue = DetectionCheckQueue()
+        queue.queue_check("a")
+        result = queue.load_finished("a", False)
+        self.assertEqual(result["status"], "ошибка загрузки")
+        self.assertFalse(result["checking"])
+
+    def test_item_not_found_does_not_leave_status_checking(self):
+        queue = DetectionCheckQueue()
+        queue.queue_check("a")
+        result = queue.item_not_found("a", ["x"])
+        self.assertEqual(result["status"], "itemid не найден")
+        self.assertFalse(result["checking"])
+
+    def test_empty_history_does_not_leave_status_checking(self):
+        queue = DetectionCheckQueue()
+        queue.queue_check("a")
+        result = queue.empty_history("a")
+        self.assertEqual(result["status"], "нет history")
+        self.assertFalse(result["checking"])
+
+    def test_queue_continues_after_one_failed_host(self):
+        queue = DetectionCheckQueue()
+        queue.queue_check("bad")
+        queue.queue_check("good")
+        queue.item_not_found("bad")
+        self.assertNotIn("bad", queue.queue)
+        self.assertIn("good", queue.queue)
+        self.assertIn("good", queue.checking)
 
 
 class LiveZabbixDetectionDiscoveryTests(unittest.TestCase):

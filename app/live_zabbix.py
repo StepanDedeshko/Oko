@@ -57,6 +57,9 @@ def short_host_after_dash(host: str) -> str:
     full = normalize_host_name(host)
     if not full:
         return ""
+    spaced_parts = re.split(r"\s[-–—]\s", full)
+    if len(spaced_parts) > 1 and spaced_parts[-1].strip():
+        return normalize_host_name(spaced_parts[-1])
     for separator in ("-", "–", "—"):
         if separator not in full:
             continue
@@ -90,7 +93,7 @@ def _node_indexes(nodes):
     return hosts, ips
 
 def resolve_node_version_details(host: str, ip: str, config: dict) -> dict:
-    cfg = (config or {}).get("live_zabbix_node_version_lists", config or {})
+    cfg = live_zabbix_node_version_lists_from_config(config) or (config or {})
     aliases = host_match_aliases(host)
     ip_key = normalize_ip(ip)
     v1_hosts, v1_ips = _node_indexes(cfg.get("v1_nodes", []))
@@ -124,6 +127,19 @@ def resolve_node_version_details(host: str, ip: str, config: dict) -> dict:
 def detect_node_version(host: str, ip: str, config: dict) -> str:
     return resolve_node_version_details(host, ip, config).get("version", "unknown")
 
+def normalize_csv_header_name(value: str) -> str:
+    return normalize_host_name(value).replace("_", " ")
+
+def compact_csv_header_name(value: str) -> str:
+    return normalize_csv_header_name(value).replace(" ", "")
+
+def live_zabbix_node_version_lists_from_config(config_or_settings: dict) -> dict:
+    data = config_or_settings or {}
+    if "live_zabbix_node_version_lists" in data:
+        return data.get("live_zabbix_node_version_lists") or {}
+    monitor = data.get(LIVE_MONITOR_CONFIG_KEY, {}) if isinstance(data, dict) else {}
+    return monitor.get("live_zabbix_node_version_lists", {}) if isinstance(monitor, dict) else {}
+
 def parse_detection_node_csv_bytes(data: bytes, version: str) -> list[dict]:
     raw = bytes(data or b"")
     for enc in ("utf-8-sig", "utf-8", "cp1251"):
@@ -141,10 +157,9 @@ def parse_detection_node_csv_bytes(data: bytes, version: str) -> list[dict]:
     rows = [list(r) for r in csv.reader(io.StringIO(text), dialect) if any(str(c).strip() for c in r)]
     if not rows:
         return []
-    def norm_header(v): return normalize_host_name(v).replace(" ", "")
-    ip_aliases = {"ip", "адрес", "ipадрес", "address"}
+    ip_aliases = {"ip", "адрес", "ipадрес", "address", "ipсервера", "ipserver"}
     host_aliases = {"имя", "host", "server", "узел", "сервер", "имясервера", "имяузла"}
-    first = [norm_header(c) for c in rows[0]]
+    first = [compact_csv_header_name(c) for c in rows[0]]
     has_header = any(c in ip_aliases or c in host_aliases for c in first)
     ip_idx, host_idx = 0, 1
     if has_header:
@@ -219,6 +234,64 @@ def detection_cache_put(cache: dict, host: str, **entry):
     cache[key].setdefault("discovered_at", time.time())
     return cache
 
+
+
+FINAL_DETECTION_STATUSES = {
+    "OK", "zero", "zero_streak", "узел не найден в CSV", "itemid не найден",
+    "нет history", "нет данных", "auth", "timeout", "ошибка загрузки", "ошибка",
+}
+
+def normalize_detection_final_status(status: str) -> str:
+    value = str(status or "").strip()
+    aliases = {
+        "ok": "OK",
+        "itemid_not_found": "itemid не найден",
+        "no_history": "нет history",
+        "no_data": "нет данных",
+        "load_error": "ошибка загрузки",
+        "node_not_found": "узел не найден в CSV",
+    }
+    return aliases.get(value, value if value in FINAL_DETECTION_STATUSES else "ошибка")
+
+class DetectionCheckQueue:
+    """Small deterministic state holder for detection checks; every finish clears checking."""
+
+    def __init__(self):
+        self.queue = []
+        self.checking = set()
+        self.results = {}
+
+    def queue_check(self, key: str):
+        key = str(key or "").strip()
+        if not key:
+            return
+        if key not in self.checking:
+            self.queue.append(key)
+            self.checking.add(key)
+
+    def finish(self, key: str, status: str, reason: str = "") -> dict:
+        key = str(key or "").strip()
+        final_status = normalize_detection_final_status(status)
+        result = {"status": final_status, "reason": str(reason or final_status), "checking": False}
+        self.results[key] = result
+        self.checking.discard(key)
+        self.queue = [item for item in self.queue if item != key]
+        return result
+
+    def timeout(self, key: str, reason: str = "timeout") -> dict:
+        return self.finish(key, "timeout", reason)
+
+    def load_finished(self, key: str, ok: bool) -> dict | None:
+        if ok:
+            return None
+        return self.finish(key, "ошибка загрузки", "loadFinished(false)")
+
+    def item_not_found(self, key: str, aliases=None) -> dict:
+        suffix = ", ".join(map(str, aliases or []))
+        return self.finish(key, "itemid не найден", f"itemid не найден" + (f"; aliases: {suffix}" if suffix else ""))
+
+    def empty_history(self, key: str) -> dict:
+        return self.finish(key, "нет history", "history table has no values")
 
 def zabbix_auth_required_from_html(html: str) -> dict:
     """Detect Zabbix expired-session pages without exposing page text or secrets."""

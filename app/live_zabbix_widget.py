@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter, detect_node_version, normalize_host_name, detection_cache_get, resolve_node_version_details
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter, detect_node_version, normalize_host_name, detection_cache_get, resolve_node_version_details, live_zabbix_node_version_lists_from_config
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
@@ -1042,15 +1042,23 @@ class LiveZabbixMonitorWidget(QWidget):
             self.poll_status_label.setText(ZERO_PROBLEMS_MESSAGE)
         self._update_diagnostics(payload or {"safe_debug": {}, "items": []})
 
+    @staticmethod
+    def _safe_detection_log_host(host):
+        text = str(host or "").strip().replace("\n", " ").replace("\r", " ")
+        return text[:120]
+
 
     def _detection_cell_payload(self, item):
         host = str(getattr(item, "host", "") or "").strip()
         ip = str(getattr(item, "host_ip", "") or "").strip()
-        node_cfg = self.settings.get("live_zabbix_node_version_lists", {})
+        node_cfg = live_zabbix_node_version_lists_from_config(self.settings) or live_zabbix_node_version_lists_from_config(self.config)
         discovery_cfg = self.settings.get("live_zabbix_detection_item_discovery", {})
         details = resolve_node_version_details(host, ip, {"live_zabbix_node_version_lists": node_cfg}) if node_cfg.get("enabled", True) else {"version": "unknown", "source": "", "aliases": [], "matched_alias": "", "reason": "discovery disabled"}
         version = details.get("version", "unknown")
         source = details.get("source") or ("csv_" + version if version in {"v1", "v2"} else "fallback")
+        self.logger.info("Detection node version resolved: host=%s version=%s source=%s", self._safe_detection_log_host(host), version, source or "unknown")
+        if version == "unknown":
+            self.logger.info("Detection node version not found: host=%s", self._safe_detection_log_host(host))
         cache = self.settings.setdefault("live_zabbix_detection_cache", {})
         entry = detection_cache_get(cache, host, int(discovery_cfg.get("discovery_ttl_sec", 86400) or 86400), int(discovery_cfg.get("negative_ttl_sec", 300) or 300))
         if version == "unknown" and not entry:
@@ -1063,8 +1071,9 @@ class LiveZabbixMonitorWidget(QWidget):
             text = "itemid не найден"
             reason = entry.get("reason", "negative cache")
         else:
-            text = "проверка..." if discovery_cfg.get("enabled", True) else "не настроено"
-            reason = "ожидает автоматический поиск itemid" if discovery_cfg.get("enabled", True) else "discovery disabled"
+            text = "itemid не найден" if version in {"v1", "v2"} else ("узел не найден в CSV" if node_cfg.get("v1_nodes") or node_cfg.get("v2_nodes") else "не настроено")
+            reason = "itemid не найден по aliases" if version in {"v1", "v2"} else text
+            self.logger.info("Detection item discovery failed: host=%s version=%s reason=item_not_found", self._safe_detection_log_host(host), version)
         aliases = discovery_cfg.get(f"{version}_item_aliases", []) if version in {"v1", "v2"} else []
         tooltip = "\n".join([
             f"Узел: {host or '-'}",
