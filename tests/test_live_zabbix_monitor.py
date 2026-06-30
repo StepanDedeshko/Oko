@@ -433,3 +433,163 @@ class LiveZabbixMonitorSilentAuthAndFilterTests(unittest.TestCase):
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_7_DAYS, now=now)], ["today_no_new", "today_yes", "week_no"])
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, unprocessed_only=True, now=now)], ["today_no_new", "week_no", "old"])
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_TODAY, unprocessed_only=True, now=now)], ["today_no_new"])
+
+class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.repo = Path(__file__).resolve().parents[1]
+        self.widget_source = (self.repo / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.live_source = (self.repo / "app" / "live_zabbix.py").read_text(encoding="utf-8")
+        self.app_info = (self.repo / "app" / "app_info.py").read_text(encoding="utf-8")
+
+    def test_auto_ack_toggles_exist_and_default_false(self):
+        for key in (
+            "auto_ack_after_task_enabled",
+            "auto_ack_after_redmine_enabled",
+            "auto_ack_after_mm_otrs_enabled",
+        ):
+            self.assertIn(f'"{key}": False', self.live_source)
+            self.assertIn(key, self.widget_source)
+
+    def test_redmine_issue_detection_requires_issue_marker(self):
+        self.assertIn('r"/issues/(\\d+)(?:$|[/?#])"', self.widget_source)
+        self.assertIn("extract_redmine_issue_from_payload", self.widget_source)
+        self.assertIn("Задача|Issue", self.widget_source)
+
+    def test_zabbix_comment_format_is_exact(self):
+        self.assertIn('return f"Задача Redmine #{issue_number}: {issue_url}"', self.widget_source)
+
+    def test_no_auto_ack_before_issue_number_url_exists(self):
+        self.assertIn("if not issue_number or not issue_url", self.widget_source)
+        self.assertIn("No auto-ack before issue number/url exists", self.widget_source)
+
+    def test_disabled_toggles_do_not_touch_zabbix(self):
+        self.assertIn("def _auto_ack_enabled", self.widget_source)
+        self.assertIn("Zabbix auto-ack disabled", self.widget_source)
+        self.assertIn("return bool(self.settings.get(\"auto_ack_after_task_enabled\", False) and self.settings.get(\"auto_ack_after_redmine_enabled\", False))", self.widget_source)
+
+    def test_duplicate_comment_is_skipped(self):
+        self.assertIn("eventActionsText().indexOf(comment) !== -1", self.widget_source)
+        self.assertIn("duplicate comment skipped", self.widget_source)
+
+    def test_already_acknowledged_still_receives_missing_comment(self):
+        self.assertIn("already acknowledged; adding missing comment only", self.widget_source)
+        self.assertIn("if (acknowledgeMissing && !alreadyAcknowledged", self.widget_source)
+
+    def test_manual_context_action_requires_two_selected_rows(self):
+        self.assertIn("Скопировать комментарий задачи на выбранные", self.widget_source)
+        self.assertIn("if len(items) < 2", self.widget_source)
+
+    def test_strict_redmine_mm_comment_regex(self):
+        self.assertIn('Задача Redmine #\\d+: https?://\\S+|Задача на ММ #\\d+(?:: https?://\\S+)?', self.widget_source)
+        self.assertIn('Задача на ММ: \\d{6,}', self.widget_source)
+
+    def test_no_desktop_open_for_redmine_create_url(self):
+        self.assertIn("RedmineCreateDialog(profile, redmine_url", self.widget_source)
+        self.assertNotIn("QDesktopServices.openUrl(QUrl(redmine_url", self.widget_source)
+
+
+    def test_problem_url_fallback_opens_acknowledge_popup_before_textarea(self):
+        self.assertIn("acknowledgePopUp", self.widget_source)
+        self.assertIn("clicked_popup", self.widget_source)
+        self.assertIn('_start_zbx_poll(worker_id, "check_form", 120, 10000)', self.widget_source)
+
+    def test_eventactions_widget_used_for_duplicate_scan(self):
+        self.assertIn("#hat_eventactions_widget, #hat_eventactions", self.widget_source)
+        self.assertIn("eventActionsText().indexOf(comment)", self.widget_source)
+
+    def test_popup_form_selectors_and_update_submit_exist(self):
+        for marker in (
+            ".overlay-dialogue #acknowledge_form textarea#message",
+            "input#acknowledge_problem",
+            "#acknowledge_form input#close_problem",
+            "Обновить|Update",
+        ):
+            self.assertIn(marker, self.widget_source)
+
+    def test_raw_tr_events_without_textarea_waits_and_diagnostics_on_timeout(self):
+        self.assertIn("_handle_zbx_poll_timeout", self.widget_source)
+        self.assertIn('_start_zbx_poll(worker_id, "check_form", 120, 10000)', self.widget_source)
+        self.assertIn('_start_zbx_poll(worker_id, "check_submit", 150, 10000)', self.widget_source)
+        for marker in (
+            "current_url",
+            "document_title",
+            "hat_eventactions_widget_exists",
+            "acknowledge_popup_link_exists",
+            "acknowledge_link_count",
+            "overlay_dialogue_count",
+            "acknowledge_form_exists",
+            "textarea_count",
+            "submit_update_button_count",
+            "visible_button_texts",
+        ):
+            self.assertIn(marker, self.widget_source)
+
+    def test_mm_otrs_comment_format_supports_url_and_number_only(self):
+        self.assertIn("Задача на ММ #\\d+(?:: https?://\\S+)?", self.widget_source)
+
+    def test_manual_scanner_parses_eventactions_message_rows(self):
+        self.assertIn("def _task_comment_scan_script", self.widget_source)
+        self.assertIn("#hat_eventactions_widget, #hat_eventactions", self.widget_source)
+        self.assertIn(".icon-action-msg", self.widget_source)
+        self.assertIn("сообщение\\s*\\/\\s*команда", self.widget_source)
+
+    def test_legacy_plain_mm_number_only_from_message_row_is_normalized(self):
+        self.assertIn("allowPlainNumber", self.widget_source)
+        self.assertIn("\\d{6,}", self.widget_source)
+        self.assertIn("Задача на ММ: ' + plain[1]", self.widget_source)
+        self.assertNotIn("document.body.innerText : '')\", done", self.widget_source)
+
+    def test_old_mm_otrs_formats_are_normalized(self):
+        for marker in ("Задача\\s+на\\s+ММ", "Задача\\s+ММ", "ММ|OTRS", "Задача на ММ: "):
+            self.assertIn(marker, self.widget_source)
+
+
+    def test_zabbix_comment_pipeline_is_python_polled_without_promises(self):
+        self.assertNotIn("return new Promise", self.widget_source)
+        self.assertNotIn("new Promise(function(resolve)", self.widget_source)
+        self.assertIn('_start_zbx_poll(worker_id, "check_form", 120, 10000)', self.widget_source)
+        self.assertIn('_start_zbx_poll(worker_id, "check_submit", 150, 10000)', self.widget_source)
+        self.assertIn("submitted_done", self.widget_source)
+        self.assertIn("Zabbix JS returned empty result", self.widget_source)
+        self.assertIn("_finish_zbx_worker", self.widget_source)
+
+    def test_manual_copy_acknowledges_missing_acknowledgement(self):
+        self.assertIn("self._task_comment_scan_items, comment, acknowledge_missing=True", self.widget_source)
+
+    def test_duplicate_comment_skips_only_when_already_acknowledged(self):
+        self.assertIn("hasDuplicate && alreadyAcknowledged", self.widget_source)
+        self.assertIn("hasDuplicate && !alreadyAcknowledged", self.widget_source)
+        self.assertIn("task comment exists but problem is not acknowledged; acknowledging only", self.widget_source)
+        self.assertIn("duplicate comment skipped because already acknowledged", self.widget_source)
+
+    def test_existing_comment_unacknowledged_submits_acknowledge_only_without_duplicate_message(self):
+        self.assertIn("acknowledge_only:hasDuplicate && !alreadyAcknowledged", self.widget_source)
+        self.assertIn("message.value = ''", self.widget_source)
+        self.assertIn("problem acknowledged with existing comment", self.widget_source)
+        self.assertIn("comment copied and problem acknowledged", self.widget_source)
+
+    def test_close_problem_is_never_clicked(self):
+        self.assertIn("close_problem is intentionally never checked or clicked", self.widget_source)
+        self.assertNotIn("close.click()", self.widget_source)
+
+    def test_manual_scanner_accepts_any_message_row_text(self):
+        self.assertIn("copy ANY non-empty Zabbix message", self.widget_source)
+        self.assertIn("raw_message_candidates", self.widget_source)
+        self.assertIn("message_row_snippets", self.widget_source)
+        self.assertIn("if (messageText)", self.widget_source)
+        self.assertIn("addUnique(comments, messageText)", self.widget_source)
+
+    def test_manual_scanner_does_not_copy_arbitrary_row_text(self):
+        self.assertIn("Fallback only when the Message/Command column cannot be detected", self.widget_source)
+        self.assertIn("normalizeCandidate(rowText, false)", self.widget_source)
+        self.assertNotIn("addUnique(comments, rowText)", self.widget_source)
+
+    def test_zabbix_comment_pipeline_uses_parallel_hidden_workers(self):
+        self.assertIn("_zbx_parallel_limit", self.widget_source)
+        self.assertIn("Zabbix parallel ack started", self.widget_source)
+        self.assertIn("def _start_zbx_worker", self.widget_source)
+        self.assertIn("len(self._zbx_workers)", self.widget_source)
+        self.assertIn("safe_delete_web_view", self.widget_source)
+
+    def test_app_version_unchanged(self):
+        self.assertIn('APP_VERSION = "0.3.1"', self.app_info)
