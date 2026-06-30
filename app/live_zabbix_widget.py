@@ -301,10 +301,16 @@ class LiveZabbixMonitorWidget(QWidget):
         self._redmine_graph_lookup_items = []
         self._redmine_graph_lookup_callback = None
         self._redmine_graph_lookup_load_slot = None
+        self._redmine_graph_lookup_active_item = None
+        self._redmine_graph_lookup_active_token = 0
+        self._redmine_graph_lookup_timeout_ms = 9000
         self._redmine_ip_lookup_queue = []
         self._redmine_ip_lookup_items = []
         self._redmine_ip_lookup_callback = None
         self._redmine_ip_lookup_total = 0
+        self._redmine_ip_lookup_active_item = None
+        self._redmine_ip_lookup_active_token = 0
+        self._redmine_ip_lookup_timeout_ms = 9000
         self.last_separator_rows = []
         self._parse_attempts = []
         self._monitor_started = False
@@ -1669,22 +1675,32 @@ class LiveZabbixMonitorWidget(QWidget):
         items = self._unique_live_items(items)
         queue = self._items_need_graph_lookup(items)
         if not queue:
+            self.logger.info("Redmine graph lookup skipped: no items require graph enrichment")
             callback(items)
             return
 
+        self.logger.info("Redmine graph lookup started: selected_count=%s lookup_count=%s timeout_ms=%s", len(items), len(queue), self._redmine_graph_lookup_timeout_ms)
         self._redmine_graph_lookup_items = items
         self._redmine_graph_lookup_queue = list(queue)
         self._redmine_graph_lookup_callback = callback
         self.poll_status_label.setText(f"Ищу ссылки на графики: 0/{len(queue)}")
         self._ensure_redmine_graph_lookup_view()
-        self._load_next_redmine_graph_lookup()
+        try:
+            self._load_next_redmine_graph_lookup()
+        except Exception:
+            self.logger.exception("Redmine graph lookup failed before opening lookup view; continuing without graph enrichment")
+            self.poll_status_label.setText("Ссылка на график не найдена, продолжаю создание Redmine...")
+            callback(items)
 
     def _load_next_redmine_graph_lookup(self):
         if not self._redmine_graph_lookup_queue:
             callback = self._redmine_graph_lookup_callback
             items = self._redmine_graph_lookup_items
             self._redmine_graph_lookup_callback = None
+            self._redmine_graph_lookup_active_item = None
+            self._redmine_graph_lookup_active_token += 1
             self.poll_status_label.setText("Ссылки на графики обработаны")
+            self.logger.info("Redmine graph lookup finished: selected_count=%s", len(items or []))
             if callback:
                 callback(items)
             return
@@ -1708,25 +1724,51 @@ class LiveZabbixMonitorWidget(QWidget):
 
         self._redmine_graph_lookup_load_slot = lambda ok, current_item=item: self._on_redmine_graph_lookup_loaded(ok, current_item)
         self.redmine_graph_lookup_view.loadFinished.connect(self._redmine_graph_lookup_load_slot)
+        self._redmine_graph_lookup_active_item = item
+        self._redmine_graph_lookup_active_token += 1
+        token = self._redmine_graph_lookup_active_token
+        QTimer.singleShot(
+            self._redmine_graph_lookup_timeout_ms,
+            lambda current_item=item, current_token=token: self._on_redmine_graph_lookup_timeout(current_item, current_token),
+        )
         self.redmine_graph_lookup_view.load(QUrl(url))
 
+    def _on_redmine_graph_lookup_timeout(self, item, token):
+        if token != self._redmine_graph_lookup_active_token or item is not self._redmine_graph_lookup_active_item:
+            return
+        self.logger.warning(
+            "Redmine graph lookup timeout; continuing without graph link: trigger=%s problem_url=%s",
+            getattr(item, "trigger_name", ""),
+            getattr(item, "problem_url", ""),
+        )
+        self.poll_status_label.setText("Ссылка на график не найдена, продолжаю создание Redmine...")
+        self._load_next_redmine_graph_lookup()
+
     def _on_redmine_graph_lookup_loaded(self, ok, item):
+        token = self._redmine_graph_lookup_active_token
+        if item is not self._redmine_graph_lookup_active_item:
+            return
         if not ok:
             self.logger.warning("Redmine graph lookup page failed: problem_url=%s", getattr(item, "problem_url", ""))
+            self.poll_status_label.setText("Ссылка на график не найдена, продолжаю создание Redmine...")
             self._load_next_redmine_graph_lookup()
             return
 
         page = self.redmine_graph_lookup_view.page() if self.redmine_graph_lookup_view is not None else None
         if page is None:
+            self.logger.warning("Redmine graph lookup skipped: hidden lookup WebView page is not available")
+            self.poll_status_label.setText("Ссылка на график не найдена, продолжаю создание Redmine...")
             self._load_next_redmine_graph_lookup()
             return
 
         page.runJavaScript(
             self._graph_link_lookup_script(),
-            lambda result, current_item=item: self._on_redmine_graph_lookup_js_result(result, current_item),
+            lambda result, current_item=item, current_token=token: self._on_redmine_graph_lookup_js_result(result, current_item, current_token),
         )
 
-    def _on_redmine_graph_lookup_js_result(self, result, item):
+    def _on_redmine_graph_lookup_js_result(self, result, item, token=None):
+        if token is not None and (token != self._redmine_graph_lookup_active_token or item is not self._redmine_graph_lookup_active_item):
+            return
         payload, meta = self._decode_js_json_result(result)
         graph_url = ""
         if isinstance(payload, dict):
@@ -1782,15 +1824,22 @@ class LiveZabbixMonitorWidget(QWidget):
         items = self._unique_live_items(items)
         queue = self._items_need_ip_lookup(items)
         if not queue:
+            self.logger.info("Redmine IP lookup skipped: no items require IP enrichment")
             callback(items)
             return
 
+        self.logger.info("Redmine IP lookup started: selected_count=%s lookup_count=%s timeout_ms=%s", len(items), len(queue), self._redmine_ip_lookup_timeout_ms)
         self._redmine_ip_lookup_items = items
         self._redmine_ip_lookup_queue = list(queue)
         self._redmine_ip_lookup_callback = callback
         self._redmine_ip_lookup_total = len(queue)
         self.poll_status_label.setText(f"Ищу IP узлов: 0/{len(queue)}")
-        self._load_next_redmine_ip_lookup()
+        try:
+            self._load_next_redmine_ip_lookup()
+        except Exception:
+            self.logger.exception("Redmine IP lookup failed before opening lookup flow; continuing without IP enrichment")
+            self.poll_status_label.setText("IP не найден, продолжаю создание Redmine...")
+            callback(items)
 
     def _load_next_redmine_ip_lookup(self):
         if not self._redmine_ip_lookup_queue:
@@ -1798,7 +1847,10 @@ class LiveZabbixMonitorWidget(QWidget):
             items = self._redmine_ip_lookup_items
             self._redmine_ip_lookup_callback = None
             self._redmine_ip_lookup_total = 0
+            self._redmine_ip_lookup_active_item = None
+            self._redmine_ip_lookup_active_token += 1
             self.poll_status_label.setText("IP узлов обработаны")
+            self.logger.info("Redmine IP lookup finished: selected_count=%s", len(items or []))
             if callback:
                 callback(items)
             return
@@ -1807,19 +1859,43 @@ class LiveZabbixMonitorWidget(QWidget):
         total = self._redmine_ip_lookup_total or len(self._redmine_ip_lookup_queue) + 1
         done = total - len(self._redmine_ip_lookup_queue)
         self.poll_status_label.setText(f"Ищу IP узла: {done}/{total}")
+        self._redmine_ip_lookup_active_item = item
+        self._redmine_ip_lookup_active_token += 1
+        token = self._redmine_ip_lookup_active_token
+        QTimer.singleShot(
+            self._redmine_ip_lookup_timeout_ms,
+            lambda current_item=item, current_token=token: self._on_redmine_ip_lookup_timeout(current_item, current_token),
+        )
 
         page = self.view.page() if self.view is not None and self.view.page() is not None else None
         if page is None:
             self.logger.warning("Redmine IP lookup skipped: Live Zabbix WebView page is not available")
+            self.poll_status_label.setText("IP не найден, продолжаю создание Redmine...")
             self._load_next_redmine_ip_lookup()
             return
 
         page.runJavaScript(
             self._host_ip_open_host_menu_script(item),
-            lambda result, current_item=item: self._on_redmine_ip_host_menu_result(result, current_item),
+            lambda result, current_item=item, current_token=token: self._on_redmine_ip_host_menu_result(result, current_item, current_token),
         )
 
-    def _on_redmine_ip_host_menu_result(self, result, item):
+    def _on_redmine_ip_lookup_timeout(self, item, token):
+        if token != self._redmine_ip_lookup_active_token or item is not self._redmine_ip_lookup_active_item:
+            return
+        self.logger.warning(
+            "Redmine IP lookup timeout; continuing without IP: host=%s trigger=%s",
+            getattr(item, "host", ""),
+            getattr(item, "trigger_name", ""),
+        )
+        self.poll_status_label.setText("IP не найден, продолжаю создание Redmine...")
+        self._load_next_redmine_ip_lookup()
+
+    def _redmine_ip_token_is_current(self, item, token):
+        return token == self._redmine_ip_lookup_active_token and item is self._redmine_ip_lookup_active_item
+
+    def _on_redmine_ip_host_menu_result(self, result, item, token=None):
+        if token is not None and not self._redmine_ip_token_is_current(item, token):
+            return
         payload, meta = self._decode_js_json_result(result)
         if not isinstance(payload, dict) or not payload.get("ok"):
             self.logger.info(
@@ -1831,24 +1907,30 @@ class LiveZabbixMonitorWidget(QWidget):
             self._load_next_redmine_ip_lookup()
             return
 
-        QTimer.singleShot(450, lambda current_item=item: self._click_redmine_traceroute_menu(current_item, 0))
+        QTimer.singleShot(450, lambda current_item=item, current_token=token: self._click_redmine_traceroute_menu(current_item, 0, current_token))
 
-    def _click_redmine_traceroute_menu(self, item, attempt=0):
+    def _click_redmine_traceroute_menu(self, item, attempt=0, token=None):
+        if token is not None and not self._redmine_ip_token_is_current(item, token):
+            return
         page = self.view.page() if self.view is not None and self.view.page() is not None else None
         if page is None:
+            self.logger.warning("Redmine IP lookup skipped: Live Zabbix WebView page is not available while clicking traceroute menu")
+            self.poll_status_label.setText("IP не найден, продолжаю создание Redmine...")
             self._load_next_redmine_ip_lookup()
             return
 
         page.runJavaScript(
             self._host_ip_click_traceroute_script(),
-            lambda result, current_item=item, current_attempt=attempt: self._on_redmine_traceroute_menu_result(result, current_item, current_attempt),
+            lambda result, current_item=item, current_attempt=attempt, current_token=token: self._on_redmine_traceroute_menu_result(result, current_item, current_attempt, current_token),
         )
 
-    def _on_redmine_traceroute_menu_result(self, result, item, attempt):
+    def _on_redmine_traceroute_menu_result(self, result, item, attempt, token=None):
+        if token is not None and not self._redmine_ip_token_is_current(item, token):
+            return
         payload, meta = self._decode_js_json_result(result)
         if not isinstance(payload, dict) or not payload.get("ok"):
             if attempt < 2:
-                QTimer.singleShot(500, lambda current_item=item, next_attempt=attempt + 1: self._click_redmine_traceroute_menu(current_item, next_attempt))
+                QTimer.singleShot(500, lambda current_item=item, next_attempt=attempt + 1, current_token=token: self._click_redmine_traceroute_menu(current_item, next_attempt, current_token))
                 return
 
             self.logger.info(
@@ -1860,20 +1942,26 @@ class LiveZabbixMonitorWidget(QWidget):
             self._load_next_redmine_ip_lookup()
             return
 
-        QTimer.singleShot(900, lambda current_item=item: self._extract_redmine_traceroute_ip(current_item, 0))
+        QTimer.singleShot(900, lambda current_item=item, current_token=token: self._extract_redmine_traceroute_ip(current_item, 0, current_token))
 
-    def _extract_redmine_traceroute_ip(self, item, attempt=0):
+    def _extract_redmine_traceroute_ip(self, item, attempt=0, token=None):
+        if token is not None and not self._redmine_ip_token_is_current(item, token):
+            return
         page = self.view.page() if self.view is not None and self.view.page() is not None else None
         if page is None:
+            self.logger.warning("Redmine IP lookup skipped: Live Zabbix WebView page is not available while extracting IP")
+            self.poll_status_label.setText("IP не найден, продолжаю создание Redmine...")
             self._load_next_redmine_ip_lookup()
             return
 
         page.runJavaScript(
             self._host_ip_extract_traceroute_script(),
-            lambda result, current_item=item, current_attempt=attempt: self._on_redmine_traceroute_ip_result(result, current_item, current_attempt),
+            lambda result, current_item=item, current_attempt=attempt, current_token=token: self._on_redmine_traceroute_ip_result(result, current_item, current_attempt, current_token),
         )
 
-    def _on_redmine_traceroute_ip_result(self, result, item, attempt):
+    def _on_redmine_traceroute_ip_result(self, result, item, attempt, token=None):
+        if token is not None and not self._redmine_ip_token_is_current(item, token):
+            return
         payload, meta = self._decode_js_json_result(result)
         ip = ""
         if isinstance(payload, dict):
@@ -1891,7 +1979,7 @@ class LiveZabbixMonitorWidget(QWidget):
             return
 
         if attempt < 2:
-            QTimer.singleShot(700, lambda current_item=item, next_attempt=attempt + 1: self._extract_redmine_traceroute_ip(current_item, next_attempt))
+            QTimer.singleShot(700, lambda current_item=item, next_attempt=attempt + 1, current_token=token: self._extract_redmine_traceroute_ip(current_item, next_attempt, current_token))
             return
 
         self.logger.info(
@@ -2209,41 +2297,92 @@ class LiveZabbixMonitorWidget(QWidget):
 """
 
     def open_redmine_for_selected_row(self):
-        items = self._choose_redmine_items_for_selection()
-        if not items:
-            QMessageBox.information(self, "Redmine", "Выберите одну или несколько строк проблемы в Live Zabbix Monitor.")
-            return
+        self.poll_status_label.setText("Готовлю задачу Redmine...")
+        self.logger.info("Redmine action clicked")
+        try:
+            items = self._choose_redmine_items_for_selection()
+            self.logger.info("Redmine selected rows: count=%s", len(items or []))
+            if not items:
+                message = "Выберите строку проблемы Live Zabbix Monitor для создания задачи Redmine."
+                self.logger.info("Redmine action stopped: no selected problem rows")
+                self.poll_status_label.setText(message)
+                QMessageBox.information(self, "Redmine", message)
+                return
 
-        self._enrich_redmine_graph_links(items, self._open_redmine_after_graph_lookup)
+            self._enrich_redmine_graph_links(items, self._open_redmine_after_graph_lookup)
+        except Exception:
+            self._handle_redmine_preparation_error()
 
     def _open_redmine_after_graph_lookup(self, items):
-        self._enrich_redmine_host_ips(items, self._open_redmine_after_ip_lookup)
+        try:
+            self.logger.info("Redmine graph lookup finished/skipped; starting IP lookup: selected_count=%s", len(items or []))
+            self._enrich_redmine_host_ips(items, self._open_redmine_after_ip_lookup)
+        except Exception:
+            self.logger.exception("Redmine IP lookup setup failed; continuing to build Redmine URL without IP enrichment")
+            self.poll_status_label.setText("IP не найден, продолжаю создание Redmine...")
+            self._open_redmine_after_ip_lookup(items)
 
     def _open_redmine_after_ip_lookup(self, items):
-        redmine_url, warning = self._build_redmine_open_url(items)
-        if not redmine_url:
-            QMessageBox.warning(self, "Redmine", warning or "Не удалось собрать ссылку Redmine.")
-            return
+        try:
+            self.logger.info("Redmine IP lookup finished/skipped; URL build started: selected_count=%s", len(items or []))
+            self.poll_status_label.setText("Собираю ссылку Redmine...")
+            redmine_url, warning = self._build_redmine_open_url(items)
+            if not redmine_url:
+                self.logger.warning("Redmine URL build stopped: %s", warning or "empty url")
+                QMessageBox.warning(self, "Redmine", warning or "Не удалось собрать ссылку Redmine.")
+                return
 
-        if warning:
-            QMessageBox.warning(self, "Redmine", warning)
+            if warning:
+                self.logger.warning("Redmine URL build warning: %s", warning)
+                QMessageBox.warning(self, "Redmine", warning)
 
-        is_special = any(str(getattr(item, "trigger_kind", "") or "").casefold() == SPECIAL_TRIGGER_KIND for item in items)
-        graph_urls = self._combined_graph_urls(items)
-        if is_special and graph_urls:
-            if QMessageBox.question(
-                self,
-                "Redmine",
-                "Среди выбранных проблем есть специальный триггер. Открыть связанные графики для ручной проверки?",
-                QMessageBox.Open | QMessageBox.Cancel,
-            ) == QMessageBox.Open:
-                self.open_graphs(graph_urls)
+            is_special = any(str(getattr(item, "trigger_kind", "") or "").casefold() == SPECIAL_TRIGGER_KIND for item in items)
+            graph_urls = self._combined_graph_urls(items)
+            if is_special and graph_urls:
+                if QMessageBox.question(
+                    self,
+                    "Redmine",
+                    "Среди выбранных проблем есть специальный триггер. Открыть связанные графики для ручной проверки?",
+                    QMessageBox.Open | QMessageBox.Cancel,
+                ) == QMessageBox.Open:
+                    self.open_graphs(graph_urls)
 
-        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
-        dialog = RedmineCreateDialog(profile, redmine_url, ensure_live_monitor_defaults(self.config), self)
-        self.redmine_dialogs.append(dialog)
-        dialog.finished.connect(lambda _result, d=dialog: self.redmine_dialogs.remove(d) if d in self.redmine_dialogs else None)
-        dialog.show()
+            self._log_redmine_url_diagnostics(redmine_url, items)
+            self.logger.info("Redmine dialog opening")
+            self.poll_status_label.setText("Открываю окно Redmine...")
+            profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+            dialog = RedmineCreateDialog(profile, redmine_url, ensure_live_monitor_defaults(self.config), self)
+            self.redmine_dialogs.append(dialog)
+            dialog.finished.connect(lambda _result, d=dialog: self.redmine_dialogs.remove(d) if d in self.redmine_dialogs else None)
+            dialog.show()
+            self.poll_status_label.setText("Окно Redmine открыто")
+            self.logger.info("Redmine dialog opened")
+        except Exception:
+            self._handle_redmine_preparation_error()
+
+    def _handle_redmine_preparation_error(self):
+        self.logger.exception("Redmine preparation failed")
+        self.poll_status_label.setText("Ошибка подготовки задачи Redmine")
+        QMessageBox.warning(self, "Redmine", "Ошибка подготовки задачи Redmine. Подробности записаны в лог.")
+
+    def _log_redmine_url_diagnostics(self, redmine_url, items):
+        template = get_redmine_task_template(
+            self.config,
+            special=any(str(getattr(item, "trigger_kind", "") or "").casefold() == SPECIAL_TRIGGER_KIND for item in items or []),
+        )
+        configured_create_url = str(template.get("create_url") or "").strip()
+        parsed = urlparse(str(redmine_url or ""))
+        field_names = sorted({key for key, _value in parse_qsl(parsed.query, keep_blank_values=True)})
+        self.logger.info(
+            "Redmine URL diagnostics: configured_create_url=%s final_scheme=%s final_host=%s final_path=%s query_length=%s total_url_length=%s field_names=%s",
+            configured_create_url,
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            len(parsed.query or ""),
+            len(str(redmine_url or "")),
+            field_names,
+        )
 
     def open_mm_otrs_for_selected_row(self):
         items = self._choose_redmine_items_for_selection("ОТРС ММ")

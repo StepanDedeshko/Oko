@@ -63,6 +63,45 @@ class LiveZabbixRedmineAuthTests(unittest.TestCase):
         self.assertIn("_open_redmine_auth_dialog", self.widget_source)
         self.assertIn("Авторизация Redmine", self.widget_source)
 
+    def test_redmine_action_logs_status_at_start_and_no_selection_message(self):
+        self.assertIn('self.poll_status_label.setText("Готовлю задачу Redmine...")', self.widget_source)
+        self.assertIn('self.logger.info("Redmine action clicked")', self.widget_source)
+        self.assertIn('self.logger.info("Redmine selected rows: count=%s"', self.widget_source)
+        self.assertIn("Выберите строку проблемы Live Zabbix Monitor для создания задачи Redmine.", self.widget_source)
+        self.assertIn("Redmine action stopped: no selected problem rows", self.widget_source)
+
+    def test_redmine_graph_lookup_timeout_continues_to_redmine(self):
+        self.assertIn("_redmine_graph_lookup_timeout_ms = 9000", self.widget_source)
+        self.assertIn("_on_redmine_graph_lookup_timeout", self.widget_source)
+        self.assertIn("Redmine graph lookup timeout; continuing without graph link", self.widget_source)
+        self.assertIn("Ссылка на график не найдена, продолжаю создание Redmine...", self.widget_source)
+        self.assertIn("self._load_next_redmine_graph_lookup()", self.widget_source)
+
+    def test_redmine_ip_lookup_timeout_continues_to_redmine(self):
+        self.assertIn("_redmine_ip_lookup_timeout_ms = 9000", self.widget_source)
+        self.assertIn("_on_redmine_ip_lookup_timeout", self.widget_source)
+        self.assertIn("Redmine IP lookup timeout; continuing without IP", self.widget_source)
+        self.assertIn("IP не найден, продолжаю создание Redmine...", self.widget_source)
+        self.assertIn("self._load_next_redmine_ip_lookup()", self.widget_source)
+
+    def test_redmine_preparation_exceptions_are_logged_and_shown(self):
+        self.assertIn("def _handle_redmine_preparation_error", self.widget_source)
+        self.assertIn('self.logger.exception("Redmine preparation failed")', self.widget_source)
+        self.assertIn("Ошибка подготовки задачи Redmine. Подробности записаны в лог.", self.widget_source)
+        self.assertIn("except Exception:", self.widget_source)
+
+    def test_redmine_dialog_open_path_cannot_silently_stop_after_enrichment(self):
+        for marker in [
+            "Redmine graph lookup finished/skipped; starting IP lookup",
+            "Redmine IP lookup finished/skipped; URL build started",
+            "Redmine URL diagnostics:",
+            "field_names=%s",
+            "Redmine dialog opening",
+            "Redmine dialog opened",
+            "Окно Redmine открыто",
+        ]:
+            self.assertIn(marker, self.widget_source)
+
     def test_login_success_reopens_original_redmine_create_url(self):
         self.assertIn("path.indexOf('/login') === -1", self.widget_source)
         self.assertIn("!hasLoginForm", self.widget_source)
