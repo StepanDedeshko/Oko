@@ -490,8 +490,8 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
 
     def test_problem_url_fallback_opens_acknowledge_popup_before_textarea(self):
         self.assertIn("acknowledgePopUp", self.widget_source)
-        self.assertIn("clickAcknowledgeIfNeeded", self.widget_source)
-        self.assertIn("waitForForm(resolve)", self.widget_source)
+        self.assertIn("clicked_popup", self.widget_source)
+        self.assertIn('_start_zbx_poll("check_form", 250, 10000)', self.widget_source)
 
     def test_eventactions_widget_used_for_duplicate_scan(self):
         self.assertIn("#hat_eventactions_widget, #hat_eventactions", self.widget_source)
@@ -507,8 +507,9 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
             self.assertIn(marker, self.widget_source)
 
     def test_raw_tr_events_without_textarea_waits_and_diagnostics_on_timeout(self):
-        self.assertIn("acknowledge popup/form timeout", self.widget_source)
-        self.assertIn("timeoutMs = 10000", self.widget_source)
+        self.assertIn("_handle_zbx_poll_timeout", self.widget_source)
+        self.assertIn('_start_zbx_poll("check_form", 250, 10000)', self.widget_source)
+        self.assertIn('_start_zbx_poll("check_submit", 300, 10000)', self.widget_source)
         for marker in (
             "current_url",
             "document_title",
@@ -541,6 +542,16 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
     def test_old_mm_otrs_formats_are_normalized(self):
         for marker in ("Задача\\s+на\\s+ММ", "Задача\\s+ММ", "ММ|OTRS", "Задача на ММ: "):
             self.assertIn(marker, self.widget_source)
+
+
+    def test_zabbix_comment_pipeline_is_python_polled_without_promises(self):
+        self.assertNotIn("return new Promise", self.widget_source)
+        self.assertNotIn("new Promise(function(resolve)", self.widget_source)
+        self.assertIn('_start_zbx_poll("check_form", 250, 10000)', self.widget_source)
+        self.assertIn('_start_zbx_poll("check_submit", 300, 10000)', self.widget_source)
+        self.assertIn("submitted_done", self.widget_source)
+        self.assertIn("Zabbix JS returned empty result", self.widget_source)
+        self.assertIn("_finish_zbx_item", self.widget_source)
 
     def test_app_version_unchanged(self):
         self.assertIn('APP_VERSION = "0.3.1"', self.app_info)

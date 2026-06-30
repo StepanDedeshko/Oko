@@ -3752,46 +3752,48 @@ class LiveZabbixMonitorWidget(QWidget):
             final_error_text="Задача Redmine создана, но подтверждение Zabbix завершилось с ошибками. Подробности в логах.",
         )
 
-    def _zabbix_page_script(self, comment, acknowledge_missing=True):
-        script = r"""
+    @staticmethod
+    def _zabbix_comment_diagnostics_script():
+        return r"""
 (function() {
+  function text(element) { return String(element ? (element.innerText || element.textContent || '') : '').replace(/\s+/g, ' ').trim(); }
+  function visible(element) { if (!element) return false; var s = window.getComputedStyle(element); return s && s.display !== 'none' && s.visibility !== 'hidden' && element.offsetParent !== null; }
+  function acknowledgeLinks() {
+    return Array.from(document.querySelectorAll('a, button')).filter(function(el) {
+      var onclick = String(el.getAttribute('onclick') || '');
+      var row = el.closest('tr');
+      return onclick.indexOf('acknowledgePopUp') !== -1 || (row && /Подтверждено|Acknowledged/i.test(text((row.children || [])[0])) && /^(Нет|No)$/i.test(text(el)));
+    });
+  }
+  function updateButtons() { return Array.from(document.querySelectorAll('.overlay-dialogue-footer button, .overlay-dialogue button, button')).filter(function(button) { return /^(Обновить|Update)$/i.test(text(button)); }); }
+  return JSON.stringify({
+    current_url: String(window.location.href || ''),
+    document_title: String(document.title || ''),
+    hat_eventactions_widget_exists: !!document.querySelector('#hat_eventactions_widget'),
+    acknowledge_popup_link_exists: !!document.querySelector('[onclick*="acknowledgePopUp"]'),
+    acknowledge_link_count: acknowledgeLinks().length,
+    overlay_dialogue_count: document.querySelectorAll('.overlay-dialogue').length,
+    acknowledge_form_exists: !!document.querySelector('#acknowledge_form'),
+    textarea_count: document.querySelectorAll('.overlay-dialogue #acknowledge_form textarea#message, #acknowledge_form textarea, textarea#message').length,
+    submit_update_button_count: updateButtons().length,
+    visible_button_texts: Array.from(document.querySelectorAll('button')).filter(visible).map(text).filter(Boolean).slice(0, 20)
+  });
+})();
+"""
+
+    def _zabbix_comment_script(self, step, comment="", acknowledge_missing=True):
+        comment_json = json.dumps(comment or "")
+        acknowledge_json = json.dumps(bool(acknowledge_missing)).lower()
+        return r"""
+(function() {
+  var step = STEP_JSON;
   var comment = COMMENT_JSON;
   var acknowledgeMissing = ACK_JSON;
-  var started = Date.now();
-  var timeoutMs = 10000;
-
-  function text(element) {
-    return String(element ? (element.innerText || element.textContent || '') : '').replace(/\s+/g, ' ').trim();
-  }
-  function visible(element) {
-    if (!element) return false;
-    var style = window.getComputedStyle(element);
-    return style && style.display !== 'none' && style.visibility !== 'hidden' && element.offsetParent !== null;
-  }
-  function eventActionsText() {
-    var widget = document.querySelector('#hat_eventactions_widget, #hat_eventactions');
-    return text(widget);
-  }
-  function historyText() {
-    var overlay = document.querySelector('.overlay-dialogue');
-    var history = overlay && Array.from(overlay.querySelectorAll('table, .list-table, [id*=history], [class*=history]')).find(function(el) {
-      return /История|History/i.test(text(el));
-    });
-    return text(history);
-  }
-  function hasDuplicate() {
-    return eventActionsText().indexOf(comment) !== -1 || historyText().indexOf(comment) !== -1 || text(document.querySelector('.overlay-dialogue')).indexOf(comment) !== -1;
-  }
-  function acknowledgedFromPage() {
-    var rows = Array.from(document.querySelectorAll('tr'));
-    for (var i = 0; i < rows.length; i += 1) {
-      var cells = Array.from(rows[i].children || []);
-      if (cells.length >= 2 && /Подтверждено|Acknowledged/i.test(text(cells[0]))) {
-        return /Да|Yes/i.test(text(cells[1])) && !/Нет|No/i.test(text(cells[1]));
-      }
-    }
-    return /Подтверждено\s*[:\n ]*(?:Да|Yes)|Acknowledged\s*[:\n ]*Yes/i.test(text(document.body));
-  }
+  function text(element) { return String(element ? (element.innerText || element.textContent || '') : '').replace(/\s+/g, ' ').trim(); }
+  function visible(element) { if (!element) return false; var s = window.getComputedStyle(element); return s && s.display !== 'none' && s.visibility !== 'hidden' && element.offsetParent !== null; }
+  function eventActionsText() { return text(document.querySelector('#hat_eventactions_widget, #hat_eventactions')); }
+  function historyText() { return text(document.querySelector('.overlay-dialogue')); }
+  function duplicate() { return eventActionsText().indexOf(comment) !== -1 || historyText().indexOf(comment) !== -1; }
   function acknowledgeLinks() {
     var all = Array.from(document.querySelectorAll('a, button'));
     var popup = all.filter(function(el) { return String(el.getAttribute('onclick') || '').indexOf('acknowledgePopUp') !== -1; });
@@ -3801,10 +3803,14 @@ class LiveZabbixMonitorWidget(QWidget):
       return row && /Подтверждено|Acknowledged/i.test(text((row.children || [])[0])) && /^(Нет|No)$/i.test(text(el));
     });
   }
-  function updateButtons() {
-    return Array.from(document.querySelectorAll('.overlay-dialogue-footer button, .overlay-dialogue button, button')).filter(function(button) {
-      return /^(Обновить|Update)$/i.test(text(button));
-    });
+  function updateButtons() { return Array.from(document.querySelectorAll('.overlay-dialogue-footer button, .overlay-dialogue button, button')).filter(function(button) { return /^(Обновить|Update)$/i.test(text(button)); }); }
+  function acknowledgedFromPage() {
+    var rows = Array.from(document.querySelectorAll('tr'));
+    for (var i = 0; i < rows.length; i += 1) {
+      var cells = Array.from(rows[i].children || []);
+      if (cells.length >= 2 && /Подтверждено|Acknowledged/i.test(text(cells[0]))) return /Да|Yes/i.test(text(cells[1])) && !/Нет|No/i.test(text(cells[1]));
+    }
+    return /Подтверждено\s*[:\n ]*(?:Да|Yes)|Acknowledged\s*[:\n ]*Yes/i.test(text(document.body));
   }
   function diagnostics() {
     return {
@@ -3820,81 +3826,46 @@ class LiveZabbixMonitorWidget(QWidget):
       visible_button_texts: Array.from(document.querySelectorAll('button')).filter(visible).map(text).filter(Boolean).slice(0, 20)
     };
   }
-  function form() {
-    return document.querySelector('.overlay-dialogue #acknowledge_form');
-  }
-  function textarea() {
-    return document.querySelector('.overlay-dialogue #acknowledge_form textarea#message');
-  }
-  function setNativeValue(element, value) {
-    element.focus();
-    element.value = value;
-    element.dispatchEvent(new Event('input', {bubbles: true}));
-    element.dispatchEvent(new Event('change', {bubbles: true}));
-  }
-  function clickAcknowledgeIfNeeded() {
-    if (form() && textarea()) return {clicked: false, already_open: true};
+  function formReadyPayload() { return JSON.stringify({ok:true, form_ready:true, status:'Форма подтверждения Zabbix найдена', diagnostics:diagnostics()}); }
+  var message = document.querySelector('.overlay-dialogue #acknowledge_form textarea#message');
+  if (step === 'inspect') {
+    if (duplicate()) return JSON.stringify({ok:true, duplicate:true, status:'Комментарий Zabbix уже есть, пропускаю', diagnostics:diagnostics()});
+    if (message) return formReadyPayload();
     var links = acknowledgeLinks();
     var preferred = links.find(function(el) { return String(el.getAttribute('onclick') || '').indexOf('acknowledgePopUp') !== -1; }) || links[0];
-    if (!preferred) return {clicked: false, error: 'acknowledge link not found'};
+    if (!preferred) return JSON.stringify({ok:false, error:'acknowledge link not found', diagnostics:diagnostics()});
     preferred.click();
-    return {clicked: true};
+    return JSON.stringify({ok:true, clicked_popup:true, status:'Открываю форму подтверждения Zabbix', diagnostics:diagnostics()});
   }
-  function waitForForm(resolve) {
-    if (hasDuplicate()) {
-      resolve(JSON.stringify({ok: true, duplicate: true, status: 'Комментарий Zabbix уже есть, пропускаю', diagnostics: diagnostics()}));
-      return;
-    }
-    var message = textarea();
-    if (form() && message) {
-      resolve(fillAndSubmit(message));
-      return;
-    }
-    if (Date.now() - started >= timeoutMs) {
-      resolve(JSON.stringify({ok: false, error: 'acknowledge popup/form timeout', status: 'Форма подтверждения Zabbix не найдена', diagnostics: diagnostics()}));
-      return;
-    }
-    setTimeout(function() { waitForForm(resolve); }, 250);
+  if (step === 'check_form') {
+    if (duplicate()) return JSON.stringify({ok:true, duplicate:true, status:'Комментарий Zabbix уже есть, пропускаю', diagnostics:diagnostics()});
+    if (message) return formReadyPayload();
+    return JSON.stringify({ok:true, waiting:true, diagnostics:diagnostics()});
   }
-  function waitForClose(resolve) {
-    if (!document.querySelector('.overlay-dialogue') || /успеш|success/i.test(text(document.body))) {
-      resolve(JSON.stringify({ok: true, submitted: true, status: 'Комментарий Zabbix добавлен', diagnostics: diagnostics()}));
-      return;
-    }
-    if (Date.now() - started >= timeoutMs) {
-      resolve(JSON.stringify({ok: false, error: 'acknowledge submit timeout', diagnostics: diagnostics()}));
-      return;
-    }
-    setTimeout(function() { waitForClose(resolve); }, 300);
-  }
-  function fillAndSubmit(message) {
-    if (hasDuplicate()) return JSON.stringify({ok: true, duplicate: true, status: 'Комментарий Zabbix уже есть, пропускаю', diagnostics: diagnostics()});
-    setNativeValue(message, comment);
+  if (step === 'submit') {
+    if (duplicate()) return JSON.stringify({ok:true, duplicate:true, status:'Комментарий Zabbix уже есть, пропускаю', diagnostics:diagnostics()});
+    if (!message) return JSON.stringify({ok:false, error:'textarea not found', diagnostics:diagnostics()});
+    message.focus(); message.value = comment; message.dispatchEvent(new Event('input', {bubbles:true})); message.dispatchEvent(new Event('change', {bubbles:true}));
     var ack = document.querySelector('.overlay-dialogue #acknowledge_form input#acknowledge_problem');
     var alreadyAcknowledged = acknowledgedFromPage();
     if (acknowledgeMissing && !alreadyAcknowledged && ack && !ack.checked) ack.click();
     var close = document.querySelector('.overlay-dialogue #acknowledge_form input#close_problem');
     if (close && close.checked) close.click();
     var button = updateButtons()[0];
-    if (!button) return JSON.stringify({ok: false, error: 'update button not found', diagnostics: diagnostics()});
+    if (!button) return JSON.stringify({ok:false, error:'update button not found', diagnostics:diagnostics()});
     button.click();
-    return new Promise(waitForClose);
+    return JSON.stringify({ok:true, submitted:true, already_acknowledged:alreadyAcknowledged, status:'Комментарий Zabbix отправлен', diagnostics:diagnostics()});
   }
-  return new Promise(function(resolve) {
-    if (hasDuplicate()) {
-      resolve(JSON.stringify({ok: true, duplicate: true, status: 'Комментарий Zabbix уже есть, пропускаю', diagnostics: diagnostics()}));
-      return;
-    }
-    var click = clickAcknowledgeIfNeeded();
-    if (click.error) {
-      resolve(JSON.stringify({ok: false, error: click.error, diagnostics: diagnostics()}));
-      return;
-    }
-    waitForForm(resolve);
-  });
+  if (step === 'check_submit') {
+    var bodyText = text(document.body);
+    var error = document.querySelector('.msg-bad, .message-error, .alert-danger');
+    if (error && visible(error)) return JSON.stringify({ok:false, error:text(error), diagnostics:diagnostics()});
+    if (!document.querySelector('.overlay-dialogue') || /успеш|success|acknowledge\.create/i.test(bodyText)) return JSON.stringify({ok:true, submitted_done:true, status:'Комментарий Zabbix добавлен', diagnostics:diagnostics()});
+    return JSON.stringify({ok:true, waiting:true, diagnostics:diagnostics()});
+  }
+  return JSON.stringify({ok:false, error:'unknown zabbix comment step', diagnostics:diagnostics()});
 })();
-"""
-        return script.replace("COMMENT_JSON", json.dumps(comment)).replace("ACK_JSON", json.dumps(bool(acknowledge_missing)).lower())
+""".replace("STEP_JSON", json.dumps(step)).replace("COMMENT_JSON", comment_json).replace("ACK_JSON", acknowledge_json)
 
     def _process_zabbix_comments(self, items, comment, acknowledge_missing=True, progress_prefix="Подтверждаю Zabbix", summary_prefix="Zabbix подтверждение", final_error_text=None):
         self._zbx_queue = list(items or [])
@@ -3918,15 +3889,15 @@ class LiveZabbixMonitorWidget(QWidget):
             self.logger.info("Zabbix ack final summary: %s", msg)
             self.poll_status_label.setText(self._zbx_final_error_text if c["errors"] and self._zbx_final_error_text else msg)
             return
-        item = self._zbx_queue.pop(0)
-        idx = sum(self._zbx_counts.values()) + 1
-        self.poll_status_label.setText(f"{self._zbx_progress_prefix}: {idx}/{total}")
-        self.logger.info("Zabbix item started: %s", getattr(item, "trigger_name", ""))
-        url = str(getattr(item, "ack_url", "") or getattr(item, "problem_url", "") or "")
-        if not url:
+        self._zbx_active_item = self._zbx_queue.pop(0)
+        self._zbx_active_url = str(getattr(self._zbx_active_item, "ack_url", "") or getattr(self._zbx_active_item, "problem_url", "") or "")
+        self._zbx_active_index = sum(self._zbx_counts.values()) + 1
+        self._zbx_active_total = total
+        self.poll_status_label.setText(f"{self._zbx_progress_prefix}: {self._zbx_active_index}/{total}")
+        self.logger.info("Zabbix item started: %s", getattr(self._zbx_active_item, "trigger_name", ""))
+        if not self._zbx_active_url:
             self.logger.warning("Zabbix item skipped: no ack_url/problem_url")
-            self._zbx_counts["skipped"] += 1
-            QTimer.singleShot(0, self._zbx_next)
+            self._finish_zbx_item("skipped")
             return
 
         def loaded(ok):
@@ -3935,38 +3906,127 @@ class LiveZabbixMonitorWidget(QWidget):
             except Exception:
                 pass
             if not ok:
-                self.logger.warning("ack/comment failure: load failed url=%s", url)
-                self._zbx_counts["errors"] += 1
-                self._zbx_next()
+                self.logger.warning("ack/comment failure: load failed url=%s", self._zbx_active_url)
+                self._finish_zbx_item("errors")
                 return
-            self._zbx_view.page().runJavaScript(self._zabbix_page_script(self._zbx_comment, self._zbx_ack_missing), done)
-
-        def done(result):
-            try:
-                payload = json.loads(result or "{}")
-                status = str(payload.get("status") or "")
-                if payload.get("duplicate"):
-                    self.poll_status_label.setText(status or "Комментарий Zabbix уже есть, пропускаю")
-                    self.logger.info("duplicate comment skipped: %s", url)
-                    self._zbx_counts["skipped"] += 1
-                elif payload.get("ok"):
-                    self.poll_status_label.setText("Форма подтверждения Zabbix найдена")
-                    if payload.get("acknowledged"):
-                        self.logger.info("already acknowledged; adding missing comment only: %s", url)
-                    self.logger.info("ack/comment success: %s", url)
-                    self.poll_status_label.setText(status or "Комментарий Zabbix добавлен")
-                    self._zbx_counts["success"] += 1
-                else:
-                    self.poll_status_label.setText(status or "Форма подтверждения Zabbix не найдена")
-                    self.logger.warning("ack/comment failure: %s %s diagnostics=%s", url, payload.get("error"), payload.get("diagnostics"))
-                    self._zbx_counts["errors"] += 1
-            except Exception:
-                self.logger.exception("ack/comment failure: %s", url)
-                self._zbx_counts["errors"] += 1
-            QTimer.singleShot(700, self._zbx_next)
+            self._run_zbx_step("inspect")
 
         self._zbx_view.loadFinished.connect(loaded)
-        self._zbx_view.load(QUrl(url))
+        self._zbx_view.load(QUrl(self._zbx_active_url))
+
+    def _parse_zbx_payload(self, result, context):
+        try:
+            payload = json.loads(result or "{}") if isinstance(result, str) else (result or {})
+        except Exception:
+            payload = {}
+        if payload:
+            payload.setdefault("diagnostics", {})
+            return payload
+        self.logger.warning("Zabbix JS returned empty result: context=%s url=%s", context, getattr(self, "_zbx_active_url", ""))
+        return {"ok": False, "error": "Zabbix JS returned empty result", "diagnostics": None, "needs_diagnostics": True}
+
+    def _run_zbx_step(self, step):
+        self._zbx_view.page().runJavaScript(
+            self._zabbix_comment_script(step, self._zbx_comment, self._zbx_ack_missing),
+            lambda result, current_step=step: self._handle_zbx_step_result(current_step, result),
+        )
+
+    def _handle_zbx_step_result(self, step, result):
+        payload = self._parse_zbx_payload(result, step)
+        if payload.get("needs_diagnostics"):
+            self._zbx_view.page().runJavaScript(
+                self._zabbix_comment_diagnostics_script(),
+                lambda diag, failed_payload=payload: self._handle_zbx_empty_result_with_diagnostics(failed_payload, diag),
+            )
+            return
+        self._handle_zbx_payload(step, payload)
+
+    def _handle_zbx_empty_result_with_diagnostics(self, payload, diagnostics_result):
+        try:
+            diagnostics = json.loads(diagnostics_result or "{}") if isinstance(diagnostics_result, str) else (diagnostics_result or {})
+        except Exception:
+            diagnostics = {}
+        payload["diagnostics"] = diagnostics
+        self.logger.warning("ack/comment failure: %s %s diagnostics=%s", self._zbx_active_url, payload.get("error"), diagnostics)
+        self.poll_status_label.setText("Форма подтверждения Zabbix не найдена")
+        self._finish_zbx_item("errors")
+
+    def _handle_zbx_payload(self, step, payload):
+        status = str(payload.get("status") or "")
+        if payload.get("duplicate"):
+            self.poll_status_label.setText(status or "Комментарий Zabbix уже есть, пропускаю")
+            self.logger.info("duplicate comment skipped: %s", self._zbx_active_url)
+            self._finish_zbx_item("skipped")
+            return
+        if not payload.get("ok"):
+            self.poll_status_label.setText(status or "Форма подтверждения Zabbix не найдена")
+            self.logger.warning("ack/comment failure: %s %s diagnostics=%s", self._zbx_active_url, payload.get("error"), payload.get("diagnostics"))
+            self._finish_zbx_item("errors")
+            return
+        if payload.get("clicked_popup"):
+            self.poll_status_label.setText(status or "Открываю форму подтверждения Zabbix")
+            self._start_zbx_poll("check_form", 250, 10000)
+            return
+        if payload.get("form_ready"):
+            self.poll_status_label.setText(status or "Форма подтверждения Zabbix найдена")
+            self._run_zbx_step("submit")
+            return
+        if payload.get("submitted"):
+            if payload.get("already_acknowledged"):
+                self.logger.info("already acknowledged; adding missing comment only: %s", self._zbx_active_url)
+            self.poll_status_label.setText(status or "Комментарий Zabbix отправлен")
+            self._start_zbx_poll("check_submit", 300, 10000)
+            return
+        if payload.get("submitted_done"):
+            self.poll_status_label.setText(status or "Комментарий Zabbix добавлен")
+            self.logger.info("ack/comment success: %s", self._zbx_active_url)
+            self._finish_zbx_item("success")
+            return
+        if payload.get("waiting"):
+            return
+        self.logger.warning("ack/comment failure: unexpected payload url=%s payload=%s", self._zbx_active_url, payload)
+        self._finish_zbx_item("errors")
+
+    def _start_zbx_poll(self, step, interval_ms, timeout_ms):
+        self._zbx_poll_step = step
+        self._zbx_poll_deadline = datetime.now().timestamp() + (timeout_ms / 1000.0)
+        QTimer.singleShot(interval_ms, lambda: self._poll_zbx_step(step, interval_ms))
+
+    def _poll_zbx_step(self, step, interval_ms):
+        if datetime.now().timestamp() >= getattr(self, "_zbx_poll_deadline", 0):
+            self._zbx_view.page().runJavaScript(
+                self._zabbix_comment_diagnostics_script(),
+                lambda diag, timeout_step=step: self._handle_zbx_poll_timeout(timeout_step, diag),
+            )
+            return
+        self._zbx_view.page().runJavaScript(
+            self._zabbix_comment_script(step, self._zbx_comment, self._zbx_ack_missing),
+            lambda result, current_step=step, current_interval=interval_ms: self._handle_zbx_poll_result(current_step, current_interval, result),
+        )
+
+    def _handle_zbx_poll_result(self, step, interval_ms, result):
+        payload = self._parse_zbx_payload(result, step)
+        if payload.get("needs_diagnostics"):
+            self._handle_zbx_step_result(step, result)
+            return
+        if payload.get("waiting"):
+            QTimer.singleShot(interval_ms, lambda: self._poll_zbx_step(step, interval_ms))
+            return
+        self._handle_zbx_payload(step, payload)
+
+    def _handle_zbx_poll_timeout(self, step, diagnostics_result):
+        try:
+            diagnostics = json.loads(diagnostics_result or "{}") if isinstance(diagnostics_result, str) else (diagnostics_result or {})
+        except Exception:
+            diagnostics = {}
+        self.logger.warning("ack/comment failure: %s %s timeout diagnostics=%s", self._zbx_active_url, step, diagnostics)
+        self.poll_status_label.setText("Форма подтверждения Zabbix не найдена")
+        self._finish_zbx_item("errors")
+
+    def _finish_zbx_item(self, result_key):
+        if result_key in self._zbx_counts:
+            self._zbx_counts[result_key] += 1
+        QTimer.singleShot(0, self._zbx_next)
 
     def copy_task_comment_to_selected(self):
         items = self._selected_live_problem_items()
