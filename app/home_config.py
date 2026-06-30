@@ -74,7 +74,7 @@ from app.credentials import load_service_group_credentials, save_service_group_c
 from app.credentials import default_encrypted_profile_export_filename, export_profile_credentials_encrypted_file, import_profile_credentials_encrypted_file
 from app.safe_widgets import NoWheelComboBox
 from app.service_checks import ensure_service_checks_defaults
-from app.live_zabbix import ensure_live_monitor_defaults
+from app.live_zabbix import ensure_live_monitor_defaults, import_live_zabbix_node_list, live_zabbix_detection_discovery_settings, live_zabbix_node_version_lists
 
 
 def clone(value):
@@ -237,7 +237,28 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         self.mm_otrs_create_url_input.setPlaceholderText("https://itsm... URL создания задачи ОТРС ММ")
         form.addRow("URL создания задачи ОТРС ММ:", self.mm_otrs_create_url_input)
 
+        node_lists = live_zabbix_node_version_lists(self.config)
+        discovery = live_zabbix_detection_discovery_settings(self.config)
+        self.v1_nodes_label = QLabel(f"v1_nodes: {len(node_lists.get('v1_nodes', []))}")
+        self.v2_nodes_label = QLabel(f"v2_nodes: {len(node_lists.get('v2_nodes', []))}")
+        self.detection_timeout_input = QSpinBox()
+        self.detection_timeout_input.setRange(5, 120)
+        self.detection_timeout_input.setValue(int(discovery.get("timeout_seconds", 20) or 20))
+        form.addRow("Detection timeout:", self.detection_timeout_input)
+        form.addRow("CSV v1:", self.v1_nodes_label)
+        form.addRow("CSV v2:", self.v2_nodes_label)
+
         root.addLayout(form)
+
+        import_buttons = QHBoxLayout()
+        import_v1_button = QPushButton("Import v1 CSV/TXT/TSV")
+        import_v2_button = QPushButton("Import v2 CSV/TXT/TSV")
+        import_v1_button.clicked.connect(lambda: self.import_node_list("v1"))
+        import_v2_button.clicked.connect(lambda: self.import_node_list("v2"))
+        import_buttons.addWidget(import_v1_button)
+        import_buttons.addWidget(import_v2_button)
+        import_buttons.addStretch(1)
+        root.addLayout(import_buttons)
 
         buttons = QHBoxLayout()
         save_button = QPushButton("Сохранить настройки Live Zabbix")
@@ -245,6 +266,18 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         buttons.addWidget(save_button)
         buttons.addStretch(1)
         root.addLayout(buttons)
+
+    def import_node_list(self, version):
+        path, _filter = QFileDialog.getOpenFileName(self, "Import node list", "", "Node lists (*.csv *.txt *.tsv);;All files (*)")
+        if not path:
+            return
+        text = Path(path).read_text(encoding="utf-8-sig")
+        parsed = import_live_zabbix_node_list(self.config, text, version)
+        save_config(self.config)
+        node_lists = live_zabbix_node_version_lists(self.config)
+        self.v1_nodes_label.setText(f"v1_nodes: {len(node_lists.get('v1_nodes', []))}")
+        self.v2_nodes_label.setText(f"v2_nodes: {len(node_lists.get('v2_nodes', []))}")
+        QMessageBox.information(self, "Live Zabbix Monitor", f"Imported {len(parsed)} {version} nodes")
 
     def save_settings(self):
         url = self.url_input.text().strip()
@@ -258,6 +291,7 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         self.settings["profile_id"] = profile_id
         self.settings["show_live_zabbix_diagnostics"] = self.show_diagnostics_checkbox.isChecked()
         self.settings["mm_otrs_create_url"] = self.mm_otrs_create_url_input.text().strip()
+        live_zabbix_detection_discovery_settings(self.config)["timeout_seconds"] = int(self.detection_timeout_input.value())
 
         save_config(self.config)
 

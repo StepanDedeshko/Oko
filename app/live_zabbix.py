@@ -150,6 +150,145 @@ def split_items_by_duty_filter(config: dict, items, filter_enabled=True):
     return visible, hidden
 
 
+# Live Zabbix detection helpers («Сработки» column)
+LIVE_ZABBIX_NODE_VERSION_LISTS_KEY = "live_zabbix_node_version_lists"
+LIVE_ZABBIX_DETECTION_DISCOVERY_KEY = "live_zabbix_detection_item_discovery"
+DETECTION_FINAL_STATUSES = {"OK", "zero", "zero_streak", "узел не найден в CSV", "itemid не найден", "нет history", "нет данных", "auth", "timeout", "ошибка загрузки", "ошибка"}
+
+def live_zabbix_nested_settings(config: dict) -> dict:
+    return ensure_live_monitor_defaults(config if isinstance(config, dict) else {})
+
+def live_zabbix_node_version_lists(config: dict) -> dict:
+    settings = live_zabbix_nested_settings(config)
+    lists = settings.setdefault(LIVE_ZABBIX_NODE_VERSION_LISTS_KEY, {})
+    lists.setdefault("v1_nodes", [])
+    lists.setdefault("v2_nodes", [])
+    return lists
+
+def live_zabbix_detection_discovery_settings(config: dict) -> dict:
+    settings = live_zabbix_nested_settings(config)
+    discovery = settings.setdefault(LIVE_ZABBIX_DETECTION_DISCOVERY_KEY, {})
+    discovery.setdefault("positive_ttl_seconds", 3600)
+    discovery.setdefault("negative_ttl_seconds", 300)
+    discovery.setdefault("timeout_seconds", 20)
+    discovery.setdefault("prefer_v2_on_conflict", True)
+    return discovery
+
+def normalize_detection_alias(value: str) -> str:
+    import re
+    return re.sub(r"\s+", " ", str(value or "").strip().casefold())
+
+def detection_aliases_for_host(host: str, ip: str = "") -> list[str]:
+    import re
+    aliases = []
+    for value in (host, ip):
+        norm = normalize_detection_alias(value)
+        if norm and norm not in aliases:
+            aliases.append(norm)
+        match = re.search(r"\s[-–—]\s([^−–—]+)$", norm)
+        if match:
+            short = match.group(1).strip()
+            if short and short not in aliases:
+                aliases.append(short)
+    return aliases
+
+def _csv_header_key(value: str) -> str:
+    import re
+    return re.sub(r"[\s_]+", " ", str(value or "").strip().casefold())
+
+LIVE_ZABBIX_NODE_HEADER_ALIASES = {"ip сервера", "ip server", "имя сервера", "имя узла", "сервер", "узел"}
+
+def is_live_zabbix_node_header_row(cells) -> bool:
+    keys = {_csv_header_key(cell) for cell in (cells or [])}
+    return bool(keys & LIVE_ZABBIX_NODE_HEADER_ALIASES)
+
+def parse_live_zabbix_node_list_text(text: str) -> list[str]:
+    import csv, io
+    result, seen = [], set()
+    sample = str(text or "")
+    try:
+        dialect = csv.Sniffer().sniff(sample[:2048], delimiters=";\t,") if sample.strip() else csv.excel
+    except csv.Error:
+        dialect = csv.excel
+    for row in csv.reader(io.StringIO(sample), dialect):
+        cells = [str(c or "").strip() for c in row]
+        if not any(cells) or is_live_zabbix_node_header_row(cells):
+            continue
+        for cell in cells:
+            norm = normalize_detection_alias(cell)
+            if norm and norm not in seen:
+                seen.add(norm); result.append(cell.strip())
+    return result
+
+def import_live_zabbix_node_list(config: dict, text: str, version: str) -> list[str]:
+    target = "v2_nodes" if str(version).lower() == "v2" else "v1_nodes"
+    parsed = parse_live_zabbix_node_list_text(text)
+    live_zabbix_node_version_lists(config)[target] = parsed
+    return parsed
+
+class LiveZabbixDetectionCache:
+    def __init__(self):
+        self._values = {}
+
+    def get(self, key, now=None):
+        from datetime import datetime
+        now = now or datetime.now()
+        entry = self._values.get(str(key))
+        if not entry or entry.get("expires_at") <= now:
+            return None
+        if entry.get("status") == "проверяю...":
+            return None
+        return dict(entry)
+
+    def set(self, key, value, ttl_seconds, now=None):
+        from datetime import datetime, timedelta
+        if (value or {}).get("status") == "проверяю...":
+            return
+        now = now or datetime.now()
+        entry = dict(value or {})
+        entry["expires_at"] = now + timedelta(seconds=max(1, int(ttl_seconds or 1)))
+        self._values[str(key)] = entry
+
+
+def resolve_live_zabbix_node_version(config: dict, host: str, ip: str = "") -> dict:
+    lists = live_zabbix_node_version_lists(config)
+    aliases = detection_aliases_for_host(host, ip)
+    normalized = {"v1": {normalize_detection_alias(v) for v in lists.get("v1_nodes", [])}, "v2": {normalize_detection_alias(v) for v in lists.get("v2_nodes", [])}}
+    matches = {version: [a for a in aliases if a in values] for version, values in normalized.items()}
+    version = ""
+    if matches["v2"] and (matches["v1"] or live_zabbix_detection_discovery_settings(config).get("prefer_v2_on_conflict", True)):
+        version = "v2"
+    elif matches["v1"]:
+        version = "v1"
+    elif matches["v2"]:
+        version = "v2"
+    return {"version": version, "source": version or "unknown", "aliases": aliases, "matched_alias": (matches.get(version) or [""])[0] if version else ""}
+
+def safe_detection_identifier(value: str) -> str:
+    import hashlib
+    norm = normalize_detection_alias(value)
+    return f"sha256:{hashlib.sha256(norm.encode('utf-8')).hexdigest()[:12]} len={len(norm)}"
+
+def parse_detection_itemid_from_html(html: str, aliases=None) -> str:
+    import re, html as html_module
+    text = str(html or "")
+    alias_values = [normalize_detection_alias(a) for a in (aliases or []) if normalize_detection_alias(a)]
+    for m in re.finditer(r"itemids(?:%5B%5D|\[\])?=(\d+)|itemid=(\d+)", text, re.I):
+        window = normalize_detection_alias(html_module.unescape(text[max(0, m.start()-500):m.end()+500]))
+        if not alias_values or any(a in window for a in alias_values):
+            return m.group(1) or m.group(2) or ""
+    return ""
+
+def parse_detection_history_values(html: str) -> dict:
+    import re
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", str(html or ""), flags=re.I|re.S)
+    plain = re.sub(r"<[^>]+>", " ", text)
+    values = [v.strip() for v in re.split(r"\s+", plain) if v.strip()]
+    has_table = "history" in str(html or "").casefold() or "list-table" in str(html or "").casefold() or "таб" in plain.casefold()
+    has_values = any(v in {"0", "1"} or v.casefold() in {"ok", "problem"} for v in values)
+    return {"has_history": bool(has_table and values), "has_values": bool(has_values), "values_count": len(values)}
+
+
 @dataclass
 class SnapshotDiff:
     new: list[ZabbixProblemSnapshotItem] = field(default_factory=list)

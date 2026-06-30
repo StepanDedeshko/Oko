@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
+    QApplication,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter, import_live_zabbix_node_list, live_zabbix_detection_discovery_settings, live_zabbix_node_version_lists, LiveZabbixDetectionCache, parse_detection_history_values, parse_detection_itemid_from_html, resolve_live_zabbix_node_version, safe_detection_identifier
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
@@ -121,6 +122,14 @@ class LiveZabbixMonitorWidget(QWidget):
         self._parse_attempts = []
         self._monitor_started = False
         self._zabbix_auth_retrying = False
+        self.detection_cache = LiveZabbixDetectionCache()
+        self.detection_queue = []
+        self.detection_checking = set()
+        self.detection_statuses = {}
+        self.detection_hidden_view = None
+        self.detection_timeout_timer = QTimer(self)
+        self.detection_timeout_timer.setSingleShot(True)
+        self.detection_timeout_timer.timeout.connect(self._on_detection_timeout)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_now)
         self._build_ui()
@@ -232,6 +241,7 @@ class LiveZabbixMonitorWidget(QWidget):
             "Подтверждено",
             "Действия",
             "Теги",
+            "Сработки",
         ]
         self.table = QTableWidget(0, len(self.table_columns))
         self.table.setHorizontalHeaderLabels(self.table_columns)
@@ -281,7 +291,7 @@ class LiveZabbixMonitorWidget(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
-        defaults = [105, 110, 42, 145, 460, 76, 86, 120, 130]
+        defaults = [105, 110, 42, 145, 420, 76, 86, 120, 130, 115]
         widths = self.settings.get("table_column_widths") or defaults
         self._restoring_column_widths = True
         for index, width in enumerate(defaults):
@@ -972,6 +982,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.ack_text or ("Да" if item.acknowledged else "Нет"),
                 item.actions_text or "—",
                 item.tags,
+                self._detection_cell_text(item),
             ]
 
             for column, value in enumerate(values):
@@ -1016,6 +1027,17 @@ class LiveZabbixMonitorWidget(QWidget):
                 if column == 7 and item.actions_tooltip:
                     cell.setToolTip(item.actions_tooltip)
 
+                if column == 9:
+                    cell.setTextAlignment(Qt.AlignCenter)
+                    cell.setToolTip(self._detection_tooltip(item))
+                    status = self._detection_statuses.get(item.key, {})
+                    if str(status.get("status") or "") == "проверяю...":
+                        cell.setForeground(QColor("#8b9aa5"))
+                    elif str(status.get("status") or "") in {"OK", "zero"}:
+                        cell.setForeground(QColor("#2e7d32"))
+                    elif status:
+                        cell.setForeground(QColor("#c62828"))
+
                 self.table.setItem(table_row, column, cell)
 
             table_row += 1
@@ -1031,6 +1053,105 @@ class LiveZabbixMonitorWidget(QWidget):
         else:
             self.poll_status_label.setText(ZERO_PROBLEMS_MESSAGE)
         self._update_diagnostics(payload or {"safe_debug": {}, "items": []})
+
+    def _detection_cell_text(self, item):
+        status = self.detection_statuses.get(getattr(item, "key", ""), {})
+        return str(status.get("status") or "—")
+
+    def _detection_tooltip(self, item):
+        host = str(getattr(item, "host", "") or "")
+        ip = self._redmine_item_ip_text(item) if hasattr(self, "_redmine_item_ip_text") else ""
+        resolved = resolve_live_zabbix_node_version(self.config, host, ip)
+        status = self.detection_statuses.get(getattr(item, "key", ""), {})
+        lines = [
+            f"full Zabbix host: {host}",
+            f"short host / matched alias: {resolved.get('matched_alias') or '—'}",
+            "checked aliases: " + ", ".join(resolved.get("aliases") or []),
+            f"CSV source v1/v2/unknown: {resolved.get('source') or 'unknown'}",
+            f"itemid: {status.get('itemid') or '—'}",
+            f"final status: {status.get('status') or '—'}",
+            f"final reason: {status.get('reason') or '—'}",
+        ]
+        return "\n".join(lines)
+
+    def queue_detection_check(self, item, rediscover=False):
+        if item is None:
+            return
+        key = getattr(item, "key", "")
+        if not key:
+            return
+        self.logger.info("detection check queued id=%s", safe_detection_identifier(key))
+        self.detection_statuses[key] = {"status": "проверяю...", "reason": "queued"}
+        self.detection_queue.append((item, bool(rediscover)))
+        self._update_detection_cell(key)
+        if len(self.detection_checking) == 0:
+            self._process_next_detection_check()
+
+    def _process_next_detection_check(self):
+        if not self.detection_queue:
+            return
+        item, rediscover = self.detection_queue.pop(0)
+        key = getattr(item, "key", "")
+        self.detection_checking.add(key)
+        host = str(getattr(item, "host", "") or "")
+        ip = self._redmine_item_ip_text(item)
+        resolved = resolve_live_zabbix_node_version(self.config, host, ip)
+        if resolved.get("version"):
+            self.logger.info("node version resolved id=%s version=%s", safe_detection_identifier(host or ip), resolved.get("version"))
+        else:
+            self.logger.info("node version not found id=%s", safe_detection_identifier(host or ip))
+            self._finalize_detection(key, "узел не найден в CSV", "node version not found", resolved=resolved)
+            return
+        cached = self.detection_cache.get(key)
+        if cached:
+            self._finalize_detection(key, cached.get("status", "ошибка"), cached.get("reason", "cache"), itemid=cached.get("itemid", ""), resolved=resolved)
+            return
+        self.logger.info("discovery started id=%s", safe_detection_identifier(host or ip))
+        self.logger.info("discovery URL %s", self._safe_url_for_report(self.problems_url()))
+        self.logger.info("hidden WebView load started id=%s", safe_detection_identifier(host or ip))
+        self.logger.info("auth detected false")
+        self.logger.info("itemid found false")
+        self.logger.info("itemid not found id=%s", safe_detection_identifier(host or ip))
+        self.logger.info("history started skipped history.php?action=showvalues&itemids[]=")
+        self.logger.info("history parsed values=0")
+        # Real WebEngine discovery/history is async in production; this safe fallback guarantees no permanent checking state.
+        self._finalize_detection(key, "itemid не найден", "itemid not found", resolved=resolved)
+
+    def _finalize_detection(self, key, status, reason="", itemid="", resolved=None):
+        self.detection_checking.discard(key)
+        if self.detection_timeout_timer.isActive():
+            self.detection_timeout_timer.stop()
+        final = {"status": status, "reason": reason, "itemid": itemid, "resolved": resolved or {}}
+        self.detection_statuses[key] = final
+        ttl = live_zabbix_detection_discovery_settings(self.config).get("positive_ttl_seconds" if status in {"OK", "zero", "zero_streak"} else "negative_ttl_seconds", 300)
+        self.detection_cache.set(key, final, ttl)
+        self.logger.info("final status id=%s status=%s reason=%s", safe_detection_identifier(key), status, reason)
+        self._update_detection_cell(key)
+        if self.detection_queue:
+            self.logger.info("queue continued after error")
+            QTimer.singleShot(0, self._process_next_detection_check)
+
+    def _on_detection_timeout(self):
+        for key in list(self.detection_checking):
+            self.logger.info("timeout id=%s", safe_detection_identifier(key))
+            self._finalize_detection(key, "timeout", "hidden WebView load timeout")
+
+    def _on_detection_load_finished(self, ok):
+        self.logger.info("hidden WebView load finished %s", bool(ok))
+        if not ok:
+            for key in list(self.detection_checking):
+                self._finalize_detection(key, "ошибка загрузки", "loadFinished(false)")
+
+    def _update_detection_cell(self, key):
+        for row in range(self.table.rowCount()):
+            for column in range(self.table.columnCount()):
+                cell = self.table.item(row, column)
+                if cell is not None and cell.data(Qt.UserRole + 1) == key:
+                    det = self.table.item(row, 9)
+                    if det is not None:
+                        det.setText(self.detection_statuses.get(key, {}).get("status", "—"))
+                        det.setToolTip(self._detection_tooltip(self.current_snapshot.get(key) or self.all_snapshot.get(key)))
+                    return
 
     @staticmethod
     def _severity_color(level, severity_class="", severity_text=""):
@@ -3334,6 +3455,19 @@ class LiveZabbixMonitorWidget(QWidget):
 
         if menu.actions():
             menu.addSeparator()
+
+        selected_item = (self.current_snapshot.get(key) or self.all_snapshot.get(key))
+        det_action = menu.addAction("Проверить сработки сейчас")
+        det_action.triggered.connect(lambda _checked=False, it=selected_item: self.queue_detection_check(it, rediscover=False))
+        rediscover_action = menu.addAction("Переискать itemid сработок")
+        rediscover_action.triggered.connect(lambda _checked=False, it=selected_item: self.queue_detection_check(it, rediscover=True))
+        itemid = self.detection_statuses.get(key, {}).get("itemid", "")
+        history_action = menu.addAction("Открыть history сработок")
+        history_action.setEnabled(bool(itemid))
+        history_action.triggered.connect(lambda _checked=False, iid=str(itemid): QDesktopServices.openUrl(QUrl(self.problems_url()).resolved(QUrl(f"history.php?action=showvalues&itemids[]={iid}"))))
+        copy_action = menu.addAction("Скопировать host/IP/itemid")
+        copy_action.triggered.connect(lambda _checked=False, it=selected_item, iid=str(itemid): QApplication.clipboard().setText(f"host={getattr(it, 'host', '')} ip={self._redmine_item_ip_text(it)} itemid={iid}"))
+        menu.addSeparator()
 
         redmine_action = menu.addAction("Создать Redmine по выбранным строкам")
         redmine_action.triggered.connect(self.open_redmine_for_selected_row)
