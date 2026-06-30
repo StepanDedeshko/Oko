@@ -52,7 +52,7 @@ mkdir -p "$BACKUP_DIR"
 
 echo ""
 echo "Делаю резервную копию текущей версии..."
-rsync -a \
+rsync -a --no-owner --no-group --no-perms \
     --exclude ".venv" \
     --exclude "_backups" \
     "$APP_DIR/" "$BACKUP_DIR/"
@@ -117,7 +117,7 @@ for legacy_dir in "${LEGACY_DIRS[@]}"; do
 done
 
 echo "Обновляю файлы приложения..."
-rsync -a --delete \
+rsync -a --delete --no-owner --no-group --no-perms \
     --exclude ".git" \
     --exclude ".venv" \
     --exclude "_backups" \
