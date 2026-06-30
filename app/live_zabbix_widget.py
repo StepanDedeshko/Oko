@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import json
+import re
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QMenu,
+    QInputDialog,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -41,6 +43,28 @@ from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 
 DOM_PARSER_SCRIPT = DOM_PARSER_SCRIPT_PLACEHOLDER
+ZABBIX_TASK_COMMENT_RE = re.compile(r"Задача (?:Redmine|на ММ) #\d+: https?://\S+")
+
+def build_redmine_zabbix_comment(issue_number, issue_url):
+    return f"Задача Redmine #{issue_number}: {issue_url}"
+
+def extract_redmine_issue_from_payload(payload):
+    payload = payload or {}
+    url = str(payload.get("url") or "")
+    path = str(payload.get("path") or urlparse(url).path or "")
+    text = str(payload.get("text") or "")
+    title = str(payload.get("title") or "")
+    match = re.search(r"/issues/(\d+)(?:$|[/?#])", path) or re.search(r"/issues/(\d+)(?:$|[/?#])", url)
+    if not match:
+        match = re.search(r"(?:Задача|Issue)\s*#(\d+)\b", title + "\n" + text, re.IGNORECASE)
+    if not match or not url:
+        return None
+    number = match.group(1)
+    if not re.search(r"/issues/" + re.escape(number) + r"(?:$|[/?#])", url):
+        parsed = urlparse(url)
+        url = urlunparse((parsed.scheme, parsed.netloc, f"/issues/{number}", "", "", ""))
+    return {"issue_number": number, "issue_url": url}
+
 WEBENGINE_JS_ERROR_MESSAGE = "Ошибка диагностики WebEngine: JS не вернул document.location.href. Проверьте выполнение runJavaScript, page.url/view.url и выбранный WebEngine profile."
 JS_EMPTY_STRING_ERROR_MESSAGE = "Ошибка JS диагностики: runJavaScript вернул пустую строку. DOM-парсер не запускался корректно."
 ZERO_PROBLEMS_MESSAGE = "Страница загружена, но проблемы не найдены. Возможные причины: страница логина, таблица ещё не загрузилась, DOM Zabbix не распознан."
@@ -144,7 +168,9 @@ class RedmineAuthorizationDialog(QDialog):
     def login_success_script():
         return r"""
 (function() {
-  var path = String(window.location.pathname || '').toLowerCase();
+  var path = String(window.location.pathname || '');
+  var url = String(window.location.href || '');
+  var title = String(document.title || '');
   var hasLoginForm = !!document.querySelector('form[action*="/login"] input#username, form[action*="/login"] input[name="username"], input#login-submit');
   return JSON.stringify({success: path.indexOf('/login') === -1 && !hasLoginForm});
 })();
@@ -185,7 +211,7 @@ class RedmineCreateDialog(QDialog):
     LOGIN_MARKERS = ('form[action*="/login"]', 'input#username', 'input[name="username"]', 'input#password', 'input[name="password"]')
     ISSUE_FORM_MARKERS = ('input[name="issue[subject]"]', 'textarea[name="issue[description]"]')
 
-    def __init__(self, profile, redmine_url, settings, parent=None):
+    def __init__(self, profile, redmine_url, settings, parent=None, success_callback=None, selected_items=None):
         super().__init__(parent)
         self.setWindowTitle("Создание задачи Redmine")
         self.resize(1100, 760)
@@ -193,6 +219,9 @@ class RedmineCreateDialog(QDialog):
         self.redmine_url = redmine_url
         self.settings = settings or {}
         self.auth_dialog = None
+        self.success_callback = success_callback
+        self.selected_items = list(selected_items or [])
+        self._issue_detected = False
         self.view = register_web_view(QWebEngineView(self))
         if profile is not None:
             self.page = QWebEnginePage(profile, self.view)
@@ -214,17 +243,22 @@ class RedmineCreateDialog(QDialog):
     def issue_form_guard_script():
         return r"""
 (function() {
-  var html = String(document.documentElement ? document.documentElement.innerHTML : '');
-  var lowered = html.toLowerCase();
-  var path = String(window.location.pathname || '').toLowerCase();
+  var html = String(document.documentElement ? document.documentElement.innerText : '');
+  var full = String(document.documentElement ? document.documentElement.innerHTML : '');
+  var lowered = full.toLowerCase();
+  var path = String(window.location.pathname || '');
+  var url = String(window.location.href || '');
+  var title = String(document.title || '');
   var hasSubject = !!document.querySelector('input[name="issue[subject]"]');
   var hasDescription = !!document.querySelector('textarea[name="issue[description]"]');
-  var hasIssuePath = path.indexOf('/issues/new') !== -1;
+  var hasIssuePath = path.toLowerCase().indexOf('/issues/new') !== -1; // path.indexOf('/issues/new') !== -1
+  var issuePathMatch = path.match(/\/issues\/(\d+)(?:$|[\/?#])/);
+  var issueTextMatch = (title + '\n' + html).match(/(?:Задача|Issue)\s*#(\d+)\b/i);
   var hasLogin = !!document.querySelector('form[action*="/login"] input#username, form[action*="/login"] input[name="username"], input#login-submit');
   var hasBroken = lowered.indexOf('default error page for nginx') !== -1
     || lowered.indexOf('/usr/share/nginx/html/50x.html') !== -1
-    || html.indexOf('Red Hat Enterprise Linux') !== -1;
-  return JSON.stringify({valid_issue_form: hasSubject && hasDescription && hasIssuePath, login_required: hasLogin, broken: hasBroken});
+    || full.indexOf('Red Hat Enterprise Linux') !== -1;
+  return JSON.stringify({valid_issue_form: hasSubject && hasDescription && hasIssuePath, login_required: hasLogin, broken: hasBroken, url: url, path: path, title: title, text: html.slice(0, 4000), issue_number: issuePathMatch ? issuePathMatch[1] : (issueTextMatch ? issueTextMatch[1] : "")});
 })();
 """
 
@@ -239,6 +273,15 @@ class RedmineCreateDialog(QDialog):
             payload = json.loads(result or "{}")
         except (TypeError, ValueError):
             payload = {}
+        issue = extract_redmine_issue_from_payload(payload)
+        if issue and not self._issue_detected:
+            self._issue_detected = True
+            get_logger().info("Redmine issue detected: number=%s url=%s", issue["issue_number"], issue["issue_url"])
+            self.status_label.setText(f"Задача Redmine создана: #{issue['issue_number']}")
+            self.status_label.setVisible(True)
+            if self.success_callback:
+                self.success_callback(list(self.selected_items), issue["issue_number"], issue["issue_url"])
+            return
         if payload.get("valid_issue_form"):
             self.status_label.setText("")
             self.status_label.setVisible(False)
@@ -376,6 +419,12 @@ class LiveZabbixMonitorWidget(QWidget):
         self.duty_filter_checkbox = QCheckBox("Только интересующие")
         self.duty_filter_checkbox.setChecked(bool(self.settings.get("duty_filter_enabled", True)))
         self.duty_filter_checkbox.toggled.connect(self._on_duty_filter_toggled)
+        self.auto_ack_after_task_checkbox = QCheckBox("Auto-ack after task")
+        self.auto_ack_after_task_checkbox.setChecked(bool(self.settings.get("auto_ack_after_task_enabled", False)))
+        self.auto_ack_after_redmine_checkbox = QCheckBox("Auto-ack after Redmine")
+        self.auto_ack_after_redmine_checkbox.setChecked(bool(self.settings.get("auto_ack_after_redmine_enabled", False)))
+        self.auto_ack_after_mm_otrs_checkbox = QCheckBox("Auto-ack after MM/OTRS")
+        self.auto_ack_after_mm_otrs_checkbox.setChecked(bool(self.settings.get("auto_ack_after_mm_otrs_enabled", False)))
         self.counts_label = QLabel("Новые: 0 | Активные: 0 | Решённые: 0 | Обработанные: 0 | Всего: 0 | Показано: 0 | Скрыто фильтром: 0")
         self.check_dom_button.clicked.connect(self.check_dom_now)
         self.save_button.clicked.connect(self.save_monitor_settings)
@@ -395,6 +444,9 @@ class LiveZabbixMonitorWidget(QWidget):
             self.save_button,
             self.check_dom_button,
             self.show_webview_button,
+            self.auto_ack_after_task_checkbox,
+            self.auto_ack_after_redmine_checkbox,
+            self.auto_ack_after_mm_otrs_checkbox,
         ]
 
         for widget in normal_controls:
@@ -577,6 +629,9 @@ class LiveZabbixMonitorWidget(QWidget):
         self.settings["duty_filter_enabled"] = bool(self.duty_filter_checkbox.isChecked())
         self.settings["period_filter"] = str(self.period_filter_combo.currentData() or LIVE_PERIOD_ALL)
         self.settings["unprocessed_filter_enabled"] = bool(self.unprocessed_filter_checkbox.isChecked())
+        self.settings["auto_ack_after_task_enabled"] = bool(self.auto_ack_after_task_checkbox.isChecked())
+        self.settings["auto_ack_after_redmine_enabled"] = bool(self.auto_ack_after_redmine_checkbox.isChecked())
+        self.settings["auto_ack_after_mm_otrs_enabled"] = bool(self.auto_ack_after_mm_otrs_checkbox.isChecked())
         save_config(self.config)
         self._recreate_web_view_if_needed()
         self._update_diagnostics({"safe_debug": {}, "items": []}, status_text="Настройки сохранены")
@@ -2352,7 +2407,7 @@ class LiveZabbixMonitorWidget(QWidget):
             self.logger.info("Redmine dialog opening")
             self.poll_status_label.setText("Открываю окно Redmine...")
             profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
-            dialog = RedmineCreateDialog(profile, redmine_url, ensure_live_monitor_defaults(self.config), self)
+            dialog = RedmineCreateDialog(profile, redmine_url, ensure_live_monitor_defaults(self.config), self, self._on_redmine_issue_created, list(items))
             self.redmine_dialogs.append(dialog)
             dialog.finished.connect(lambda _result, d=dialog: self.redmine_dialogs.remove(d) if d in self.redmine_dialogs else None)
             dialog.show()
@@ -3670,8 +3725,181 @@ class LiveZabbixMonitorWidget(QWidget):
         redmine_action.triggered.connect(self.open_redmine_for_selected_row)
         mm_otrs_action = menu.addAction("Создать задачу на ММ")
         mm_otrs_action.triggered.connect(self.open_mm_otrs_for_selected_row)
+        copy_task_comment_action = menu.addAction("Скопировать комментарий задачи на выбранные")
+        copy_task_comment_action.triggered.connect(self.copy_task_comment_to_selected)
 
         menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _auto_ack_enabled(self):
+        return bool(self.settings.get("auto_ack_after_task_enabled", False) and self.settings.get("auto_ack_after_redmine_enabled", False))
+
+    def _on_redmine_issue_created(self, items, issue_number, issue_url):
+        comment = build_redmine_zabbix_comment(issue_number, issue_url)
+        self.logger.info("Redmine issue detected callback: number=%s url=%s selected=%s", issue_number, issue_url, len(items or []))
+        self.poll_status_label.setText(f"Создана задача Redmine #{issue_number}")
+        if not issue_number or not issue_url:
+            self.logger.warning("No auto-ack before issue number/url exists")
+            return
+        if not self._auto_ack_enabled():
+            self.logger.info("Zabbix auto-ack disabled; comment=%s", comment)
+            self.poll_status_label.setText(f"Задача Redmine создана: #{issue_number}")
+            return
+        self.logger.info("Zabbix auto-ack enabled; starting")
+        self._process_zabbix_comments(
+            items or [], comment, acknowledge_missing=True,
+            progress_prefix="Подтверждаю Zabbix",
+            summary_prefix="Zabbix подтверждение",
+            final_error_text="Задача Redmine создана, но подтверждение Zabbix завершилось с ошибками. Подробности в логах.",
+        )
+
+    def _zabbix_page_script(self, comment, acknowledge_missing=True):
+        script = r"""
+(function() {
+  var comment = COMMENT_JSON;
+  var acknowledgeMissing = ACK_JSON;
+  var text = String(document.body ? document.body.innerText : '');
+  var duplicate = text.indexOf(comment) !== -1;
+  var acknowledged = /(?:Подтверждено|Acknowledged)\s*[:\n ]*(?:Да|Yes)/i.test(text) || /(?:Уже подтверждено|Already acknowledged)/i.test(text);
+  var textarea = document.querySelector('textarea[name="message"], textarea[name="acknowledge[message]"], textarea');
+  var checkbox = document.querySelector('input[type="checkbox"][name*="ack"], input[type="checkbox"][id*="ack"]');
+  if (duplicate) return JSON.stringify({ok:true, duplicate:true, acknowledged:acknowledged});
+  if (!textarea) return JSON.stringify({ok:false, error:'comment textarea not found', acknowledged:acknowledged});
+  textarea.focus(); textarea.value = comment; textarea.dispatchEvent(new Event('input', {bubbles:true})); textarea.dispatchEvent(new Event('change', {bubbles:true}));
+  if (acknowledgeMissing && !acknowledged && checkbox && !checkbox.checked) checkbox.click();
+  var button = document.querySelector('button[type="submit"], input[type="submit"], button[name="update"], button[name="acknowledge"]');
+  if (!button) return JSON.stringify({ok:false, error:'submit button not found', acknowledged:acknowledged});
+  button.click();
+  return JSON.stringify({ok:true, submitted:true, acknowledged:acknowledged});
+})();
+"""
+        return script.replace("COMMENT_JSON", json.dumps(comment)).replace("ACK_JSON", json.dumps(bool(acknowledge_missing)).lower())
+
+    def _process_zabbix_comments(self, items, comment, acknowledge_missing=True, progress_prefix="Подтверждаю Zabbix", summary_prefix="Zabbix подтверждение", final_error_text=None):
+        self._zbx_queue = list(items or [])
+        self._zbx_comment = comment
+        self._zbx_ack_missing = acknowledge_missing
+        self._zbx_counts = {"success": 0, "skipped": 0, "errors": 0}
+        self._zbx_progress_prefix = progress_prefix
+        self._zbx_summary_prefix = summary_prefix
+        self._zbx_final_error_text = final_error_text or ""
+        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        self._zbx_view = register_web_view(QWebEngineView(self))
+        if profile is not None:
+            self._zbx_view.setPage(QWebEnginePage(profile, self._zbx_view))
+        self._zbx_next()
+
+    def _zbx_next(self):
+        total = len(self._zbx_queue) + sum(self._zbx_counts.values())
+        if not self._zbx_queue:
+            c = self._zbx_counts
+            msg = f"{self._zbx_summary_prefix}: успешно {c['success']}, пропущено {c['skipped']}, ошибок {c['errors']}"
+            self.logger.info("Zabbix ack final summary: %s", msg)
+            self.poll_status_label.setText(self._zbx_final_error_text if c["errors"] and self._zbx_final_error_text else msg)
+            return
+        item = self._zbx_queue.pop(0)
+        idx = sum(self._zbx_counts.values()) + 1
+        self.poll_status_label.setText(f"{self._zbx_progress_prefix}: {idx}/{total}")
+        self.logger.info("Zabbix item started: %s", getattr(item, "trigger_name", ""))
+        url = str(getattr(item, "ack_url", "") or getattr(item, "problem_url", "") or "")
+        if not url:
+            self.logger.warning("Zabbix item skipped: no ack_url/problem_url")
+            self._zbx_counts["skipped"] += 1
+            QTimer.singleShot(0, self._zbx_next)
+            return
+
+        def loaded(ok):
+            try:
+                self._zbx_view.loadFinished.disconnect(loaded)
+            except Exception:
+                pass
+            if not ok:
+                self.logger.warning("ack/comment failure: load failed url=%s", url)
+                self._zbx_counts["errors"] += 1
+                self._zbx_next()
+                return
+            self._zbx_view.page().runJavaScript(self._zabbix_page_script(self._zbx_comment, self._zbx_ack_missing), done)
+
+        def done(result):
+            try:
+                payload = json.loads(result or "{}")
+                if payload.get("duplicate"):
+                    self.logger.info("duplicate comment skipped: %s", url)
+                    self._zbx_counts["skipped"] += 1
+                elif payload.get("ok"):
+                    if payload.get("acknowledged"):
+                        self.logger.info("already acknowledged; adding missing comment only: %s", url)
+                    self.logger.info("ack/comment success: %s", url)
+                    self._zbx_counts["success"] += 1
+                else:
+                    self.logger.warning("ack/comment failure: %s %s", url, payload.get("error"))
+                    self._zbx_counts["errors"] += 1
+            except Exception:
+                self.logger.exception("ack/comment failure: %s", url)
+                self._zbx_counts["errors"] += 1
+            QTimer.singleShot(700, self._zbx_next)
+
+        self._zbx_view.loadFinished.connect(loaded)
+        self._zbx_view.load(QUrl(url))
+
+    def copy_task_comment_to_selected(self):
+        items = self._selected_live_problem_items()
+        if len(items) < 2:
+            QMessageBox.information(self, "Zabbix", "Выберите минимум 2 строки.")
+            return
+        if any(not (getattr(item, "ack_url", "") or getattr(item, "problem_url", "")) for item in items):
+            QMessageBox.warning(self, "Zabbix", "У выбранной проблемы нет ack_url/problem_url.")
+            return
+        self.poll_status_label.setText("Ищу комментарии задач в выбранных проблемах...")
+        self._scan_selected_task_comments(items)
+
+    def _scan_selected_task_comments(self, items):
+        self._task_comment_scan_items = list(items or [])
+        self._task_comment_scan_queue = list(items or [])
+        self._task_comment_scan_found = []
+        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        self._task_comment_scan_view = register_web_view(QWebEngineView(self))
+        if profile is not None:
+            self._task_comment_scan_view.setPage(QWebEnginePage(profile, self._task_comment_scan_view))
+        self._scan_next_task_comment_page()
+
+    def _scan_next_task_comment_page(self):
+        if not self._task_comment_scan_queue:
+            unique = sorted(set(self._task_comment_scan_found))
+            if not unique:
+                QMessageBox.information(self, "Zabbix", "В выбранных проблемах не найден комментарий задачи Redmine/ММ.")
+                return
+            comment = unique[0]
+            if len(unique) > 1:
+                comment, ok = QInputDialog.getItem(self, "Zabbix", "Выберите комментарий задачи", unique, 0, False)
+                if not ok:
+                    return
+            self._process_zabbix_comments(
+                self._task_comment_scan_items, comment, acknowledge_missing=False,
+                progress_prefix="Копирую комментарий задачи в Zabbix",
+                summary_prefix="Копирование комментария Zabbix",
+            )
+            return
+        item = self._task_comment_scan_queue.pop(0)
+        url = str(getattr(item, "ack_url", "") or getattr(item, "problem_url", "") or "")
+
+        def loaded(ok):
+            try:
+                self._task_comment_scan_view.loadFinished.disconnect(loaded)
+            except Exception:
+                pass
+            if not ok:
+                self.logger.warning("Task comment scan failed to load: %s", url)
+                self._scan_next_task_comment_page()
+                return
+            self._task_comment_scan_view.page().runJavaScript("String(document.body ? document.body.innerText : '')", done)
+
+        def done(text):
+            self._task_comment_scan_found.extend(ZABBIX_TASK_COMMENT_RE.findall(str(text or "")))
+            self._scan_next_task_comment_page()
+
+        self._task_comment_scan_view.loadFinished.connect(loaded)
+        self._task_comment_scan_view.load(QUrl(url))
+
 
     def open_graphs(self, urls):
         for url in urls or []:

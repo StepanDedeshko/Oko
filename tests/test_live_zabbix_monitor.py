@@ -433,3 +433,58 @@ class LiveZabbixMonitorSilentAuthAndFilterTests(unittest.TestCase):
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_7_DAYS, now=now)], ["today_no_new", "today_yes", "week_no"])
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, unprocessed_only=True, now=now)], ["today_no_new", "week_no", "old"])
         self.assertEqual([i.key for i in apply_live_zabbix_table_filters(items, period=LIVE_PERIOD_TODAY, unprocessed_only=True, now=now)], ["today_no_new"])
+
+class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.repo = Path(__file__).resolve().parents[1]
+        self.widget_source = (self.repo / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.live_source = (self.repo / "app" / "live_zabbix.py").read_text(encoding="utf-8")
+        self.app_info = (self.repo / "app" / "app_info.py").read_text(encoding="utf-8")
+
+    def test_auto_ack_toggles_exist_and_default_false(self):
+        for key in (
+            "auto_ack_after_task_enabled",
+            "auto_ack_after_redmine_enabled",
+            "auto_ack_after_mm_otrs_enabled",
+        ):
+            self.assertIn(f'"{key}": False', self.live_source)
+            self.assertIn(key, self.widget_source)
+
+    def test_redmine_issue_detection_requires_issue_marker(self):
+        self.assertIn('r"/issues/(\\d+)(?:$|[/?#])"', self.widget_source)
+        self.assertIn("extract_redmine_issue_from_payload", self.widget_source)
+        self.assertIn("Задача|Issue", self.widget_source)
+
+    def test_zabbix_comment_format_is_exact(self):
+        self.assertIn('return f"Задача Redmine #{issue_number}: {issue_url}"', self.widget_source)
+
+    def test_no_auto_ack_before_issue_number_url_exists(self):
+        self.assertIn("if not issue_number or not issue_url", self.widget_source)
+        self.assertIn("No auto-ack before issue number/url exists", self.widget_source)
+
+    def test_disabled_toggles_do_not_touch_zabbix(self):
+        self.assertIn("def _auto_ack_enabled", self.widget_source)
+        self.assertIn("Zabbix auto-ack disabled", self.widget_source)
+        self.assertIn("return bool(self.settings.get(\"auto_ack_after_task_enabled\", False) and self.settings.get(\"auto_ack_after_redmine_enabled\", False))", self.widget_source)
+
+    def test_duplicate_comment_is_skipped(self):
+        self.assertIn("text.indexOf(comment) !== -1", self.widget_source)
+        self.assertIn("duplicate comment skipped", self.widget_source)
+
+    def test_already_acknowledged_still_receives_missing_comment(self):
+        self.assertIn("already acknowledged; adding missing comment only", self.widget_source)
+        self.assertIn("if (acknowledgeMissing && !acknowledged", self.widget_source)
+
+    def test_manual_context_action_requires_two_selected_rows(self):
+        self.assertIn("Скопировать комментарий задачи на выбранные", self.widget_source)
+        self.assertIn("if len(items) < 2", self.widget_source)
+
+    def test_strict_redmine_mm_comment_regex(self):
+        self.assertIn('ZABBIX_TASK_COMMENT_RE = re.compile(r"Задача (?:Redmine|на ММ) #\\d+: https?://\\S+")', self.widget_source)
+
+    def test_no_desktop_open_for_redmine_create_url(self):
+        self.assertIn("RedmineCreateDialog(profile, redmine_url", self.widget_source)
+        self.assertNotIn("QDesktopServices.openUrl(QUrl(redmine_url", self.widget_source)
+
+    def test_app_version_unchanged(self):
+        self.assertIn('APP_VERSION = "0.3.1"', self.app_info)

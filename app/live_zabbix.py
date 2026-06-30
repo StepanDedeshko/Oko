@@ -105,6 +105,9 @@ def default_live_monitor_config() -> dict:
         "redmine_username": "",
         "redmine_password": "",
         "redmine_save_credentials": False,
+        "auto_ack_after_task_enabled": False,
+        "auto_ack_after_redmine_enabled": False,
+        "auto_ack_after_mm_otrs_enabled": False,
     }
 
 
