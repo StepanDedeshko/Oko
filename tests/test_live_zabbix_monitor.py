@@ -468,23 +468,62 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("return bool(self.settings.get(\"auto_ack_after_task_enabled\", False) and self.settings.get(\"auto_ack_after_redmine_enabled\", False))", self.widget_source)
 
     def test_duplicate_comment_is_skipped(self):
-        self.assertIn("text.indexOf(comment) !== -1", self.widget_source)
+        self.assertIn("eventActionsText().indexOf(comment) !== -1", self.widget_source)
         self.assertIn("duplicate comment skipped", self.widget_source)
 
     def test_already_acknowledged_still_receives_missing_comment(self):
         self.assertIn("already acknowledged; adding missing comment only", self.widget_source)
-        self.assertIn("if (acknowledgeMissing && !acknowledged", self.widget_source)
+        self.assertIn("if (acknowledgeMissing && !alreadyAcknowledged", self.widget_source)
 
     def test_manual_context_action_requires_two_selected_rows(self):
         self.assertIn("Скопировать комментарий задачи на выбранные", self.widget_source)
         self.assertIn("if len(items) < 2", self.widget_source)
 
     def test_strict_redmine_mm_comment_regex(self):
-        self.assertIn('ZABBIX_TASK_COMMENT_RE = re.compile(r"Задача (?:Redmine|на ММ) #\\d+: https?://\\S+")', self.widget_source)
+        self.assertIn('Задача Redmine #\\d+: https?://\\S+|Задача на ММ #\\d+(?:: https?://\\S+)?', self.widget_source)
 
     def test_no_desktop_open_for_redmine_create_url(self):
         self.assertIn("RedmineCreateDialog(profile, redmine_url", self.widget_source)
         self.assertNotIn("QDesktopServices.openUrl(QUrl(redmine_url", self.widget_source)
+
+
+    def test_problem_url_fallback_opens_acknowledge_popup_before_textarea(self):
+        self.assertIn("acknowledgePopUp", self.widget_source)
+        self.assertIn("clickAcknowledgeIfNeeded", self.widget_source)
+        self.assertIn("waitForForm(resolve)", self.widget_source)
+
+    def test_eventactions_widget_used_for_duplicate_scan(self):
+        self.assertIn("#hat_eventactions_widget, #hat_eventactions", self.widget_source)
+        self.assertIn("eventActionsText().indexOf(comment)", self.widget_source)
+
+    def test_popup_form_selectors_and_update_submit_exist(self):
+        for marker in (
+            ".overlay-dialogue #acknowledge_form textarea#message",
+            "input#acknowledge_problem",
+            "#acknowledge_form input#close_problem",
+            "Обновить|Update",
+        ):
+            self.assertIn(marker, self.widget_source)
+
+    def test_raw_tr_events_without_textarea_waits_and_diagnostics_on_timeout(self):
+        self.assertIn("acknowledge popup/form timeout", self.widget_source)
+        self.assertIn("timeoutMs = 10000", self.widget_source)
+        for marker in (
+            "current_url",
+            "document_title",
+            "hat_eventactions_widget_exists",
+            "acknowledge_popup_link_exists",
+            "acknowledge_link_count",
+            "overlay_dialogue_count",
+            "acknowledge_form_exists",
+            "textarea_count",
+            "submit_update_button_count",
+            "visible_button_texts",
+        ):
+            self.assertIn(marker, self.widget_source)
+
+    def test_mm_otrs_comment_format_supports_url_and_number_only(self):
+        self.assertIn("Задача на ММ #\\d+(?:: https?://\\S+)?", self.widget_source)
 
     def test_app_version_unchanged(self):
         self.assertIn('APP_VERSION = "0.3.1"', self.app_info)

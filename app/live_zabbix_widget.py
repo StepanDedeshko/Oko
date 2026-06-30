@@ -43,7 +43,7 @@ from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 
 DOM_PARSER_SCRIPT = DOM_PARSER_SCRIPT_PLACEHOLDER
-ZABBIX_TASK_COMMENT_RE = re.compile(r"Задача (?:Redmine|на ММ) #\d+: https?://\S+")
+ZABBIX_TASK_COMMENT_RE = re.compile(r"Задача Redmine #\d+: https?://\S+|Задача на ММ #\d+(?:: https?://\S+)?")
 
 def build_redmine_zabbix_comment(issue_number, issue_url):
     return f"Задача Redmine #{issue_number}: {issue_url}"
@@ -3747,7 +3747,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self.logger.info("Zabbix auto-ack enabled; starting")
         self._process_zabbix_comments(
             items or [], comment, acknowledge_missing=True,
-            progress_prefix="Подтверждаю Zabbix",
+            progress_prefix="Открываю форму подтверждения Zabbix",
             summary_prefix="Zabbix подтверждение",
             final_error_text="Задача Redmine создана, но подтверждение Zabbix завершилось с ошибками. Подробности в логах.",
         )
@@ -3757,19 +3757,141 @@ class LiveZabbixMonitorWidget(QWidget):
 (function() {
   var comment = COMMENT_JSON;
   var acknowledgeMissing = ACK_JSON;
-  var text = String(document.body ? document.body.innerText : '');
-  var duplicate = text.indexOf(comment) !== -1;
-  var acknowledged = /(?:Подтверждено|Acknowledged)\s*[:\n ]*(?:Да|Yes)/i.test(text) || /(?:Уже подтверждено|Already acknowledged)/i.test(text);
-  var textarea = document.querySelector('textarea[name="message"], textarea[name="acknowledge[message]"], textarea');
-  var checkbox = document.querySelector('input[type="checkbox"][name*="ack"], input[type="checkbox"][id*="ack"]');
-  if (duplicate) return JSON.stringify({ok:true, duplicate:true, acknowledged:acknowledged});
-  if (!textarea) return JSON.stringify({ok:false, error:'comment textarea not found', acknowledged:acknowledged});
-  textarea.focus(); textarea.value = comment; textarea.dispatchEvent(new Event('input', {bubbles:true})); textarea.dispatchEvent(new Event('change', {bubbles:true}));
-  if (acknowledgeMissing && !acknowledged && checkbox && !checkbox.checked) checkbox.click();
-  var button = document.querySelector('button[type="submit"], input[type="submit"], button[name="update"], button[name="acknowledge"]');
-  if (!button) return JSON.stringify({ok:false, error:'submit button not found', acknowledged:acknowledged});
-  button.click();
-  return JSON.stringify({ok:true, submitted:true, acknowledged:acknowledged});
+  var started = Date.now();
+  var timeoutMs = 10000;
+
+  function text(element) {
+    return String(element ? (element.innerText || element.textContent || '') : '').replace(/\s+/g, ' ').trim();
+  }
+  function visible(element) {
+    if (!element) return false;
+    var style = window.getComputedStyle(element);
+    return style && style.display !== 'none' && style.visibility !== 'hidden' && element.offsetParent !== null;
+  }
+  function eventActionsText() {
+    var widget = document.querySelector('#hat_eventactions_widget, #hat_eventactions');
+    return text(widget);
+  }
+  function historyText() {
+    var overlay = document.querySelector('.overlay-dialogue');
+    var history = overlay && Array.from(overlay.querySelectorAll('table, .list-table, [id*=history], [class*=history]')).find(function(el) {
+      return /История|History/i.test(text(el));
+    });
+    return text(history);
+  }
+  function hasDuplicate() {
+    return eventActionsText().indexOf(comment) !== -1 || historyText().indexOf(comment) !== -1 || text(document.querySelector('.overlay-dialogue')).indexOf(comment) !== -1;
+  }
+  function acknowledgedFromPage() {
+    var rows = Array.from(document.querySelectorAll('tr'));
+    for (var i = 0; i < rows.length; i += 1) {
+      var cells = Array.from(rows[i].children || []);
+      if (cells.length >= 2 && /Подтверждено|Acknowledged/i.test(text(cells[0]))) {
+        return /Да|Yes/i.test(text(cells[1])) && !/Нет|No/i.test(text(cells[1]));
+      }
+    }
+    return /Подтверждено\s*[:\n ]*(?:Да|Yes)|Acknowledged\s*[:\n ]*Yes/i.test(text(document.body));
+  }
+  function acknowledgeLinks() {
+    var all = Array.from(document.querySelectorAll('a, button'));
+    var popup = all.filter(function(el) { return String(el.getAttribute('onclick') || '').indexOf('acknowledgePopUp') !== -1; });
+    if (popup.length) return popup;
+    return all.filter(function(el) {
+      var row = el.closest('tr');
+      return row && /Подтверждено|Acknowledged/i.test(text((row.children || [])[0])) && /^(Нет|No)$/i.test(text(el));
+    });
+  }
+  function updateButtons() {
+    return Array.from(document.querySelectorAll('.overlay-dialogue-footer button, .overlay-dialogue button, button')).filter(function(button) {
+      return /^(Обновить|Update)$/i.test(text(button));
+    });
+  }
+  function diagnostics() {
+    return {
+      current_url: String(window.location.href || ''),
+      document_title: String(document.title || ''),
+      hat_eventactions_widget_exists: !!document.querySelector('#hat_eventactions_widget'),
+      acknowledge_popup_link_exists: !!document.querySelector('[onclick*="acknowledgePopUp"]'),
+      acknowledge_link_count: acknowledgeLinks().length,
+      overlay_dialogue_count: document.querySelectorAll('.overlay-dialogue').length,
+      acknowledge_form_exists: !!document.querySelector('#acknowledge_form'),
+      textarea_count: document.querySelectorAll('.overlay-dialogue #acknowledge_form textarea#message, #acknowledge_form textarea, textarea#message').length,
+      submit_update_button_count: updateButtons().length,
+      visible_button_texts: Array.from(document.querySelectorAll('button')).filter(visible).map(text).filter(Boolean).slice(0, 20)
+    };
+  }
+  function form() {
+    return document.querySelector('.overlay-dialogue #acknowledge_form');
+  }
+  function textarea() {
+    return document.querySelector('.overlay-dialogue #acknowledge_form textarea#message');
+  }
+  function setNativeValue(element, value) {
+    element.focus();
+    element.value = value;
+    element.dispatchEvent(new Event('input', {bubbles: true}));
+    element.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  function clickAcknowledgeIfNeeded() {
+    if (form() && textarea()) return {clicked: false, already_open: true};
+    var links = acknowledgeLinks();
+    var preferred = links.find(function(el) { return String(el.getAttribute('onclick') || '').indexOf('acknowledgePopUp') !== -1; }) || links[0];
+    if (!preferred) return {clicked: false, error: 'acknowledge link not found'};
+    preferred.click();
+    return {clicked: true};
+  }
+  function waitForForm(resolve) {
+    if (hasDuplicate()) {
+      resolve(JSON.stringify({ok: true, duplicate: true, status: 'Комментарий Zabbix уже есть, пропускаю', diagnostics: diagnostics()}));
+      return;
+    }
+    var message = textarea();
+    if (form() && message) {
+      resolve(fillAndSubmit(message));
+      return;
+    }
+    if (Date.now() - started >= timeoutMs) {
+      resolve(JSON.stringify({ok: false, error: 'acknowledge popup/form timeout', status: 'Форма подтверждения Zabbix не найдена', diagnostics: diagnostics()}));
+      return;
+    }
+    setTimeout(function() { waitForForm(resolve); }, 250);
+  }
+  function waitForClose(resolve) {
+    if (!document.querySelector('.overlay-dialogue') || /успеш|success/i.test(text(document.body))) {
+      resolve(JSON.stringify({ok: true, submitted: true, status: 'Комментарий Zabbix добавлен', diagnostics: diagnostics()}));
+      return;
+    }
+    if (Date.now() - started >= timeoutMs) {
+      resolve(JSON.stringify({ok: false, error: 'acknowledge submit timeout', diagnostics: diagnostics()}));
+      return;
+    }
+    setTimeout(function() { waitForClose(resolve); }, 300);
+  }
+  function fillAndSubmit(message) {
+    if (hasDuplicate()) return JSON.stringify({ok: true, duplicate: true, status: 'Комментарий Zabbix уже есть, пропускаю', diagnostics: diagnostics()});
+    setNativeValue(message, comment);
+    var ack = document.querySelector('.overlay-dialogue #acknowledge_form input#acknowledge_problem');
+    var alreadyAcknowledged = acknowledgedFromPage();
+    if (acknowledgeMissing && !alreadyAcknowledged && ack && !ack.checked) ack.click();
+    var close = document.querySelector('.overlay-dialogue #acknowledge_form input#close_problem');
+    if (close && close.checked) close.click();
+    var button = updateButtons()[0];
+    if (!button) return JSON.stringify({ok: false, error: 'update button not found', diagnostics: diagnostics()});
+    button.click();
+    return new Promise(waitForClose);
+  }
+  return new Promise(function(resolve) {
+    if (hasDuplicate()) {
+      resolve(JSON.stringify({ok: true, duplicate: true, status: 'Комментарий Zabbix уже есть, пропускаю', diagnostics: diagnostics()}));
+      return;
+    }
+    var click = clickAcknowledgeIfNeeded();
+    if (click.error) {
+      resolve(JSON.stringify({ok: false, error: click.error, diagnostics: diagnostics()}));
+      return;
+    }
+    waitForForm(resolve);
+  });
 })();
 """
         return script.replace("COMMENT_JSON", json.dumps(comment)).replace("ACK_JSON", json.dumps(bool(acknowledge_missing)).lower())
@@ -3822,16 +3944,21 @@ class LiveZabbixMonitorWidget(QWidget):
         def done(result):
             try:
                 payload = json.loads(result or "{}")
+                status = str(payload.get("status") or "")
                 if payload.get("duplicate"):
+                    self.poll_status_label.setText(status or "Комментарий Zabbix уже есть, пропускаю")
                     self.logger.info("duplicate comment skipped: %s", url)
                     self._zbx_counts["skipped"] += 1
                 elif payload.get("ok"):
+                    self.poll_status_label.setText("Форма подтверждения Zabbix найдена")
                     if payload.get("acknowledged"):
                         self.logger.info("already acknowledged; adding missing comment only: %s", url)
                     self.logger.info("ack/comment success: %s", url)
+                    self.poll_status_label.setText(status or "Комментарий Zabbix добавлен")
                     self._zbx_counts["success"] += 1
                 else:
-                    self.logger.warning("ack/comment failure: %s %s", url, payload.get("error"))
+                    self.poll_status_label.setText(status or "Форма подтверждения Zabbix не найдена")
+                    self.logger.warning("ack/comment failure: %s %s diagnostics=%s", url, payload.get("error"), payload.get("diagnostics"))
                     self._zbx_counts["errors"] += 1
             except Exception:
                 self.logger.exception("ack/comment failure: %s", url)
