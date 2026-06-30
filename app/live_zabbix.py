@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import json
 
+from app.detection_matcher import match_zabbix_host_to_node
 from app.trigger_model import ZabbixProblemSnapshotItem, build_problem_key
 from app.duty_zabbix import (
     annotate_zabbix_problems_with_trigger_catalog,
@@ -21,6 +22,38 @@ LIVE_MONITOR_CONFIG_KEY = "live_zabbix_monitor"
 LIVE_PERIOD_ALL = "all"
 LIVE_PERIOD_TODAY = "today"
 LIVE_PERIOD_7_DAYS = "7_days"
+
+
+def _prefer_live_zabbix_v1_first(settings: dict) -> bool:
+    preference = (settings or {}).get("prefer_version") or (settings or {}).get("preferred_version")
+    if str(preference or "").strip().casefold() == "v1":
+        return True
+    if str(preference or "").strip().casefold() == "v2":
+        return False
+    order = (settings or {}).get("version_order") or (settings or {}).get("preferred_order")
+    if isinstance(order, (list, tuple)) and order:
+        return str(order[0] or "").strip().casefold() == "v1"
+    return bool((settings or {}).get("prefer_v1_first", False))
+
+
+def match_live_zabbix_detection_host(config: dict, host: str, ip: str = "") -> dict:
+    """Match a Live Zabbix host against configured v2/v1 detection node lists."""
+    monitor_settings = (config or {}).get(LIVE_MONITOR_CONFIG_KEY, {}) if isinstance(config, dict) else {}
+    version_lists = monitor_settings.get("live_zabbix_node_version_lists", {}) if isinstance(monitor_settings, dict) else {}
+    if not isinstance(version_lists, dict):
+        version_lists = {}
+
+    order = ("v1", "v2") if _prefer_live_zabbix_v1_first(version_lists) else ("v2", "v1")
+    for version in order:
+        nodes = version_lists.get(f"{version}_nodes") or []
+        result = match_zabbix_host_to_node(host, nodes, host_ip=ip)
+        if result.get("matched"):
+            result = dict(result)
+            result["version"] = str(result.get("version") or version)
+            result["source"] = version
+            return result
+
+    return {"matched": False, "version": "", "source": "unknown", "matched_by": "", "matched_alias": ""}
 
 
 def zabbix_auth_required_from_html(html: str) -> dict:

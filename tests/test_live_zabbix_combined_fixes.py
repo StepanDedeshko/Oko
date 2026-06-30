@@ -2,8 +2,7 @@ import unittest
 from pathlib import Path
 
 from app.detection_matcher import match_zabbix_host_to_node
-from app.live_zabbix import SnapshotDiff
-from app.trigger_model import ZabbixProblemSnapshotItem
+from app.live_zabbix import match_live_zabbix_detection_host
 
 
 class CombinedLiveZabbixFixesTests(unittest.TestCase):
@@ -14,6 +13,64 @@ class CombinedLiveZabbixFixesTests(unittest.TestCase):
         self.assertEqual(result["version"], "v1")
         self.assertEqual(result["matched_by"], "dash_alias")
         self.assertEqual(result["matched_alias"], "kitai_1")
+
+
+    def test_live_zabbix_public_match_wrapper_fills_dict_node_version_and_source(self):
+        cfg = {
+            "live_zabbix_monitor": {
+                "live_zabbix_node_version_lists": {
+                    "enabled": True,
+                    "v1_nodes": [
+                        {"ip": "", "host": "kitai_1", "normalized_host": "kitai_1", "version": "v1"}
+                    ],
+                    "v2_nodes": [],
+                    "prefer_csv_version": True,
+                }
+            }
+        }
+        result = match_live_zabbix_detection_host(cfg, "китай 1 - kitai_1", "")
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["version"], "v1")
+        self.assertEqual(result["source"], "v1")
+        self.assertEqual(result["matched_by"], "dash_alias")
+        self.assertEqual(result["matched_alias"], "kitai_1")
+
+    def test_live_zabbix_public_match_wrapper_fills_plain_string_version(self):
+        cfg = {
+            "live_zabbix_monitor": {
+                "live_zabbix_node_version_lists": {
+                    "enabled": True,
+                    "v1_nodes": ["kitai_1"],
+                    "v2_nodes": [],
+                }
+            }
+        }
+        result = match_live_zabbix_detection_host(cfg, "китай 1 - kitai_1", "")
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["version"], "v1")
+        self.assertEqual(result["source"], "v1")
+        self.assertEqual(result["matched_by"], "dash_alias")
+
+    def test_live_zabbix_public_match_wrapper_prefers_v2_by_default(self):
+        cfg = {
+            "live_zabbix_monitor": {
+                "live_zabbix_node_version_lists": {
+                    "enabled": True,
+                    "v1_nodes": ["kitai_1"],
+                    "v2_nodes": ["kitai_1"],
+                }
+            }
+        }
+        result = match_live_zabbix_detection_host(cfg, "китай 1 - kitai_1", "")
+        self.assertEqual(result["version"], "v2")
+        self.assertEqual(result["source"], "v2")
+
+    def test_dash_alias_supports_common_dash_separators(self):
+        for dash in ("-", "–", "—", "‑", "−"):
+            result = match_zabbix_host_to_node(f"китай 1 {dash} kitai_1", ["kitai_1"])
+            self.assertTrue(result["matched"], dash)
+            self.assertEqual(result["matched_by"], "dash_alias")
+            self.assertEqual(result["matched_alias"], "kitai_1")
 
     def test_plain_string_node_still_matches(self):
         result = match_zabbix_host_to_node("китай 1 - kitai_1", ["kitai_1"])

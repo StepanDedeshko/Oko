@@ -25,13 +25,15 @@ def _node_host(node):
     return _node_value(node, "normalized_host") or _node_value(node, "host")
 
 
+DASH_SEPARATOR_RE = re.compile(r"\s+[-\u2010\u2011\u2012\u2013\u2014\u2212]\s+")
+
+
 def _aliases_for_zabbix_host(host):
     text = str(host or "").strip()
     aliases = [text]
-    if " - " in text:
-        aliases.append(text.rsplit(" - ", 1)[-1].strip())
-    if "—" in text:
-        aliases.append(text.rsplit("—", 1)[-1].strip())
+    parts = DASH_SEPARATOR_RE.split(text)
+    if len(parts) > 1:
+        aliases.append(parts[-1].strip())
     return [alias for alias in aliases if alias]
 
 
