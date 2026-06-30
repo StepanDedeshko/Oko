@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+from urllib.parse import urlparse, urlunparse
 
 
 @dataclass(frozen=True)
@@ -19,10 +20,6 @@ def redmine_ack_comment(number: str = "", url: str = "") -> str:
     url = str(url or "").strip()
     if number and url:
         return f"Задача Redmine #{number}: {url}"
-    if url:
-        return f"Задача Redmine: {url}"
-    if number:
-        return f"Задача Redmine #{number}"
     return ""
 
 
@@ -31,21 +28,26 @@ def mm_otrs_ack_comment(number: str = "", url: str = "") -> str:
     url = str(url or "").strip()
     if number and url:
         return f"Задача на ММ #{number}: {url}"
-    if number:
-        return f"Задача на ММ #{number}"
-    if url:
-        return f"Задача на ММ: {url}"
     return ""
+
+
+def _url_with_path(source_url: str, path: str) -> str:
+    parsed = urlparse(str(source_url or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return urlunparse(parsed._replace(path=path, query="", fragment=""))
 
 
 def extract_redmine_reference(text: str, url: str = "") -> dict:
     combined = " ".join([str(text or ""), str(url or "")])
+    url_match = re.search(r"https?://\S*/issues/(\d+)", combined, re.IGNORECASE)
+    if url_match:
+        issue_url = url_match.group(0).rstrip('.,;)"\'')
+        return {"number": url_match.group(1), "url": issue_url}
     match = re.search(r"(?:issues/|#)(\d{2,})", combined, re.IGNORECASE)
-    issue_url = str(url or "").strip()
-    if not issue_url:
-        url_match = re.search(r"https?://\S*/issues/\d+", combined, re.IGNORECASE)
-        issue_url = url_match.group(0).rstrip('.,;)"\'') if url_match else ""
-    return {"number": match.group(1) if match else "", "url": issue_url}
+    number = match.group(1) if match else ""
+    issue_url = _url_with_path(url, f"/issues/{number}") if number else ""
+    return {"number": number, "url": issue_url}
 
 
 def extract_mm_otrs_reference(text: str, url: str = "") -> dict:
@@ -55,7 +57,7 @@ def extract_mm_otrs_reference(text: str, url: str = "") -> dict:
         r"TicketNumber[=:/\s]+(\d{6,})",
         r"TN[=:/\s]+(\d{6,})",
         r"№\s*(\d{6,})",
-        r"#(\d{6,})",
+        r"TicketID[=:/\s]+(\d{3,})",
     )
     number = ""
     for pattern in patterns:
@@ -136,8 +138,8 @@ def zabbix_acknowledgement_js(comment: str, ack_required: bool) -> str:
       const cb = document.querySelector(selector);
       if (cb && !cb.checked) {{ cb.checked = true; fire(cb); ackTouched = true; break; }}
     }}
-    const labels = Array.from(document.querySelectorAll('label, span, button')).filter(el => /Acknowledge|Подтвердить|Да|Yes/i.test(text(el)));
-    if (!ackTouched && labels.length) ackTouched = click(labels[0]);
+    const ackButtons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], a')).filter(el => /Acknowledge|Подтвердить/i.test(text(el) || el.value || el.title));
+    if (!ackTouched && ackButtons.length) ackTouched = click(ackButtons[0]);
   }}
   const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
   const submit = buttons.find(el => /Update|Обновить|Acknowledge|Подтвердить|Save|Сохранить/i.test(text(el) || el.value || el.title)) || document.querySelector('button[type="submit"], input[type="submit"]');

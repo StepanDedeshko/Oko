@@ -110,6 +110,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self._restoring_column_widths = False
         self.ack_dialogs = []
         self.mm_otrs_dialogs = []
+        self.redmine_dialogs = []
         self.redmine_graph_lookup_view = None
         self.zabbix_ack_view = None
         self._zabbix_ack_queue = []
@@ -2057,9 +2058,79 @@ class LiveZabbixMonitorWidget(QWidget):
             ) == QMessageBox.Open:
                 self.open_graphs(graph_urls)
 
-        opened = QDesktopServices.openUrl(QUrl(redmine_url))
-        if not opened:
-            QMessageBox.warning(self, "Redmine", "Не удалось открыть Redmine-ссылку в браузере.")
+        self._open_redmine_creation_dialog(redmine_url, items)
+
+
+    def _open_redmine_creation_dialog(self, redmine_url, items):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Создать Redmine")
+        dialog.resize(1200, 820)
+
+        root = QVBoxLayout(dialog)
+        status_label = QLabel("Открываю форму создания Redmine...")
+        root.addWidget(status_label)
+
+        view = register_web_view(QWebEngineView(dialog))
+        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        if profile is not None:
+            page = QWebEnginePage(profile, view)
+            view.setPage(page)
+        root.addWidget(view, stretch=1)
+
+        state = {"ack_started": False}
+
+        def on_loaded(ok, current_items=list(items or [])):
+            if not ok:
+                status_label.setText("Страница Redmine открылась с ошибкой. Проверьте доступ/авторизацию.")
+                return
+            status_label.setText("Redmine открыт. Создайте задачу; после страницы созданной задачи Zabbix обновится автоматически.")
+            self._detect_redmine_created_issue(view, status_label, current_items, state)
+
+        view.loadFinished.connect(on_loaded)
+
+        def cleanup(_result=0, current_dialog=dialog, current_view=view):
+            try:
+                self.redmine_dialogs.remove(current_dialog)
+            except ValueError:
+                pass
+            safe_delete_web_view(current_view, logger=self.logger, context="LiveZabbixMonitorWidget Redmine create")
+
+        dialog.finished.connect(cleanup)
+        self.redmine_dialogs.append(dialog)
+        dialog.show()
+        view.load(QUrl(redmine_url))
+
+    def _detect_redmine_created_issue(self, view, status_label, items, state):
+        if state.get("ack_started"):
+            return
+        page = view.page() if view is not None else None
+        if page is None:
+            return
+        js = """
+(function() {
+  return JSON.stringify({
+    href: String(window.location.href || ''),
+    title: String(document.title || ''),
+    text: String((document.body && (document.body.innerText || document.body.textContent)) || '').slice(0, 5000)
+  });
+})();
+"""
+        def after(result):
+            if state.get("ack_started"):
+                return
+            try:
+                payload = json.loads(str(result or "{}"))
+            except (TypeError, ValueError):
+                payload = {}
+            href = str(payload.get("href") or (page.url().toString() if page is not None else ""))
+            page_text = " ".join([str(payload.get("title") or ""), str(payload.get("text") or "")])
+            ref = extract_redmine_reference(page_text, href)
+            if ref.get("number") and ref.get("url"):
+                state["ack_started"] = True
+                status_label.setText(f"Redmine #{ref['number']} создан. Запускаю подтверждение Zabbix...")
+                self.logger.info("Redmine issue detected: number=%s url=%s zabbix_events=%s", ref.get("number"), ref.get("url"), len(items or []))
+                self._start_auto_zabbix_acknowledgement("redmine", items, ref.get("number", ""), ref.get("url", ""))
+        page.runJavaScript(js, after)
 
     def open_mm_otrs_for_selected_row(self):
         items = self._choose_redmine_items_for_selection("ОТРС ММ")
@@ -2218,12 +2289,14 @@ class LiveZabbixMonitorWidget(QWidget):
 
         root.addWidget(view, stretch=1)
 
-        mm_otrs_state = {"started": False}
+        mm_otrs_state = {"started": False, "ack_started": False}
 
         def fill_form(ok):
             if not ok:
                 status_label.setText("Страница открылась с ошибкой. Проверьте доступ/авторизацию.")
                 return
+
+            self._detect_mm_otrs_created_ticket(view, status_label, items, mm_otrs_state)
 
             if mm_otrs_state["started"]:
                 return
@@ -2245,6 +2318,39 @@ class LiveZabbixMonitorWidget(QWidget):
         self.mm_otrs_dialogs.append(dialog)
         dialog.show()
         view.load(QUrl(url))
+
+
+    def _detect_mm_otrs_created_ticket(self, view, status_label, items, state):
+        if state.get("ack_started"):
+            return
+        page = view.page() if view is not None else None
+        if page is None:
+            return
+        js = """
+(function() {
+  return JSON.stringify({
+    href: String(window.location.href || ''),
+    title: String(document.title || ''),
+    text: String((document.body && (document.body.innerText || document.body.textContent)) || '').slice(0, 7000)
+  });
+})();
+"""
+        def after(result):
+            if state.get("ack_started"):
+                return
+            try:
+                payload = json.loads(str(result or "{}"))
+            except (TypeError, ValueError):
+                payload = {}
+            href = str(payload.get("href") or (page.url().toString() if page is not None else ""))
+            page_text = " ".join([str(payload.get("title") or ""), str(payload.get("text") or "")])
+            ref = extract_mm_otrs_reference(page_text, href)
+            if ref.get("number") and ref.get("url"):
+                state["ack_started"] = True
+                status_label.setText(f"ОТРС ММ #{ref['number']} создан. Запускаю подтверждение Zabbix...")
+                self.logger.info("MM/OTRS ticket detected: number=%s url=%s zabbix_events=%s", ref.get("number"), ref.get("url"), len(items or []))
+                self._start_auto_zabbix_acknowledgement("mm_otrs", items, ref.get("number", ""), ref.get("url", ""))
+        page.runJavaScript(js, after)
 
     def _mm_otrs_saved_credentials(self):
         """Return only OTRS credentials from the current profile credentials."""
@@ -3328,12 +3434,13 @@ class LiveZabbixMonitorWidget(QWidget):
         if '"duplicate":true' in text:
             self.poll_status_label.setText("Комментарий Zabbix уже есть, пропуск")
             self._zabbix_ack_stats["skipped"] += 1
-        elif '"submitted":true' in text or '"comment_added":true' in text or '"ack_touched":true' in text:
+        elif '"submitted":true' in text:
             self.poll_status_label.setText(f"Zabbix подтверждён: {target.host} / {target.trigger}")
             self._zabbix_ack_stats["success"] += 1
         else:
             self._zabbix_ack_stats["errors"] += 1
-            self.poll_status_label.setText(f"Ошибка подтверждения Zabbix: форма не найдена ({text[:160]})")
+            reason = "submit не выполнен" if ('"comment_added":true' in text or '"ack_touched":true' in text) else "форма не найдена"
+            self.poll_status_label.setText(f"Ошибка подтверждения Zabbix: {reason} ({text[:160]})")
             self.logger.warning("Zabbix acknowledgement JS did not submit: %s", text[:500])
         safe_delete_web_view(view, logger=self.logger, context="LiveZabbixMonitorWidget automatic Zabbix acknowledgement")
         QTimer.singleShot(600, self._process_next_zabbix_acknowledgement)

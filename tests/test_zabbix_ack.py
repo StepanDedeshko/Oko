@@ -21,14 +21,16 @@ class ZabbixAutomaticAcknowledgementTests(unittest.TestCase):
             redmine_ack_comment("12345", "https://redmine.example/issues/12345"),
             "Задача Redmine #12345: https://redmine.example/issues/12345",
         )
-        self.assertEqual(redmine_ack_comment("", "https://redmine.example/issues/12345"), "Задача Redmine: https://redmine.example/issues/12345")
+        self.assertEqual(redmine_ack_comment("", "https://redmine.example/issues/12345"), "")
+        self.assertEqual(redmine_ack_comment("12345", ""), "")
 
     def test_build_mm_otrs_acknowledgement_comment(self):
         self.assertEqual(
             mm_otrs_ack_comment("67890", "https://itsm.example/Ticket/67890"),
             "Задача на ММ #67890: https://itsm.example/Ticket/67890",
         )
-        self.assertEqual(mm_otrs_ack_comment("67890", ""), "Задача на ММ #67890")
+        self.assertEqual(mm_otrs_ack_comment("67890", ""), "")
+        self.assertEqual(mm_otrs_ack_comment("", "https://itsm.example/Ticket/67890"), "")
 
     def test_idempotency_existing_comment_prevents_duplicate(self):
         existing = "История\nЗадача Redmine #12345: https://redmine.example/issues/12345\n"
@@ -69,17 +71,36 @@ class ZabbixAutomaticAcknowledgementTests(unittest.TestCase):
         self.assertIn("URL подтверждения Zabbix", plan["reason"])
 
     def test_reference_extraction(self):
-        self.assertEqual(extract_redmine_reference("Issue #12345", "https://redmine.example/issues/12345")["number"], "12345")
+        redmine_ref = extract_redmine_reference("Issue #12345", "https://redmine.example/projects/x/issues/new")
+        self.assertEqual(redmine_ref["number"], "12345")
+        self.assertEqual(redmine_ref["url"], "https://redmine.example/issues/12345")
         self.assertEqual(extract_mm_otrs_reference("Ticket# 202606301234", "")["number"], "202606301234")
 
     def test_js_contains_selector_fallbacks_and_markers(self):
         js = zabbix_acknowledgement_js("Задача Redmine #12345", True)
-        for marker in ["message", "comment", "note", "Update", "Обновить", "Acknowledge", "Подтвердить", "Save", "Сохранить", "duplicate", "ack_touched"]:
+        for marker in ["message", "comment", "note", "Update", "Обновить", "Acknowledge", "Подтвердить", "Save", "Сохранить", "duplicate", "ack_touched", "submitted"]:
             self.assertIn(marker, js)
+        self.assertNotIn("Да|Yes", js)
 
     def test_app_version_remains_unchanged(self):
         self.assertEqual(APP_VERSION, "0.3.1")
         self.assertIn('APP_VERSION = "0.3.1"', (Path(__file__).resolve().parents[1] / "app" / "app_info.py").read_text(encoding="utf-8"))
+
+    def test_widget_has_task_creation_detection_integration_points(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("_open_redmine_creation_dialog", source)
+        self.assertIn("_detect_redmine_created_issue", source)
+        self.assertIn("_detect_mm_otrs_created_ticket", source)
+        self.assertIn("Redmine issue detected", source)
+        self.assertIn("MM/OTRS ticket detected", source)
+        self.assertNotIn("QDesktopServices.openUrl(QUrl(redmine_url))", source)
+
+    def test_widget_success_requires_zabbix_submit_or_duplicate(self):
+        source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn("elif '\"submitted\":true' in text", source)
+        self.assertIn("Комментарий Zabbix уже есть, пропуск", source)
+        self.assertIn("submit не выполнен", source)
+        self.assertNotIn("or '\"comment_added\":true' in text or '\"ack_touched\":true' in text", source)
 
 
 if __name__ == "__main__":
