@@ -31,6 +31,7 @@ from app.duty_zabbix import (
     load_zabbix_trigger_catalog,
     save_zabbix_trigger_catalog,
 )
+from app.live_zabbix import DEFAULT_REDMINE_LOGIN_URL, ensure_live_monitor_defaults
 from app.logger import get_logger
 from app.safe_widgets import NoWheelComboBox, NoWheelSpinBox
 from app.screen_utils import available_geometry_for_widget, center_widget_on_screen, safe_window_size
@@ -362,6 +363,22 @@ class DutyModeSettingsWidget(QWidget):
         links_form.addRow("ОТРС:", self.otrs_create_url_link_input)
         links_form.addRow("ОТРС ММ:", self.mm_otrs_create_url_input)
         root.addWidget(links_box)
+
+        live_settings = ensure_live_monitor_defaults(self.config)
+        redmine_auth_box = QGroupBox("Авторизация Redmine")
+        redmine_auth_form = QFormLayout(redmine_auth_box)
+        self.redmine_login_url_input = QLineEdit(str(live_settings.get("redmine_login_url") or DEFAULT_REDMINE_LOGIN_URL))
+        self.redmine_login_url_input.setPlaceholderText(DEFAULT_REDMINE_LOGIN_URL)
+        self.redmine_username_input = QLineEdit(str(live_settings.get("redmine_username") or ""))
+        self.redmine_password_input = QLineEdit(str(live_settings.get("redmine_password") or ""))
+        self.redmine_password_input.setEchoMode(QLineEdit.Password)
+        self.redmine_save_credentials_checkbox = QCheckBox("Сохранять логин и пароль Redmine")
+        self.redmine_save_credentials_checkbox.setChecked(bool(live_settings.get("redmine_save_credentials", False)))
+        redmine_auth_form.addRow("Redmine login URL:", self.redmine_login_url_input)
+        redmine_auth_form.addRow("Redmine username:", self.redmine_username_input)
+        redmine_auth_form.addRow("Redmine password:", self.redmine_password_input)
+        redmine_auth_form.addRow(self.redmine_save_credentials_checkbox)
+        root.addWidget(redmine_auth_box)
 
         self.duty_service_checks_enabled_checkbox = QCheckBox("Проверять сервисы в режиме дежурства")
         self.duty_service_checks_enabled_checkbox.setChecked(bool(self.settings().get("duty_service_checks_enabled", False)))
@@ -791,6 +808,15 @@ class DutyModeSettingsWidget(QWidget):
         set_duty_link(self.config, "live_zabbix_url", self.live_zabbix_url_input.text().strip())
         set_duty_link(self.config, "redmine_create_url", self.redmine_create_url_input.text().strip())
         set_duty_link(self.config, "mm_otrs_create_url", self.mm_otrs_create_url_input.text().strip())
+        live_settings = ensure_live_monitor_defaults(self.config)
+        live_settings["redmine_login_url"] = self.redmine_login_url_input.text().strip() or DEFAULT_REDMINE_LOGIN_URL
+        live_settings["redmine_save_credentials"] = self.redmine_save_credentials_checkbox.isChecked()
+        if live_settings["redmine_save_credentials"]:
+            live_settings["redmine_username"] = self.redmine_username_input.text()
+            live_settings["redmine_password"] = self.redmine_password_input.text()
+        else:
+            live_settings["redmine_username"] = ""
+            live_settings["redmine_password"] = ""
         settings["duty_zabbix_expected_task_title"] = self.zabbix_expected_title_input.text().strip() or "Дежурная проверка Zabbix / графиков"
         settings["duty_service_checks_expected_task_title"] = self.service_checks_expected_title_input.text().strip() or "Дежурная проверка сервисов"
         settings["expected_ticket_subject"] = settings["duty_zabbix_expected_task_title"]
