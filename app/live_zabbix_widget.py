@@ -3885,46 +3885,96 @@ class LiveZabbixMonitorWidget(QWidget):
         self._zbx_progress_prefix = progress_prefix
         self._zbx_summary_prefix = summary_prefix
         self._zbx_final_error_text = final_error_text or ""
-        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
-        self._zbx_view = register_web_view(QWebEngineView(self))
-        if profile is not None:
-            self._zbx_view.setPage(QWebEnginePage(profile, self._zbx_view))
-        self._zbx_next()
+        self._zbx_total_items = len(self._zbx_queue)
+        self._zbx_started_items = 0
+        self._zbx_workers = {}
 
-    def _zbx_next(self):
-        total = len(self._zbx_queue) + sum(self._zbx_counts.values())
-        if not self._zbx_queue:
+        # Parallel hidden WebViews. Do not make them visible: visible windows for every
+        # selected problem can freeze QtWebEngine and overload Zabbix.
+        self._zbx_parallel_limit = min(6, max(1, self._zbx_total_items))
+        self.logger.info(
+            "Zabbix parallel ack started: total=%s parallel=%s comment=%s",
+            self._zbx_total_items,
+            self._zbx_parallel_limit,
+            self._zbx_comment,
+        )
+        self._start_more_zbx_workers()
+
+    def _zbx_done_count(self):
+        return sum(self._zbx_counts.values())
+
+    def _zbx_progress_text(self):
+        done = self._zbx_done_count()
+        active = len(getattr(self, "_zbx_workers", {}) or {})
+        total = getattr(self, "_zbx_total_items", 0)
+        started = getattr(self, "_zbx_started_items", 0)
+        return f"{self._zbx_progress_prefix}: запущено {started}/{total}, активно {active}, готово {done}/{total}"
+
+    def _start_more_zbx_workers(self):
+        if not getattr(self, "_zbx_queue", None) and not getattr(self, "_zbx_workers", None):
             c = self._zbx_counts
             msg = f"{self._zbx_summary_prefix}: успешно {c['success']}, пропущено {c['skipped']}, ошибок {c['errors']}"
             self.logger.info("Zabbix ack final summary: %s", msg)
             self.poll_status_label.setText(self._zbx_final_error_text if c["errors"] and self._zbx_final_error_text else msg)
             return
-        self._zbx_active_item = self._zbx_queue.pop(0)
-        self._zbx_active_url = str(getattr(self._zbx_active_item, "ack_url", "") or getattr(self._zbx_active_item, "problem_url", "") or "")
-        self._zbx_active_index = sum(self._zbx_counts.values()) + 1
-        self._zbx_active_total = total
-        self.poll_status_label.setText(f"{self._zbx_progress_prefix}: {self._zbx_active_index}/{total}")
-        self.logger.info("Zabbix item started: %s", getattr(self._zbx_active_item, "trigger_name", ""))
-        if not self._zbx_active_url:
+
+        limit = getattr(self, "_zbx_parallel_limit", 1)
+        while self._zbx_queue and len(self._zbx_workers) < limit:
+            item = self._zbx_queue.pop(0)
+            self._start_zbx_worker(item)
+
+        self.poll_status_label.setText(self._zbx_progress_text())
+
+    def _start_zbx_worker(self, item):
+        self._zbx_started_items += 1
+        worker_id = str(self._zbx_started_items)
+        url = str(getattr(item, "ack_url", "") or getattr(item, "problem_url", "") or "")
+        if not url:
             self.logger.warning("Zabbix item skipped: no ack_url/problem_url")
-            self._finish_zbx_item("skipped")
+            self._zbx_counts["skipped"] += 1
+            QTimer.singleShot(0, self._start_more_zbx_workers)
             return
 
-        def loaded(ok):
+        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        view = register_web_view(QWebEngineView(self))
+        if profile is not None:
+            view.setPage(QWebEnginePage(profile, view))
+
+        ctx = {
+            "id": worker_id,
+            "item": item,
+            "url": url,
+            "view": view,
+            "submitted_acknowledge_only": False,
+            "submitted_existing_comment": False,
+        }
+        self._zbx_workers[worker_id] = ctx
+
+        self.logger.info(
+            "Zabbix item started parallel: worker=%s url=%s trigger=%s",
+            worker_id,
+            url,
+            getattr(item, "trigger_name", ""),
+        )
+
+        def loaded(ok, wid=worker_id):
+            ctx = self._zbx_workers.get(wid)
+            if not ctx:
+                return
             try:
-                self._zbx_view.loadFinished.disconnect(loaded)
+                ctx["view"].loadFinished.disconnect(loaded)
             except Exception:
                 pass
             if not ok:
-                self.logger.warning("ack/comment failure: load failed url=%s", self._zbx_active_url)
-                self._finish_zbx_item("errors")
+                self.logger.warning("ack/comment failure: load failed worker=%s url=%s", wid, ctx.get("url"))
+                self._finish_zbx_worker(wid, "errors")
                 return
-            self._run_zbx_step("inspect")
+            self._run_zbx_step(wid, "inspect")
 
-        self._zbx_view.loadFinished.connect(loaded)
-        self._zbx_view.load(QUrl(self._zbx_active_url))
+        view.loadFinished.connect(loaded)
+        view.load(QUrl(url))
 
-    def _parse_zbx_payload(self, result, context):
+    def _parse_zbx_payload(self, result, context, worker_id=None):
         try:
             payload = json.loads(result or "{}") if isinstance(result, str) else (result or {})
         except Exception:
@@ -3932,118 +3982,170 @@ class LiveZabbixMonitorWidget(QWidget):
         if payload:
             payload.setdefault("diagnostics", {})
             return payload
-        self.logger.warning("Zabbix JS returned empty result: context=%s url=%s", context, getattr(self, "_zbx_active_url", ""))
+
+        url = ""
+        if worker_id is not None and hasattr(self, "_zbx_workers"):
+            url = str((self._zbx_workers.get(worker_id) or {}).get("url") or "")
+        self.logger.warning("Zabbix JS returned empty result: context=%s worker=%s url=%s", context, worker_id, url)
         return {"ok": False, "error": "Zabbix JS returned empty result", "diagnostics": None, "needs_diagnostics": True}
 
-    def _run_zbx_step(self, step):
-        self._zbx_view.page().runJavaScript(
+    def _run_zbx_step(self, worker_id, step):
+        ctx = self._zbx_workers.get(worker_id)
+        if not ctx:
+            return
+        ctx["view"].page().runJavaScript(
             self._zabbix_comment_script(step, self._zbx_comment, self._zbx_ack_missing),
-            lambda result, current_step=step: self._handle_zbx_step_result(current_step, result),
+            lambda result, wid=worker_id, current_step=step: self._handle_zbx_step_result(wid, current_step, result),
         )
 
-    def _handle_zbx_step_result(self, step, result):
-        payload = self._parse_zbx_payload(result, step)
+    def _handle_zbx_step_result(self, worker_id, step, result):
+        ctx = self._zbx_workers.get(worker_id)
+        if not ctx:
+            return
+        payload = self._parse_zbx_payload(result, step, worker_id)
         if payload.get("needs_diagnostics"):
-            self._zbx_view.page().runJavaScript(
+            ctx["view"].page().runJavaScript(
                 self._zabbix_comment_diagnostics_script(),
-                lambda diag, failed_payload=payload: self._handle_zbx_empty_result_with_diagnostics(failed_payload, diag),
+                lambda diag, wid=worker_id, failed_payload=payload: self._handle_zbx_empty_result_with_diagnostics(wid, failed_payload, diag),
             )
             return
-        self._handle_zbx_payload(step, payload)
+        self._handle_zbx_payload(worker_id, step, payload)
 
-    def _handle_zbx_empty_result_with_diagnostics(self, payload, diagnostics_result):
+    def _handle_zbx_empty_result_with_diagnostics(self, worker_id, payload, diagnostics_result):
+        ctx = self._zbx_workers.get(worker_id)
+        if not ctx:
+            return
         try:
             diagnostics = json.loads(diagnostics_result or "{}") if isinstance(diagnostics_result, str) else (diagnostics_result or {})
         except Exception:
             diagnostics = {}
         payload["diagnostics"] = diagnostics
-        self.logger.warning("ack/comment failure: %s %s diagnostics=%s", self._zbx_active_url, payload.get("error"), diagnostics)
-        self.poll_status_label.setText("Форма подтверждения Zabbix не найдена")
-        self._finish_zbx_item("errors")
+        self.logger.warning("ack/comment failure: %s %s diagnostics=%s", ctx.get("url"), payload.get("error"), diagnostics)
+        self._finish_zbx_worker(worker_id, "errors")
 
-    def _handle_zbx_payload(self, step, payload):
+    def _handle_zbx_payload(self, worker_id, step, payload):
+        ctx = self._zbx_workers.get(worker_id)
+        if not ctx:
+            return
+        url = ctx.get("url", "")
         status = str(payload.get("status") or "")
+
         if payload.get("duplicate"):
-            self.poll_status_label.setText(status or "Комментарий Zabbix уже есть, пропускаю")
-            self.logger.info("duplicate comment skipped because already acknowledged: %s", self._zbx_active_url)
-            self._finish_zbx_item("skipped")
+            self.logger.info("duplicate comment skipped because already acknowledged: %s", url)
+            self._finish_zbx_worker(worker_id, "skipped")
             return
+
         if not payload.get("ok"):
-            self.poll_status_label.setText(status or "Форма подтверждения Zabbix не найдена")
-            self.logger.warning("ack/comment failure: %s %s diagnostics=%s", self._zbx_active_url, payload.get("error"), payload.get("diagnostics"))
-            self._finish_zbx_item("errors")
+            self.logger.warning("ack/comment failure: %s %s diagnostics=%s", url, payload.get("error"), payload.get("diagnostics"))
+            self._finish_zbx_worker(worker_id, "errors")
             return
+
         if payload.get("clicked_popup"):
-            self.poll_status_label.setText(status or "Открываю форму подтверждения Zabbix")
-            self._start_zbx_poll("check_form", 250, 10000)
+            self.logger.info("Zabbix popup opening: worker=%s url=%s", worker_id, url)
+            self._start_zbx_poll(worker_id, "check_form", 120, 10000)
             return
+
         if payload.get("form_ready"):
-            self.poll_status_label.setText(status or "Форма подтверждения Zabbix найдена")
-            self._run_zbx_step("submit")
+            self.logger.info("Zabbix popup form ready: worker=%s url=%s", worker_id, url)
+            self._run_zbx_step(worker_id, "submit")
             return
+
         if payload.get("submitted"):
             if payload.get("acknowledge_only"):
-                self.logger.info("task comment exists but problem is not acknowledged; acknowledging only: %s", self._zbx_active_url)
+                self.logger.info("task comment exists but problem is not acknowledged; acknowledging only: %s", url)
             elif payload.get("already_acknowledged"):
-                self.logger.info("already acknowledged; adding missing comment only: %s", self._zbx_active_url)
-            self._zbx_submitted_acknowledge_only = bool(payload.get("acknowledge_only"))
-            self.poll_status_label.setText(status or "Комментарий Zabbix отправлен")
-            self._start_zbx_poll("check_submit", 300, 10000)
+                self.logger.info("already acknowledged; adding missing comment only: %s", url)
+            ctx["submitted_acknowledge_only"] = bool(payload.get("acknowledge_only"))
+            ctx["submitted_existing_comment"] = bool(payload.get("existing_comment"))
+            self._start_zbx_poll(worker_id, "check_submit", 150, 10000)
             return
+
         if payload.get("submitted_done"):
-            self.poll_status_label.setText(status or "Комментарий Zabbix добавлен")
-            if getattr(self, "_zbx_submitted_acknowledge_only", False):
-                self.logger.info("problem acknowledged with existing comment: %s", self._zbx_active_url)
+            if ctx.get("submitted_acknowledge_only"):
+                self.logger.info("problem acknowledged with existing comment: %s", url)
             else:
-                self.logger.info("comment copied and problem acknowledged: %s", self._zbx_active_url)
-            self.logger.info("ack/comment success: %s", self._zbx_active_url)
-            self._finish_zbx_item("success")
+                self.logger.info("comment copied and problem acknowledged: %s", url)
+            self.logger.info("ack/comment success: %s", url)
+            self._finish_zbx_worker(worker_id, "success")
             return
+
         if payload.get("waiting"):
             return
-        self.logger.warning("ack/comment failure: unexpected payload url=%s payload=%s", self._zbx_active_url, payload)
-        self._finish_zbx_item("errors")
 
-    def _start_zbx_poll(self, step, interval_ms, timeout_ms):
-        self._zbx_poll_step = step
-        self._zbx_poll_deadline = datetime.now().timestamp() + (timeout_ms / 1000.0)
-        QTimer.singleShot(interval_ms, lambda: self._poll_zbx_step(step, interval_ms))
+        self.logger.warning("ack/comment failure: unexpected payload url=%s payload=%s", url, payload)
+        self._finish_zbx_worker(worker_id, "errors")
 
-    def _poll_zbx_step(self, step, interval_ms):
-        if datetime.now().timestamp() >= getattr(self, "_zbx_poll_deadline", 0):
-            self._zbx_view.page().runJavaScript(
+    def _start_zbx_poll(self, worker_id, step, interval_ms, timeout_ms):
+        ctx = self._zbx_workers.get(worker_id)
+        if not ctx:
+            return
+        ctx["poll_step"] = step
+        ctx["poll_deadline"] = datetime.now().timestamp() + (timeout_ms / 1000.0)
+        QTimer.singleShot(interval_ms, lambda wid=worker_id, current_step=step, current_interval=interval_ms: self._poll_zbx_step(wid, current_step, current_interval))
+
+    def _poll_zbx_step(self, worker_id, step, interval_ms):
+        ctx = self._zbx_workers.get(worker_id)
+        if not ctx:
+            return
+
+        if datetime.now().timestamp() >= float(ctx.get("poll_deadline", 0)):
+            ctx["view"].page().runJavaScript(
                 self._zabbix_comment_diagnostics_script(),
-                lambda diag, timeout_step=step: self._handle_zbx_poll_timeout(timeout_step, diag),
+                lambda diag, wid=worker_id, timeout_step=step: self._handle_zbx_poll_timeout(wid, timeout_step, diag),
             )
             return
-        self._zbx_view.page().runJavaScript(
+
+        ctx["view"].page().runJavaScript(
             self._zabbix_comment_script(step, self._zbx_comment, self._zbx_ack_missing),
-            lambda result, current_step=step, current_interval=interval_ms: self._handle_zbx_poll_result(current_step, current_interval, result),
+            lambda result, wid=worker_id, current_step=step, current_interval=interval_ms: self._handle_zbx_poll_result(wid, current_step, current_interval, result),
         )
 
-    def _handle_zbx_poll_result(self, step, interval_ms, result):
-        payload = self._parse_zbx_payload(result, step)
-        if payload.get("needs_diagnostics"):
-            self._handle_zbx_step_result(step, result)
+    def _handle_zbx_poll_result(self, worker_id, step, interval_ms, result):
+        ctx = self._zbx_workers.get(worker_id)
+        if not ctx:
             return
-        if payload.get("waiting"):
-            QTimer.singleShot(interval_ms, lambda: self._poll_zbx_step(step, interval_ms))
-            return
-        self._handle_zbx_payload(step, payload)
 
-    def _handle_zbx_poll_timeout(self, step, diagnostics_result):
+        payload = self._parse_zbx_payload(result, step, worker_id)
+        if payload.get("needs_diagnostics"):
+            self._handle_zbx_step_result(worker_id, step, result)
+            return
+
+        if payload.get("waiting"):
+            QTimer.singleShot(interval_ms, lambda wid=worker_id, current_step=step, current_interval=interval_ms: self._poll_zbx_step(wid, current_step, current_interval))
+            return
+
+        self._handle_zbx_payload(worker_id, step, payload)
+
+    def _handle_zbx_poll_timeout(self, worker_id, step, diagnostics_result):
+        ctx = self._zbx_workers.get(worker_id)
+        if not ctx:
+            return
         try:
             diagnostics = json.loads(diagnostics_result or "{}") if isinstance(diagnostics_result, str) else (diagnostics_result or {})
         except Exception:
             diagnostics = {}
-        self.logger.warning("ack/comment failure: %s %s timeout diagnostics=%s", self._zbx_active_url, step, diagnostics)
-        self.poll_status_label.setText("Форма подтверждения Zabbix не найдена")
-        self._finish_zbx_item("errors")
+        self.logger.warning(
+            "ack/comment failure: %s acknowledge popup/form timeout step=%s diagnostics=%s",
+            ctx.get("url"),
+            step,
+            diagnostics,
+        )
+        self._finish_zbx_worker(worker_id, "errors")
 
-    def _finish_zbx_item(self, result_key):
+    def _finish_zbx_worker(self, worker_id, result_key):
+        ctx = self._zbx_workers.pop(worker_id, None)
         if result_key in self._zbx_counts:
             self._zbx_counts[result_key] += 1
-        QTimer.singleShot(0, self._zbx_next)
+
+        if ctx and ctx.get("view") is not None:
+            safe_delete_web_view(
+                ctx["view"],
+                logger=self.logger,
+                context=f"ZabbixParallelAck worker={worker_id}",
+            )
+
+        self.poll_status_label.setText(self._zbx_progress_text())
+        QTimer.singleShot(0, self._start_more_zbx_workers)
 
     def copy_task_comment_to_selected(self):
         items = self._selected_live_problem_items()

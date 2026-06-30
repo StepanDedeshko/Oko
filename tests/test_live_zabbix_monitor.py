@@ -584,5 +584,12 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("normalizeCandidate(rowText, false)", self.widget_source)
         self.assertNotIn("addUnique(comments, rowText)", self.widget_source)
 
+    def test_zabbix_comment_pipeline_uses_parallel_hidden_workers(self):
+        self.assertIn("_zbx_parallel_limit", self.widget_source)
+        self.assertIn("Zabbix parallel ack started", self.widget_source)
+        self.assertIn("def _start_zbx_worker", self.widget_source)
+        self.assertIn("len(self._zbx_workers)", self.widget_source)
+        self.assertIn("safe_delete_web_view", self.widget_source)
+
     def test_app_version_unchanged(self):
         self.assertIn('APP_VERSION = "0.3.1"', self.app_info)
