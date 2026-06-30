@@ -92,7 +92,7 @@ class RedmineAuthorizationDialog(QDialog):
     def __init__(self, profile, login_url, original_create_url, settings, parent=None, success_callback=None):
         super().__init__(parent)
         self.setWindowTitle("Авторизация Redmine")
-        self.resize(1100, 760)
+        self.resize(900, 650)
         self.original_create_url = original_create_url
         self.settings = settings or {}
         self.success_callback = success_callback
@@ -102,10 +102,14 @@ class RedmineAuthorizationDialog(QDialog):
             self.view.setPage(self.page)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
         self.status_label = QLabel(self.REDMINE_STATUS_TEXT)
         self.status_label.setWordWrap(True)
+        self.status_label.setMaximumHeight(44)
+        self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(self.status_label)
-        layout.addWidget(self.view)
+        layout.addWidget(self.view, stretch=1)
         self.view.loadFinished.connect(self._on_login_loaded)
         self.view.load(QUrl(login_url or DEFAULT_REDMINE_LOGIN_URL))
 
@@ -183,7 +187,8 @@ class RedmineCreateDialog(QDialog):
     def __init__(self, profile, redmine_url, settings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Создание задачи Redmine")
-        self.resize(1200, 820)
+        self.resize(1100, 760)
+        self.setSizeGripEnabled(True)
         self.redmine_url = redmine_url
         self.settings = settings or {}
         self.auth_dialog = None
@@ -192,10 +197,15 @@ class RedmineCreateDialog(QDialog):
             self.page = QWebEnginePage(profile, self.view)
             self.view.setPage(self.page)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
+        self.status_label.setMaximumHeight(28)
+        self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.status_label.setVisible(False)
         layout.addWidget(self.status_label)
-        layout.addWidget(self.view)
+        layout.addWidget(self.view, stretch=1)
         self.view.loadFinished.connect(self._on_create_loaded)
         self.view.load(QUrl(redmine_url))
 
@@ -230,11 +240,13 @@ class RedmineCreateDialog(QDialog):
             payload = {}
         if payload.get("valid_issue_form"):
             self.status_label.setText("")
+            self.status_label.setVisible(False)
             return
         if payload.get("login_required") or payload.get("broken"):
             self._open_redmine_auth_dialog()
             return
         self.status_label.setText("Redmine не открыл форму создания задачи. Проверьте авторизацию Redmine и настройки шаблона.")
+        self.status_label.setVisible(True)
 
     def _open_redmine_auth_dialog(self):
         profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None

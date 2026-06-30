@@ -10,7 +10,8 @@ class LiveZabbixRedmineAuthTests(unittest.TestCase):
     def setUp(self):
         self.repo = Path(__file__).resolve().parents[1]
         self.widget_source = (self.repo / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
-        self.settings_source = (self.repo / "app" / "duty_settings.py").read_text(encoding="utf-8")
+        self.profile_source = (self.repo / "app" / "home_config.py").read_text(encoding="utf-8")
+        self.duty_settings_source = (self.repo / "app" / "duty_settings.py").read_text(encoding="utf-8")
 
     def test_redmine_login_url_default_exists(self):
         self.assertEqual(
@@ -18,8 +19,17 @@ class LiveZabbixRedmineAuthTests(unittest.TestCase):
             "https://redmine.stdpr.ru/login?back_url=https%3A%2F%2Fredmine.stdpr.ru%2Fprojects",
         )
         self.assertEqual(default_live_monitor_config()["redmine_login_url"], DEFAULT_REDMINE_LOGIN_URL)
-        self.assertIn("Redmine login URL", self.settings_source)
-        self.assertIn("Сохранять логин и пароль Redmine", self.settings_source)
+        self.assertIn("add_section_title(\"Redmine\")", self.profile_source)
+        self.assertIn("Сохранять логин и пароль Redmine", self.profile_source)
+
+    def test_redmine_credentials_are_mainly_in_profile_not_duty_mode(self):
+        self.assertIn("redmine_login_url_input", self.profile_source)
+        self.assertIn("redmine_username_input", self.profile_source)
+        self.assertIn("redmine_password_input", self.profile_source)
+        self.assertIn('redmine_settings["redmine_login_url"]', self.profile_source)
+        self.assertIn('redmine_settings["redmine_username"]', self.profile_source)
+        self.assertIn('redmine_settings["redmine_password"]', self.profile_source)
+        self.assertNotIn("redmine_password_input", self.duty_settings_source)
 
     def test_redmine_login_form_selectors_are_present_in_js(self):
         for selector in [
@@ -35,8 +45,16 @@ class LiveZabbixRedmineAuthTests(unittest.TestCase):
     def test_saved_credentials_are_not_logged(self):
         self.assertNotIn("redmine_username=%s", self.widget_source)
         self.assertNotIn("redmine_password=%s", self.widget_source)
-        self.assertNotIn("Redmine username saved", self.settings_source)
-        self.assertNotIn("Redmine password saved", self.settings_source)
+        self.assertNotIn("Redmine username saved", self.profile_source)
+        self.assertNotIn("Redmine password saved", self.profile_source)
+
+    def test_redmine_dialogs_are_compact_and_webview_gets_space(self):
+        self.assertIn("self.resize(900, 650)", self.widget_source)
+        self.assertIn("self.resize(1100, 760)", self.widget_source)
+        self.assertIn("self.status_label.setMaximumHeight(44)", self.widget_source)
+        self.assertIn("self.status_label.setMaximumHeight(28)", self.widget_source)
+        self.assertIn("layout.addWidget(self.view, stretch=1)", self.widget_source)
+        self.assertIn("self.status_label.setVisible(False)", self.widget_source)
 
     def test_broken_nginx_page_routes_to_redmine_auth_dialog(self):
         for marker in ["default error page for nginx", "/usr/share/nginx/html/50x.html", "Red Hat Enterprise Linux"]:
