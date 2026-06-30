@@ -1407,7 +1407,7 @@ class LiveZabbixMonitorWidget(QWidget):
         default_params = {
             "issue[tracker_id]": str(template.get("tracker_id") or "32"),
             "issue[assigned_to_id]": str(template.get("assigned_to_id") or "1121"),
-            "issue[custom_field_values][94]": str(template.get("custom_field_94") or "Применим"),
+            "issue[custom_field_values][94]": str(template.get("custom_field_94") or "Не применим"),
             "issue[watcher_user_ids][]": REDMINE_WATCHER_USER_IDS,
         }
 

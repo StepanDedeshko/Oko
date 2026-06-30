@@ -73,6 +73,7 @@ DEFAULT_REDMINE_SPECIAL_TASK_TEMPLATE = {
     "tracker_id": "",
     "priority_id": "",
     "project": "",
+    "custom_field_94": "Не применим",
 }
 
 DEFAULT_REDMINE_TASK_TEMPLATE = {
@@ -89,6 +90,7 @@ DEFAULT_REDMINE_TASK_TEMPLATE = {
     "tracker_id": "",
     "priority_id": "",
     "project": "",
+    "custom_field_94": "Не применим",
 }
 
 OTRS_VARIABLE_DETAILS = [

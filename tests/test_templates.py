@@ -52,5 +52,54 @@ class TemplateRenderingTest(unittest.TestCase):
         self.assertNotIn("{missing}", preview)
 
 
+class RedmineCustomFieldDefaultsTest(unittest.TestCase):
+    def test_configured_custom_field_94_survives_template_lookup(self):
+        from app.templates import REDMINE_TASK_TEMPLATE_KEY, REDMINE_SPECIAL_TASK_TEMPLATE_KEY, get_redmine_task_template
+
+        config = {
+            "templates": {
+                REDMINE_TASK_TEMPLATE_KEY: {"custom_field_94": "Не применим"},
+                REDMINE_SPECIAL_TASK_TEMPLATE_KEY: {"custom_field_94": "Не применим"},
+            }
+        }
+
+        self.assertEqual(get_redmine_task_template(config)["custom_field_94"], "Не применим")
+        self.assertEqual(get_redmine_task_template(config, special=True)["custom_field_94"], "Не применим")
+
+    def test_normal_and_special_redmine_templates_include_custom_field_default(self):
+        from app.templates import default_redmine_special_task_template, default_redmine_task_template
+
+        self.assertEqual(default_redmine_task_template()["custom_field_94"], "Не применим")
+        self.assertEqual(default_redmine_special_task_template()["custom_field_94"], "Не применим")
+
+    def test_generated_redmine_url_uses_custom_field_94_value(self):
+        from pathlib import Path
+        from urllib.parse import parse_qs, urlencode, urlparse
+
+        from app.templates import REDMINE_TASK_TEMPLATE_KEY, get_redmine_task_template
+
+        config = {
+            "templates": {
+                REDMINE_TASK_TEMPLATE_KEY: {
+                    "create_url": "https://redmine.example/issues/new",
+                    "custom_field_94": "Не применим",
+                }
+            }
+        }
+        template = get_redmine_task_template(config)
+        query = urlencode({"issue[custom_field_values][94]": str(template.get("custom_field_94") or "Не применим")})
+        parsed = parse_qs(urlparse("https://redmine.example/issues/new?" + query).query)
+
+        self.assertEqual(parsed["issue[custom_field_values][94]"], ["Не применим"])
+        widget_source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
+        self.assertIn('template.get("custom_field_94") or "Не применим"', widget_source)
+        self.assertNotIn('template.get("custom_field_94") or "Применим"', widget_source)
+
+    def test_app_version_unchanged_for_redmine_custom_field_fix(self):
+        from app.app_info import APP_VERSION
+
+        self.assertEqual(APP_VERSION, "0.3.1")
+
+
 if __name__ == "__main__":
     unittest.main()
