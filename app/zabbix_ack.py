@@ -1,0 +1,177 @@
+"""Helpers for automatic Zabbix acknowledgement after external task creation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+from urllib.parse import urlparse, urlunparse
+
+
+@dataclass(frozen=True)
+class ZabbixAckTarget:
+    url: str
+    host: str = ""
+    trigger: str = ""
+    already_acknowledged: bool = False
+
+
+def redmine_ack_comment(number: str = "", url: str = "") -> str:
+    number = str(number or "").strip().lstrip("#")
+    url = str(url or "").strip()
+    if number and url:
+        return f"Задача Redmine #{number}: {url}"
+    return ""
+
+
+def mm_otrs_ack_comment(number: str = "", url: str = "") -> str:
+    number = str(number or "").strip().lstrip("#")
+    url = str(url or "").strip()
+    if number and url:
+        return f"Задача на ММ #{number}: {url}"
+    return ""
+
+
+def _url_with_path(source_url: str, path: str) -> str:
+    parsed = urlparse(str(source_url or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return urlunparse(parsed._replace(path=path, query="", fragment=""))
+
+
+def extract_redmine_reference(text: str, url: str = "") -> dict:
+    combined = " ".join([str(text or ""), str(url or "")])
+    url_match = re.search(r"https?://\S*/issues/(\d+)", combined, re.IGNORECASE)
+    if url_match:
+        issue_url = url_match.group(0).rstrip('.,;)"\'')
+        return {"number": url_match.group(1), "url": issue_url}
+    match = re.search(r"(?:issues/|#)(\d{2,})", combined, re.IGNORECASE)
+    number = match.group(1) if match else ""
+    issue_url = _url_with_path(url, f"/issues/{number}") if number else ""
+    return {"number": number, "url": issue_url}
+
+
+def extract_mm_otrs_reference(text: str, url: str = "") -> dict:
+    combined = " ".join([str(text or ""), str(url or "")])
+    patterns = (
+        r"Ticket#?\s*(\d{6,})",
+        r"TicketNumber[=:/\s]+(\d{6,})",
+        r"TN[=:/\s]+(\d{6,})",
+        r"№\s*(\d{6,})",
+        r"TicketID[=:/\s]+(\d{3,})",
+    )
+    number = ""
+    for pattern in patterns:
+        match = re.search(pattern, combined, re.IGNORECASE)
+        if match:
+            number = match.group(1)
+            break
+    ticket_url = str(url or "").strip()
+    if not ticket_url:
+        url_match = re.search(r"https?://\S+", combined, re.IGNORECASE)
+        ticket_url = url_match.group(0).rstrip('.,;)"\'') if url_match else ""
+    return {"number": number, "url": ticket_url}
+
+
+def extract_task_ack_comments(text: str) -> list[str]:
+    """Extract strict full Redmine/MM task comments from Zabbix history text."""
+    value = str(text or "")
+    pattern = re.compile(
+        r"Задача\s+(?:Redmine|на\s+ММ)\s+#\d+\s*:\s*https?://[^\s<>'\"]+",
+        re.IGNORECASE,
+    )
+    result = []
+    seen = set()
+    for match in pattern.finditer(value):
+        comment = match.group(0).rstrip('.,;)')
+        if comment in seen:
+            continue
+        seen.add(comment)
+        result.append(comment)
+    return result
+
+
+def comment_already_present(existing_text: str, comment: str) -> bool:
+    return bool(comment and str(comment) in str(existing_text or ""))
+
+
+def needs_acknowledgement(item) -> bool:
+    ack_text = str(getattr(item, "ack_text", "") or (item.get("ack_text", "") if isinstance(item, dict) else "")).strip().casefold()
+    if ack_text in {"да", "yes"}:
+        return False
+    if ack_text in {"нет", "no"}:
+        return True
+    acknowledged = getattr(item, "acknowledged", None) if not isinstance(item, dict) else item.get("acknowledged")
+    return acknowledged is False
+
+
+def item_acknowledgement_url(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("ack_url") or item.get("problem_url") or "").strip()
+    return str(getattr(item, "ack_url", "") or getattr(item, "problem_url", "") or "").strip()
+
+
+def items_missing_acknowledgement_urls(items) -> list:
+    return [item for item in items or [] if not item_acknowledgement_url(item)]
+
+
+def deduplicate_ack_targets(items) -> list[ZabbixAckTarget]:
+    targets = []
+    seen = set()
+    for item in items or []:
+        get = item.get if isinstance(item, dict) else lambda key, default="": getattr(item, key, default)
+        url = item_acknowledgement_url(item)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        targets.append(ZabbixAckTarget(
+            url=url,
+            host=str(get("host", "") or ""),
+            trigger=str(get("trigger_name", "") or ""),
+            already_acknowledged=not needs_acknowledgement(item),
+        ))
+    return targets
+
+
+def plan_zabbix_update(item, task_comment: str) -> dict:
+    url = str((item.get("ack_url") if isinstance(item, dict) else getattr(item, "ack_url", "")) or (item.get("problem_url") if isinstance(item, dict) else getattr(item, "problem_url", "")) or "").strip()
+    if not task_comment:
+        return {"ok": False, "reason": "Не удалось определить номер/ссылку созданной задачи."}
+    if not url:
+        return {"ok": False, "reason": "Нет URL подтверждения Zabbix для проблемы."}
+    return {"ok": True, "url": url, "ack_required": needs_acknowledgement(item), "comment": task_comment}
+
+
+def zabbix_acknowledgement_js(comment: str, ack_required: bool) -> str:
+    """Build robust JS for Zabbix update/acknowledge pages."""
+    import json
+    return f"""
+(function() {{
+  const taskComment = {json.dumps(comment, ensure_ascii=False)};
+  const ackRequired = {str(bool(ack_required)).lower()};
+  function text(el) {{ return String((el && (el.innerText || el.textContent || el.value)) || ''); }}
+  function fire(el) {{ ['input','change','blur'].forEach(t => {{ try {{ el.dispatchEvent(new Event(t, {{bubbles:true}})); }} catch(e) {{}} }}); }}
+  function click(el) {{ if (!el) return false; try {{ el.scrollIntoView({{block:'center'}}); }} catch(e) {{}} try {{ el.click(); return true; }} catch(e) {{ return false; }} }}
+  const allText = text(document.body);
+  const duplicate = allText.indexOf(taskComment) >= 0;
+  const messageField = document.querySelector('textarea[name*="message" i], textarea[name*="comment" i], textarea[name*="note" i], input[name*="message" i], input[name*="comment" i], input[name*="note" i], textarea');
+  let commentAdded = false;
+  if (messageField && !duplicate) {{ messageField.focus(); messageField.value = taskComment; fire(messageField); commentAdded = true; }}
+  const ackSelectors = [
+    'input[type="checkbox"][name*="ack" i]', 'input[type="checkbox"][id*="ack" i]',
+    'input[type="checkbox"][name*="acknowledge" i]', 'input[type="checkbox"][value="1"]'
+  ];
+  let ackTouched = false;
+  if (ackRequired) {{
+    for (const selector of ackSelectors) {{
+      const cb = document.querySelector(selector);
+      if (cb && !cb.checked) {{ cb.checked = true; fire(cb); ackTouched = true; break; }}
+    }}
+    const ackButtons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"], a')).filter(el => /Acknowledge|Подтвердить/i.test(text(el) || el.value || el.title));
+    if (!ackTouched && ackButtons.length) ackTouched = click(ackButtons[0]);
+  }}
+  const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
+  const submit = buttons.find(el => /Update|Обновить|Acknowledge|Подтвердить|Save|Сохранить/i.test(text(el) || el.value || el.title)) || document.querySelector('button[type="submit"], input[type="submit"]');
+  const submitted = (commentAdded || ackTouched) ? click(submit) : false;
+  return JSON.stringify({{ok:true, duplicate:duplicate, ack_required:ackRequired, comment_added:commentAdded, ack_touched:ackTouched, submitted:submitted, has_message_field:!!messageField, has_submit:!!submit}});
+}})();
+"""
