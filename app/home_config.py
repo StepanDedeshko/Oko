@@ -228,10 +228,20 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
             )
         )
 
+        self.auto_ack_checkbox = QCheckBox("Автоматически подтверждать Zabbix после создания задачи")
+        self.auto_ack_checkbox.setChecked(bool(self.settings.get("auto_ack_after_task_enabled", True)))
+        self.auto_ack_redmine_checkbox = QCheckBox("после создания задачи Redmine")
+        self.auto_ack_redmine_checkbox.setChecked(bool(self.settings.get("auto_ack_after_redmine_enabled", True)))
+        self.auto_ack_mm_otrs_checkbox = QCheckBox("после создания задачи на ММ / OTRS")
+        self.auto_ack_mm_otrs_checkbox.setChecked(bool(self.settings.get("auto_ack_after_mm_otrs_enabled", True)))
+
         form.addRow("URL Zabbix Problems:", self.url_input)
         form.addRow("Интервал опроса:", self.interval_input)
         form.addRow("Профиль Zabbix:", self.profile_input)
         form.addRow("", self.show_diagnostics_checkbox)
+        form.addRow("", self.auto_ack_checkbox)
+        form.addRow("", self.auto_ack_redmine_checkbox)
+        form.addRow("", self.auto_ack_mm_otrs_checkbox)
         self.mm_otrs_create_url_input = QLineEdit()
         self.mm_otrs_create_url_input.setText(str(self.settings.get("mm_otrs_create_url", "") or ""))
         self.mm_otrs_create_url_input.setPlaceholderText("https://itsm... URL создания задачи ОТРС ММ")
@@ -257,6 +267,9 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         self.settings["zabbix_profile_id"] = profile_id
         self.settings["profile_id"] = profile_id
         self.settings["show_live_zabbix_diagnostics"] = self.show_diagnostics_checkbox.isChecked()
+        self.settings["auto_ack_after_task_enabled"] = self.auto_ack_checkbox.isChecked()
+        self.settings["auto_ack_after_redmine_enabled"] = self.auto_ack_redmine_checkbox.isChecked()
+        self.settings["auto_ack_after_mm_otrs_enabled"] = self.auto_ack_mm_otrs_checkbox.isChecked()
         self.settings["mm_otrs_create_url"] = self.mm_otrs_create_url_input.text().strip()
 
         save_config(self.config)

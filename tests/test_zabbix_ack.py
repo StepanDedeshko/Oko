@@ -1,0 +1,86 @@
+from pathlib import Path
+import unittest
+
+from app.app_info import APP_VERSION
+from app.zabbix_ack import (
+    comment_already_present,
+    deduplicate_ack_targets,
+    extract_mm_otrs_reference,
+    extract_redmine_reference,
+    mm_otrs_ack_comment,
+    needs_acknowledgement,
+    plan_zabbix_update,
+    redmine_ack_comment,
+    zabbix_acknowledgement_js,
+)
+
+
+class ZabbixAutomaticAcknowledgementTests(unittest.TestCase):
+    def test_build_redmine_acknowledgement_comment(self):
+        self.assertEqual(
+            redmine_ack_comment("12345", "https://redmine.example/issues/12345"),
+            "Задача Redmine #12345: https://redmine.example/issues/12345",
+        )
+        self.assertEqual(redmine_ack_comment("", "https://redmine.example/issues/12345"), "Задача Redmine: https://redmine.example/issues/12345")
+
+    def test_build_mm_otrs_acknowledgement_comment(self):
+        self.assertEqual(
+            mm_otrs_ack_comment("67890", "https://itsm.example/Ticket/67890"),
+            "Задача на ММ #67890: https://itsm.example/Ticket/67890",
+        )
+        self.assertEqual(mm_otrs_ack_comment("67890", ""), "Задача на ММ #67890")
+
+    def test_idempotency_existing_comment_prevents_duplicate(self):
+        existing = "История\nЗадача Redmine #12345: https://redmine.example/issues/12345\n"
+        self.assertTrue(comment_already_present(existing, "Задача Redmine #12345: https://redmine.example/issues/12345"))
+        self.assertFalse(comment_already_present(existing, "Задача Redmine #99999: https://redmine.example/issues/99999"))
+
+    def test_deduplicate_selected_rows_by_ack_or_problem_url(self):
+        items = [
+            {"ack_url": "https://z/ack/1", "problem_url": "https://z/p/1", "host": "h1", "trigger_name": "t1", "ack_text": "Нет"},
+            {"ack_url": "https://z/ack/1", "problem_url": "https://z/p/1", "host": "h1", "trigger_name": "t1", "ack_text": "Нет"},
+            {"ack_url": "", "problem_url": "https://z/p/2", "host": "h2", "trigger_name": "t2", "ack_text": "Да"},
+        ]
+        targets = deduplicate_ack_targets(items)
+        self.assertEqual([t.url for t in targets], ["https://z/ack/1", "https://z/p/2"])
+        self.assertFalse(targets[0].already_acknowledged)
+        self.assertTrue(targets[1].already_acknowledged)
+
+    def test_logic_unacknowledged_requires_acknowledgement_and_comment(self):
+        self.assertTrue(needs_acknowledgement({"ack_text": "Нет"}))
+        plan = plan_zabbix_update({"ack_text": "Нет", "ack_url": "https://z/ack"}, "Задача Redmine #1")
+        self.assertTrue(plan["ok"])
+        self.assertTrue(plan["ack_required"])
+
+    def test_logic_already_acknowledged_requires_comment_only(self):
+        self.assertFalse(needs_acknowledgement({"ack_text": "Да"}))
+        plan = plan_zabbix_update({"ack_text": "Да", "ack_url": "https://z/ack"}, "Задача на ММ #67890")
+        self.assertTrue(plan["ok"])
+        self.assertFalse(plan["ack_required"])
+
+    def test_missing_task_reference_prevents_acknowledgement(self):
+        plan = plan_zabbix_update({"ack_text": "Нет", "ack_url": "https://z/ack"}, "")
+        self.assertFalse(plan["ok"])
+        self.assertIn("задачи", plan["reason"])
+
+    def test_missing_acknowledgement_url_produces_clear_failure(self):
+        plan = plan_zabbix_update({"ack_text": "Нет"}, "Задача Redmine #12345")
+        self.assertFalse(plan["ok"])
+        self.assertIn("URL подтверждения Zabbix", plan["reason"])
+
+    def test_reference_extraction(self):
+        self.assertEqual(extract_redmine_reference("Issue #12345", "https://redmine.example/issues/12345")["number"], "12345")
+        self.assertEqual(extract_mm_otrs_reference("Ticket# 202606301234", "")["number"], "202606301234")
+
+    def test_js_contains_selector_fallbacks_and_markers(self):
+        js = zabbix_acknowledgement_js("Задача Redmine #12345", True)
+        for marker in ["message", "comment", "note", "Update", "Обновить", "Acknowledge", "Подтвердить", "Save", "Сохранить", "duplicate", "ack_touched"]:
+            self.assertIn(marker, js)
+
+    def test_app_version_remains_unchanged(self):
+        self.assertEqual(APP_VERSION, "0.3.1")
+        self.assertIn('APP_VERSION = "0.3.1"', (Path(__file__).resolve().parents[1] / "app" / "app_info.py").read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -38,6 +38,7 @@ from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
+from app.zabbix_ack import deduplicate_ack_targets, extract_mm_otrs_reference, extract_redmine_reference, mm_otrs_ack_comment, redmine_ack_comment, zabbix_acknowledgement_js
 
 DOM_PARSER_SCRIPT = DOM_PARSER_SCRIPT_PLACEHOLDER
 WEBENGINE_JS_ERROR_MESSAGE = "Ошибка диагностики WebEngine: JS не вернул document.location.href. Проверьте выполнение runJavaScript, page.url/view.url и выбранный WebEngine profile."
@@ -110,6 +111,9 @@ class LiveZabbixMonitorWidget(QWidget):
         self.ack_dialogs = []
         self.mm_otrs_dialogs = []
         self.redmine_graph_lookup_view = None
+        self.zabbix_ack_view = None
+        self._zabbix_ack_queue = []
+        self._zabbix_ack_stats = {"success": 0, "skipped": 0, "errors": 0}
         self._redmine_graph_lookup_queue = []
         self._redmine_graph_lookup_items = []
         self._redmine_graph_lookup_callback = None
@@ -1467,6 +1471,9 @@ class LiveZabbixMonitorWidget(QWidget):
         if self.redmine_graph_lookup_view is not None:
             safe_delete_web_view(self.redmine_graph_lookup_view, logger=self.logger, context="LiveZabbixMonitorWidget Redmine graph lookup")
             self.redmine_graph_lookup_view = None
+        self.zabbix_ack_view = None
+        self._zabbix_ack_queue = []
+        self._zabbix_ack_stats = {"success": 0, "skipped": 0, "errors": 0}
 
     def _items_need_graph_lookup(self, items):
         result = []
@@ -3251,6 +3258,103 @@ class LiveZabbixMonitorWidget(QWidget):
 
         page.runJavaScript(js, after_fill)
 
+
+    def _auto_ack_enabled(self, task_type):
+        if not bool(self.settings.get("auto_ack_after_task_enabled", True)):
+            return False
+        if task_type == "redmine":
+            return bool(self.settings.get("auto_ack_after_redmine_enabled", True))
+        if task_type == "mm_otrs":
+            return bool(self.settings.get("auto_ack_after_mm_otrs_enabled", True))
+        return True
+
+    def _start_auto_zabbix_acknowledgement(self, task_type, items, task_number="", task_url=""):
+        if not self._auto_ack_enabled(task_type):
+            self.logger.info("Automatic Zabbix acknowledgement disabled: task_type=%s", task_type)
+            return
+        if task_type == "redmine":
+            comment = redmine_ack_comment(task_number, task_url)
+        else:
+            comment = mm_otrs_ack_comment(task_number, task_url)
+        if not comment:
+            reason = "Ошибка подтверждения Zabbix: не удалось определить номер/ссылку созданной задачи"
+            self.logger.warning("%s task_type=%s", reason, task_type)
+            self.poll_status_label.setText(reason)
+            return
+        targets = deduplicate_ack_targets(items)
+        if not targets:
+            self.poll_status_label.setText("Ошибка подтверждения Zabbix: нет URL подтверждения Zabbix")
+            self.logger.warning("No Zabbix acknowledgement URLs for task_type=%s number=%s url=%s", task_type, task_number, task_url)
+            return
+        self.logger.info("Starting automatic Zabbix acknowledgement: task_type=%s number=%s url=%s events=%s", task_type, task_number, task_url, len(targets))
+        self._zabbix_ack_queue = [{"target": target, "comment": comment, "index": index + 1, "total": len(targets)} for index, target in enumerate(targets)]
+        self._zabbix_ack_stats = {"success": 0, "skipped": 0, "errors": 0}
+        self._process_next_zabbix_acknowledgement()
+
+    def _process_next_zabbix_acknowledgement(self):
+        if not self._zabbix_ack_queue:
+            stats = self._zabbix_ack_stats
+            summary = f"Zabbix подтверждение: успешно {stats['success']}, пропущено {stats['skipped']}, ошибок {stats['errors']}"
+            self.poll_status_label.setText(summary)
+            self.logger.info(summary)
+            self.poll_now()
+            return
+        entry = self._zabbix_ack_queue.pop(0)
+        target = entry["target"]
+        self.poll_status_label.setText(f"Подтверждаю Zabbix: {entry['index']}/{entry['total']}")
+        self.logger.info("Zabbix auto-ack event: host=%s trigger=%s already_acknowledged=%s url=%s", target.host, target.trigger, target.already_acknowledged, target.url)
+        profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
+        view = register_web_view(QWebEngineView(self))
+        view.hide()
+        if profile is not None:
+            view.setPage(QWebEnginePage(profile, view))
+        self.zabbix_ack_view = view
+        def loaded(ok, current_view=view, current_entry=entry):
+            if not ok:
+                self._finish_single_zabbix_ack(False, "страница не загрузилась", current_view)
+                return
+            page = current_view.page() if current_view is not None else None
+            if page is None:
+                self._finish_single_zabbix_ack(False, "нет QWebEnginePage", current_view)
+                return
+            js = zabbix_acknowledgement_js(current_entry["comment"], not current_entry["target"].already_acknowledged)
+            page.runJavaScript(js, lambda result, v=current_view, e=current_entry: self._on_zabbix_ack_js_finished(result, v, e))
+        view.loadFinished.connect(loaded)
+        view.load(QUrl(target.url))
+
+    def _on_zabbix_ack_js_finished(self, result, view, entry):
+        text = str(result or "")
+        target = entry["target"]
+        if '"duplicate":true' in text:
+            self.poll_status_label.setText("Комментарий Zabbix уже есть, пропуск")
+            self._zabbix_ack_stats["skipped"] += 1
+        elif '"submitted":true' in text or '"comment_added":true' in text or '"ack_touched":true' in text:
+            self.poll_status_label.setText(f"Zabbix подтверждён: {target.host} / {target.trigger}")
+            self._zabbix_ack_stats["success"] += 1
+        else:
+            self._zabbix_ack_stats["errors"] += 1
+            self.poll_status_label.setText(f"Ошибка подтверждения Zabbix: форма не найдена ({text[:160]})")
+            self.logger.warning("Zabbix acknowledgement JS did not submit: %s", text[:500])
+        safe_delete_web_view(view, logger=self.logger, context="LiveZabbixMonitorWidget automatic Zabbix acknowledgement")
+        QTimer.singleShot(600, self._process_next_zabbix_acknowledgement)
+
+    def _finish_single_zabbix_ack(self, ok, reason, view):
+        if ok:
+            self._zabbix_ack_stats["success"] += 1
+        else:
+            self._zabbix_ack_stats["errors"] += 1
+            self.poll_status_label.setText(f"Ошибка подтверждения Zabbix: {reason}")
+            self.logger.warning("Zabbix acknowledgement failed: %s", reason)
+        safe_delete_web_view(view, logger=self.logger, context="LiveZabbixMonitorWidget automatic Zabbix acknowledgement")
+        QTimer.singleShot(600, self._process_next_zabbix_acknowledgement)
+
+    def acknowledge_redmine_task_for_items(self, items, page_text="", url=""):
+        ref = extract_redmine_reference(page_text, url)
+        self._start_auto_zabbix_acknowledgement("redmine", items, ref.get("number", ""), ref.get("url", ""))
+
+    def acknowledge_mm_otrs_task_for_items(self, items, page_text="", url=""):
+        ref = extract_mm_otrs_reference(page_text, url)
+        self._start_auto_zabbix_acknowledgement("mm_otrs", items, ref.get("number", ""), ref.get("url", ""))
 
     def open_acknowledgement(self, url):
         if not url:
