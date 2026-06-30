@@ -8,6 +8,7 @@ from pathlib import Path
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlparse
 import csv
+import hashlib
 import io
 import json
 import re
@@ -47,6 +48,13 @@ DEFAULT_DETECTION_ITEM_DISCOVERY_CONFIG = {
 
 def normalize_host_name(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+def safe_detection_identifier(value: str, *, prefix: str = "host") -> str:
+    text = normalize_host_name(value)
+    if not text:
+        return f"{prefix}:empty"
+    digest = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return f"{prefix}:sha256:{digest}:len:{len(text)}"
 
 def normalize_ip(value: str) -> str:
     text = str(value or "").strip()

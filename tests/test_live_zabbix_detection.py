@@ -12,6 +12,7 @@ from app.live_zabbix import (
     live_zabbix_node_version_lists_from_config,
     normalize_host_name,
     parse_detection_node_csv_bytes,
+    safe_detection_identifier,
 )
 
 
@@ -54,6 +55,17 @@ class LiveZabbixDetectionCsvTests(unittest.TestCase):
         nested = {"live_zabbix_monitor": {"live_zabbix_node_version_lists": {"v1_nodes": [], "v2_nodes": [{"ip": "", "host": "node-nested", "normalized_host": "node-nested", "version": "v2"}]}}}
         self.assertEqual(live_zabbix_node_version_lists_from_config(nested)["v2_nodes"][0]["host"], "node-nested")
         self.assertEqual(detect_node_version("Описание - node-nested", "", nested), "v2")
+
+
+    def test_safe_detection_identifier_does_not_expose_host_or_ip(self):
+        raw_host = "Описание - private-host-01"
+        raw_ip = "192.0.2.44"
+        host_id = safe_detection_identifier(raw_host)
+        ip_id = safe_detection_identifier(raw_ip, prefix="ip")
+        self.assertIn("sha256", host_id)
+        self.assertIn("sha256", ip_id)
+        self.assertNotIn("private-host-01", host_id)
+        self.assertNotIn(raw_ip, ip_id)
 
     def test_detect_versions_conflict_prefers_v2_and_unknown(self):
         cfg = {"live_zabbix_node_version_lists": {

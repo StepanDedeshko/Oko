@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter, detect_node_version, normalize_host_name, detection_cache_get, resolve_node_version_details, live_zabbix_node_version_lists_from_config
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter, detect_node_version, normalize_host_name, detection_cache_get, resolve_node_version_details, live_zabbix_node_version_lists_from_config, safe_detection_identifier
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
@@ -1044,8 +1044,7 @@ class LiveZabbixMonitorWidget(QWidget):
 
     @staticmethod
     def _safe_detection_log_host(host):
-        text = str(host or "").strip().replace("\n", " ").replace("\r", " ")
-        return text[:120]
+        return safe_detection_identifier(host, prefix="host")
 
 
     def _detection_cell_payload(self, item):
