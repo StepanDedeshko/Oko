@@ -848,6 +848,29 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
         border-radius: 9px;
     }}
 
+    QToolTip, QMenu {{
+        background-color: {p['bg_field']};
+        color: {p['text_title']};
+        border: 1px solid {p['border_dark']};
+        padding: 6px;
+    }}
+
+    QMenu::item {{
+        background: transparent;
+        color: {p['text_title']};
+        padding: 6px 20px;
+    }}
+
+    QMenu::item:selected {{
+        background: {p['selected']};
+        color: {p['text_title']};
+    }}
+
+    QDialog, QWidget[windowType="tool"] {{
+        background-color: {p['bg_main']};
+        color: {p['text_title']};
+    }}
+
     QLabel#DutyTriggerStatus {{
         border-radius: 12px;
         padding: 9px 12px;
