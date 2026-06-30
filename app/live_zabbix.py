@@ -5,10 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import parse_qsl, urlparse
 import json
 
-from app.detection_matcher import match_zabbix_host_to_node
 from app.trigger_model import ZabbixProblemSnapshotItem, build_problem_key
 from app.duty_zabbix import (
     annotate_zabbix_problems_with_trigger_catalog,
@@ -23,147 +21,6 @@ LIVE_MONITOR_CONFIG_KEY = "live_zabbix_monitor"
 LIVE_PERIOD_ALL = "all"
 LIVE_PERIOD_TODAY = "today"
 LIVE_PERIOD_7_DAYS = "7_days"
-
-
-def _prefer_live_zabbix_v1_first(settings: dict) -> bool:
-    preference = (settings or {}).get("prefer_version") or (settings or {}).get("preferred_version")
-    if str(preference or "").strip().casefold() == "v1":
-        return True
-    if str(preference or "").strip().casefold() == "v2":
-        return False
-    order = (settings or {}).get("version_order") or (settings or {}).get("preferred_order")
-    if isinstance(order, (list, tuple)) and order:
-        return str(order[0] or "").strip().casefold() == "v1"
-    return bool((settings or {}).get("prefer_v1_first", False))
-
-
-def live_zabbix_detection_node_lists(config: dict) -> dict:
-    monitor_settings = (config or {}).get(LIVE_MONITOR_CONFIG_KEY, {}) if isinstance(config, dict) else {}
-    version_lists = monitor_settings.get("live_zabbix_node_version_lists", {}) if isinstance(monitor_settings, dict) else {}
-    return version_lists if isinstance(version_lists, dict) else {}
-
-
-def match_live_zabbix_detection_host(config: dict, host: str, ip: str = "") -> dict:
-    """Match a Live Zabbix host against configured v2/v1 detection node lists."""
-    version_lists = live_zabbix_detection_node_lists(config)
-
-    order = ("v1", "v2") if _prefer_live_zabbix_v1_first(version_lists) else ("v2", "v1")
-    for version in order:
-        nodes = version_lists.get(f"{version}_nodes") or []
-        result = match_zabbix_host_to_node(host, nodes, host_ip=ip)
-        if result.get("matched"):
-            result = dict(result)
-            result["version"] = str(result.get("version") or version)
-            result["source"] = version
-            return result
-
-    return {"matched": False, "version": "", "source": "unknown", "matched_by": "", "matched_alias": ""}
-
-
-def extract_live_zabbix_itemid_from_url(url: str) -> dict:
-    value = str(url or "").strip()
-    if not value:
-        return {"itemid": "", "graphid": ""}
-    parsed = urlparse(value)
-    pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    result = {"itemid": "", "graphid": ""}
-    for key, val in pairs:
-        normalized = str(key or "").strip().casefold()
-        if normalized in {"itemids", "itemids[]", "itemid"} and str(val or "").strip():
-            result["itemid"] = str(val or "").strip()
-            return result
-        if normalized == "graphid" and str(val or "").strip():
-            result["graphid"] = str(val or "").strip()
-    return result
-
-
-def discover_live_zabbix_itemid_from_urls(graph_urls=None, problem_url: str = "") -> dict:
-    graphid = ""
-    for url in list(graph_urls or []):
-        extracted = extract_live_zabbix_itemid_from_url(url)
-        if extracted.get("itemid"):
-            return {"itemid": extracted["itemid"], "reason": "", "source_url": str(url or "")}
-        graphid = graphid or extracted.get("graphid", "")
-    if graphid:
-        return {"itemid": "", "reason": "itemid не найден: найден graphid без itemid", "graphid": graphid}
-    if not list(graph_urls or []) and not str(problem_url or "").strip():
-        return {"itemid": "", "reason": "itemid не найден: нет graph_urls/problem_url"}
-    return {"itemid": "", "reason": "itemid не найден: график не найден на странице"}
-
-
-def _live_zabbix_node_value(node, *keys):
-    if not isinstance(node, dict):
-        return ""
-    for key in keys:
-        value = node.get(key)
-        if value not in (None, ""):
-            return value
-    return ""
-
-
-def live_zabbix_detection_itemid_from_node(node):
-    itemid = _live_zabbix_node_value(node, "itemid", "item_id", "detection_itemid", "detect_itemid", "history_itemid")
-    if itemid:
-        return str(itemid).strip()
-    items = node.get("items") if isinstance(node, dict) else None
-    if isinstance(items, dict):
-        for key in ("detections", "detects", "history", "default"):
-            if items.get(key):
-                return str(items[key]).strip()
-    return ""
-
-
-def live_zabbix_detection_result_text_from_node(node):
-    explicit = _live_zabbix_node_value(node, "detection_text", "check_text", "status_text")
-    if explicit:
-        return str(explicit).strip()
-    status = str(_live_zabbix_node_value(node, "detection_status", "check_status", "status") or "").strip().casefold()
-    if status in {"alert", "problem", "detections", "triggered"}:
-        return "есть сработки"
-    if status in {"ok", "no_detections", "none", "clear"}:
-        return "сработок нет"
-    has_detections = _live_zabbix_node_value(node, "has_detections", "detections_found")
-    if isinstance(has_detections, bool):
-        return "есть сработки" if has_detections else "сработок нет"
-    count = _live_zabbix_node_value(node, "detections_count", "detection_count", "alerts_count")
-    try:
-        return "есть сработки" if int(count) > 0 else "сработок нет"
-    except (TypeError, ValueError):
-        return "сработок нет"
-
-
-def build_live_zabbix_detection_status(config: dict, host: str, ip: str = "", *, force_rediscover: bool = False, graph_urls=None, problem_url: str = "") -> dict:
-    host = str(host or "").strip()
-    ip = str(ip or "").strip()
-    if not host:
-        return {"text": "нет имени узла", "status": "NO_HOST", "matched": False}
-    match = match_live_zabbix_detection_host(config, host, ip)
-    if not match.get("matched"):
-        return {"text": "узел не найден в CSV", "status": "UNMATCHED", "matched": False}
-    node = match.get("node") if isinstance(match.get("node"), dict) else {}
-    itemid = live_zabbix_detection_itemid_from_node(node)
-    url_itemid = {}
-    if not itemid:
-        url_itemid = discover_live_zabbix_itemid_from_urls(graph_urls=graph_urls, problem_url=problem_url)
-        itemid = url_itemid.get("itemid", "")
-    base = {
-        "matched": True,
-        "matched_by": match.get("matched_by", ""),
-        "matched_alias": match.get("matched_alias", ""),
-        "version": match.get("version", ""),
-        "source": match.get("source", ""),
-        "ip": ip or str(_live_zabbix_node_value(node, "ip") or ""),
-    }
-    if not itemid:
-        return {**base, "text": url_itemid.get("reason") or "itemid не найден", "status": "NO_ITEMID", "graphid": url_itemid.get("graphid", "")}
-    text = live_zabbix_detection_result_text_from_node(node)
-    return {
-        **base,
-        "text": text,
-        "status": "ALERT" if text == "есть сработки" else "OK",
-        "itemid": itemid,
-        "rediscovered": bool(force_rediscover),
-    }
 
 
 def zabbix_auth_required_from_html(html: str) -> dict:

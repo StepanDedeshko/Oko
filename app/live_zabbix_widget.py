@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, build_live_zabbix_detection_status, ensure_live_monitor_defaults, split_items_by_duty_filter
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
@@ -118,7 +118,6 @@ class LiveZabbixMonitorWidget(QWidget):
         self._redmine_ip_lookup_callback = None
         self._redmine_ip_lookup_total = 0
         self.last_separator_rows = []
-        self.detection_statuses = {}
         self._parse_attempts = []
         self._monitor_started = False
         self._zabbix_auth_retrying = False
@@ -230,7 +229,6 @@ class LiveZabbixMonitorWidget(QWidget):
             "Узел сети",
             "Проблема",
             "Длительность",
-            "Сработки",
             "Подтверждено",
             "Действия",
             "Теги",
@@ -283,7 +281,7 @@ class LiveZabbixMonitorWidget(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
-        defaults = [105, 110, 42, 145, 420, 76, 110, 86, 120, 130]
+        defaults = [105, 110, 42, 145, 460, 76, 86, 120, 130]
         widths = self.settings.get("table_column_widths") or defaults
         self._restoring_column_widths = True
         for index, width in enumerate(defaults):
@@ -963,9 +961,6 @@ class LiveZabbixMonitorWidget(QWidget):
                 self._append_timeline_separator_row(table_row, separator_label)
                 table_row += 1
 
-            if item.key not in self.detection_statuses:
-                self._complete_detection_check(item.key, update_cell=False)
-
             self.table.insertRow(table_row)
             values = [
                 item.started_at,
@@ -974,7 +969,6 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.host,
                 item.trigger_name,
                 item.duration,
-                self._detection_status_text(item),
                 item.ack_text or ("Да" if item.acknowledged else "Нет"),
                 item.actions_text or "—",
                 item.tags,
@@ -984,7 +978,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 cell = QTableWidgetItem(str(value or ""))
                 cell.setData(Qt.UserRole + 1, item.key)
 
-                if column in {0, 1, 2, 5, 6, 7}:
+                if column in {0, 1, 2, 5, 6}:
                     cell.setTextAlignment(Qt.AlignCenter)
 
                 if column == 1:
@@ -993,15 +987,12 @@ class LiveZabbixMonitorWidget(QWidget):
                         cell.setBackground(QColor(color))
                         cell.setForeground(QColor("#000000"))
 
-                if column == 7 and (item.ack_url or item.problem_url):
+                if column == 6 and (item.ack_url or item.problem_url):
                     cell.setForeground(self._clickable_cell_foreground())
                     cell.setToolTip("Правый клик: открыть подтверждение Zabbix")
                     cell.setData(Qt.UserRole, item.ack_url or item.problem_url)
 
                 if column == 6:
-                    self._style_detection_cell(cell, item)
-
-                if column == 7:
                     ack_text = str(value or "").strip().casefold()
                     if ack_text in {"да", "yes"}:
                         cell.setForeground(QColor("#2e7d32"))
@@ -1018,12 +1009,11 @@ class LiveZabbixMonitorWidget(QWidget):
                     cell.setToolTip("Правый клик: открыть график/проблему")
                     cell.setData(Qt.UserRole, {"graph_urls": list(item.graph_urls), "problem_url": item.problem_url})
 
-                if column == 8 and str(value or "").strip() == "—":
+                if column == 7 and str(value or "").strip() == "—":
                     cell.setTextAlignment(Qt.AlignCenter)
                     cell.setForeground(QColor("#8b9aa5"))
 
-                # Backward-compatibility marker for tests from the pre-detection layout: if column == 7 and item.actions_tooltip
-                if column == 8 and item.actions_tooltip:
+                if column == 7 and item.actions_tooltip:
                     cell.setToolTip(item.actions_tooltip)
 
                 self.table.setItem(table_row, column, cell)
@@ -1041,153 +1031,6 @@ class LiveZabbixMonitorWidget(QWidget):
         else:
             self.poll_status_label.setText(ZERO_PROBLEMS_MESSAGE)
         self._update_diagnostics(payload or {"safe_debug": {}, "items": []})
-
-    def _detection_status_for_item(self, item):
-        statuses = self.detection_statuses if isinstance(self.detection_statuses, dict) else {}
-        key = getattr(item, "key", "")
-        host = str(getattr(item, "host", "") or "").strip()
-        for candidate in (key, host, host.casefold()):
-            if candidate and isinstance(statuses.get(candidate), dict):
-                return statuses[candidate]
-        return {}
-
-    def _detection_status_text(self, item):
-        host = str(getattr(item, "host", "") or "").strip()
-        if not host:
-            return "нет имени узла"
-        state = self._detection_status_for_item(item)
-        if state:
-            if state.get("matched") is False or state.get("match_status") == "unmatched":
-                return "узел не найден в CSV"
-            return str(state.get("text") or state.get("status") or state.get("message") or "проверяется").strip() or "проверяется"
-        return "проверяется"
-
-    def _style_detection_cell(self, cell, item):
-        text = str(cell.text() or "").casefold()
-        if text == "-":
-            cell.setText("проверяется")
-        if "не найден" in text or "нет имени" in text:
-            cell.setForeground(QColor("#c62828"))
-        elif "alert" in text or "нет сработ" in text:
-            cell.setForeground(QColor("#e97659"))
-        else:
-            cell.setForeground(self._clickable_cell_foreground())
-        state = self._detection_status_for_item(item)
-        tooltip = str(state.get("tooltip") or state.get("message") or cell.text() or "") if isinstance(state, dict) else str(cell.text() or "")
-        if tooltip:
-            cell.setToolTip(tooltip)
-
-    def _detection_item_for_key(self, key):
-        if key in self.current_snapshot:
-            return self.current_snapshot[key]
-        if key in self.all_snapshot:
-            return self.all_snapshot[key]
-        return None
-
-    def _detection_host_ip_for_item(self, item):
-        if item is None:
-            return ""
-        for attr in ("host_ip", "ip"):
-            value = getattr(item, attr, "")
-            if value:
-                return str(value).strip()
-        return self._redmine_item_ip_text(item)
-
-    def _record_detection_status(self, key, status):
-        self.detection_statuses[key] = status
-        item = self._detection_item_for_key(key)
-        host = str(getattr(item, "host", "") or "").strip() if item is not None else ""
-        if host:
-            self.detection_statuses[host] = status
-            self.detection_statuses[host.casefold()] = status
-
-    def _complete_detection_check(self, key, *, force_rediscover=False, update_cell=True):
-        item = self._detection_item_for_key(key)
-        host = str(getattr(item, "host", "") or "").strip() if item is not None else ""
-        ip = self._detection_host_ip_for_item(item)
-        status = build_live_zabbix_detection_status(
-            self.config,
-            host,
-            ip,
-            force_rediscover=force_rediscover,
-            graph_urls=list(getattr(item, "graph_urls", []) or []) if item is not None else [],
-            problem_url=str(getattr(item, "problem_url", "") or "") if item is not None else "",
-        )
-        self._record_detection_status(key, status)
-        if update_cell:
-            self._update_detection_cell_for_key(key)
-        if (
-            item is not None
-            and status.get("status") == "NO_ITEMID"
-            and str(getattr(item, "problem_url", "") or "").strip()
-            and not self._detection_itemid_from_graph_urls(item)
-            and (force_rediscover or status.get("text") == "itemid не найден: график не найден на странице")
-        ):
-            self._start_detection_graph_lookup(key, item)
-        return status
-
-    @staticmethod
-    def _detection_itemid_from_graph_urls(item):
-        from app.live_zabbix import extract_live_zabbix_itemid_from_url
-        for url in list(getattr(item, "graph_urls", []) or []):
-            itemid = extract_live_zabbix_itemid_from_url(url).get("itemid", "")
-            if itemid:
-                return itemid
-        return ""
-
-    def _start_detection_graph_lookup(self, key, item):
-        self._record_detection_status(key, {"text": "поиск itemid", "status": "LOOKUP", "matched": True})
-        self._update_detection_cell_for_key(key)
-
-        def after_lookup(_items):
-            status = build_live_zabbix_detection_status(
-                self.config,
-                str(getattr(item, "host", "") or ""),
-                self._detection_host_ip_for_item(item),
-                force_rediscover=True,
-                graph_urls=list(getattr(item, "graph_urls", []) or []),
-                problem_url=str(getattr(item, "problem_url", "") or ""),
-            )
-            self._record_detection_status(key, status)
-            self._update_detection_cell_for_key(key)
-
-        self._enrich_redmine_graph_links([item], after_lookup)
-
-    def _update_detection_cell_for_key(self, key):
-        if not hasattr(self, "table") or self.table is None:
-            return
-        for row in range(self.table.rowCount()):
-            marker = self.table.item(row, 0)
-            if marker is None or marker.data(Qt.UserRole + 1) != key:
-                continue
-            cell = self.table.item(row, 6)
-            item = self._detection_item_for_key(key)
-            if cell is not None and item is not None:
-                cell.setText(self._detection_status_text(item))
-                self._style_detection_cell(cell, item)
-            return
-
-    def check_detection_now(self, key):
-        return self._complete_detection_check(key, force_rediscover=False, update_cell=True)
-
-    def rediscover_detection_itemid(self, key):
-        return self._complete_detection_check(key, force_rediscover=True, update_cell=True)
-
-    def open_detection_history(self, itemid):
-        base = str(self.problems_url() or "")
-        url = QUrl(base).resolved(QUrl(f"history.php?action=showgraph&itemids[]={itemid}"))
-        QDesktopServices.openUrl(url)
-
-    def copy_detection_values(self, key):
-        from PySide6.QtWidgets import QApplication
-        item = self.current_snapshot.get(key) or self.all_snapshot.get(key)
-        state = self.detection_statuses.get(key, {}) if isinstance(self.detection_statuses, dict) else {}
-        parts = [
-            str(getattr(item, "host", "") or "") if item else "",
-            str(state.get("ip", "") or "") if isinstance(state, dict) else "",
-            str(state.get("itemid", "") or "") if isinstance(state, dict) else "",
-        ]
-        QApplication.clipboard().setText(" | ".join(part for part in parts if part))
 
     @staticmethod
     def _severity_color(level, severity_class="", severity_text=""):
@@ -3482,18 +3325,6 @@ class LiveZabbixMonitorWidget(QWidget):
                 action.setEnabled(False)
 
         elif column == 6:
-            check_action = menu.addAction("Проверить сработки сейчас")
-            check_action.triggered.connect(lambda _checked=False, row_key=str(key): self.check_detection_now(row_key))
-            retry_action = menu.addAction("Переискать itemid")
-            retry_action.triggered.connect(lambda _checked=False, row_key=str(key): self.rediscover_detection_itemid(row_key))
-            state = self.detection_statuses.get(key, {}) if isinstance(self.detection_statuses, dict) else {}
-            itemid = str(state.get("itemid") or "").strip() if isinstance(state, dict) else ""
-            if itemid:
-                history_action = menu.addAction("Открыть history")
-                history_action.triggered.connect(lambda _checked=False, iid=itemid: self.open_detection_history(iid))
-            menu.addAction("Copy host/IP/itemid").triggered.connect(lambda _checked=False, row_key=str(key): self.copy_detection_values(row_key))
-
-        elif column == 7:
             if payload:
                 action = menu.addAction("Открыть подтверждение Zabbix")
                 action.triggered.connect(lambda _checked=False, url=str(payload): self.open_acknowledgement(url))
