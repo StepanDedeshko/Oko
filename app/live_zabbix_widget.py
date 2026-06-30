@@ -43,7 +43,7 @@ from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 
 DOM_PARSER_SCRIPT = DOM_PARSER_SCRIPT_PLACEHOLDER
-ZABBIX_TASK_COMMENT_RE = re.compile(r"Задача Redmine #\d+: https?://\S+|Задача на ММ #\d+(?:: https?://\S+)?")
+ZABBIX_TASK_COMMENT_RE = re.compile(r"Задача Redmine #\d+: https?://\S+|Задача на ММ #\d+(?:: https?://\S+)?|Задача на ММ: \d{6,}|Задача ММ: \d{6,}|ММ: \d{6,}|OTRS: \d{6,}")
 
 def build_redmine_zabbix_comment(issue_number, issue_url):
     return f"Задача Redmine #{issue_number}: {issue_url}"
@@ -4018,14 +4018,96 @@ class LiveZabbixMonitorWidget(QWidget):
                 self.logger.warning("Task comment scan failed to load: %s", url)
                 self._scan_next_task_comment_page()
                 return
-            self._task_comment_scan_view.page().runJavaScript("String(document.body ? document.body.innerText : '')", done)
+            self._task_comment_scan_view.page().runJavaScript(self._task_comment_scan_script(), done)
 
-        def done(text):
-            self._task_comment_scan_found.extend(ZABBIX_TASK_COMMENT_RE.findall(str(text or "")))
+        def done(result):
+            try:
+                payload = json.loads(result or "{}") if isinstance(result, str) else (result or {})
+            except Exception:
+                payload = {}
+            comments = [str(value) for value in payload.get("comments", []) if str(value or "").strip()]
+            self._task_comment_scan_found.extend(comments)
+            self.logger.info(
+                "Task comment scan diagnostics: current_url=%s hat_eventactions_widget_exists=%s action_rows=%s message_rows=%s extracted=%s selected_unique=%s",
+                payload.get("current_url", url),
+                payload.get("hat_eventactions_widget_exists"),
+                payload.get("action_rows"),
+                payload.get("message_rows"),
+                comments,
+                sorted(set(self._task_comment_scan_found)),
+            )
             self._scan_next_task_comment_page()
 
         self._task_comment_scan_view.loadFinished.connect(loaded)
         self._task_comment_scan_view.load(QUrl(url))
+
+    @staticmethod
+    def _task_comment_scan_script():
+        return r"""
+(function() {
+  function text(element) {
+    return String(element ? (element.innerText || element.textContent || '') : '').replace(/\s+/g, ' ').trim();
+  }
+  function titleText(element) {
+    if (!element) return '';
+    var parts = [text(element), String(element.getAttribute('title') || '')];
+    Array.from(element.querySelectorAll('[title]')).forEach(function(child) { parts.push(String(child.getAttribute('title') || '')); });
+    return parts.join(' ');
+  }
+  function normalizeCandidate(value, allowPlainNumber) {
+    var source = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!source) return [];
+    var found = [];
+    var redmine = source.match(/Задача\s+Redmine\s+#(\d+)\s*:\s*(https?:\/\/\S+)/i);
+    if (redmine) found.push('Задача Redmine #' + redmine[1] + ': ' + redmine[2]);
+    var mmHashUrl = source.match(/Задача\s+на\s+ММ\s+#(\d+)\s*:\s*(https?:\/\/\S+)/i);
+    if (mmHashUrl) found.push('Задача на ММ #' + mmHashUrl[1] + ': ' + mmHashUrl[2]);
+    var mmHash = source.match(/Задача\s+на\s+ММ\s+#(\d{6,})\b/i);
+    if (mmHash && !mmHashUrl) found.push('Задача на ММ: ' + mmHash[1]);
+    var labelNumber = source.match(/(?:Задача\s+на\s+ММ|Задача\s+ММ|ММ|OTRS)\s*:\s*(\d{6,})\b/i);
+    if (labelNumber) found.push('Задача на ММ: ' + labelNumber[1]);
+    if (allowPlainNumber) {
+      var plain = source.match(/^\D*(\d{6,})\D*$/);
+      if (plain) found.push('Задача на ММ: ' + plain[1]);
+    }
+    return found;
+  }
+  function headerIndexes(table) {
+    var headers = Array.from(table.querySelectorAll('thead th')).map(function(th) { return text(th).toLowerCase(); });
+    return {
+      action: headers.findIndex(function(value) { return /действие|action/.test(value); }),
+      message: headers.findIndex(function(value) { return /сообщение\s*\/\s*команда|message|command/.test(value); })
+    };
+  }
+  var widget = document.querySelector('#hat_eventactions_widget, #hat_eventactions');
+  var rows = widget ? Array.from(widget.querySelectorAll('tbody tr, tr')).filter(function(row) { return row.querySelectorAll('td').length; }) : [];
+  var comments = [];
+  var messageRows = 0;
+  rows.forEach(function(row) {
+    var table = row.closest('table');
+    var indexes = table ? headerIndexes(table) : {action: -1, message: -1};
+    var cells = Array.from(row.querySelectorAll('td'));
+    var actionCell = indexes.action >= 0 ? cells[indexes.action] : row;
+    var messageCell = indexes.message >= 0 ? cells[indexes.message] : null;
+    var markerText = titleText(actionCell);
+    var hasMessageMarker = !!row.querySelector('.icon-action-msg') || /Сообщение|Message/i.test(markerText);
+    if (!hasMessageMarker) return;
+    messageRows += 1;
+    var messageText = messageCell ? text(messageCell) : '';
+    var rowText = text(row);
+    normalizeCandidate(messageText, true).concat(normalizeCandidate(rowText, false)).forEach(function(comment) {
+      if (comments.indexOf(comment) === -1) comments.push(comment);
+    });
+  });
+  return JSON.stringify({
+    current_url: String(window.location.href || ''),
+    hat_eventactions_widget_exists: !!widget,
+    action_rows: rows.length,
+    message_rows: messageRows,
+    comments: comments
+  });
+})();
+"""
 
 
     def open_graphs(self, urls):

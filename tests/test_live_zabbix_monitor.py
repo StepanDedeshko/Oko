@@ -481,6 +481,7 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
 
     def test_strict_redmine_mm_comment_regex(self):
         self.assertIn('Задача Redmine #\\d+: https?://\\S+|Задача на ММ #\\d+(?:: https?://\\S+)?', self.widget_source)
+        self.assertIn('Задача на ММ: \\d{6,}', self.widget_source)
 
     def test_no_desktop_open_for_redmine_create_url(self):
         self.assertIn("RedmineCreateDialog(profile, redmine_url", self.widget_source)
@@ -524,6 +525,22 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
 
     def test_mm_otrs_comment_format_supports_url_and_number_only(self):
         self.assertIn("Задача на ММ #\\d+(?:: https?://\\S+)?", self.widget_source)
+
+    def test_manual_scanner_parses_eventactions_message_rows(self):
+        self.assertIn("def _task_comment_scan_script", self.widget_source)
+        self.assertIn("#hat_eventactions_widget, #hat_eventactions", self.widget_source)
+        self.assertIn(".icon-action-msg", self.widget_source)
+        self.assertIn("сообщение\\s*\\/\\s*команда", self.widget_source)
+
+    def test_legacy_plain_mm_number_only_from_message_row_is_normalized(self):
+        self.assertIn("allowPlainNumber", self.widget_source)
+        self.assertIn("\\d{6,}", self.widget_source)
+        self.assertIn("Задача на ММ: ' + plain[1]", self.widget_source)
+        self.assertNotIn("document.body.innerText : '')\", done", self.widget_source)
+
+    def test_old_mm_otrs_formats_are_normalized(self):
+        for marker in ("Задача\\s+на\\s+ММ", "Задача\\s+ММ", "ММ|OTRS", "Задача на ММ: "):
+            self.assertIn(marker, self.widget_source)
 
     def test_app_version_unchanged(self):
         self.assertIn('APP_VERSION = "0.3.1"', self.app_info)
