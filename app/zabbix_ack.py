@@ -144,6 +144,6 @@ def zabbix_acknowledgement_js(comment: str, ack_required: bool) -> str:
   const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a'));
   const submit = buttons.find(el => /Update|Обновить|Acknowledge|Подтвердить|Save|Сохранить/i.test(text(el) || el.value || el.title)) || document.querySelector('button[type="submit"], input[type="submit"]');
   const submitted = (commentAdded || ackTouched) ? click(submit) : false;
-  return JSON.stringify({{ok:true, duplicate:duplicate, comment_added:commentAdded, ack_touched:ackTouched, submitted:submitted, has_message_field:!!messageField, has_submit:!!submit}});
+  return JSON.stringify({{ok:true, duplicate:duplicate, ack_required:ackRequired, comment_added:commentAdded, ack_touched:ackTouched, submitted:submitted, has_message_field:!!messageField, has_submit:!!submit}});
 }})();
 """

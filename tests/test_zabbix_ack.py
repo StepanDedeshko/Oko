@@ -78,7 +78,7 @@ class ZabbixAutomaticAcknowledgementTests(unittest.TestCase):
 
     def test_js_contains_selector_fallbacks_and_markers(self):
         js = zabbix_acknowledgement_js("Задача Redmine #12345", True)
-        for marker in ["message", "comment", "note", "Update", "Обновить", "Acknowledge", "Подтвердить", "Save", "Сохранить", "duplicate", "ack_touched", "submitted"]:
+        for marker in ["message", "comment", "note", "Update", "Обновить", "Acknowledge", "Подтвердить", "Save", "Сохранить", "duplicate", "ack_required", "ack_touched", "submitted"]:
             self.assertIn(marker, js)
         self.assertNotIn("Да|Yes", js)
 
@@ -97,10 +97,12 @@ class ZabbixAutomaticAcknowledgementTests(unittest.TestCase):
 
     def test_widget_success_requires_zabbix_submit_or_duplicate(self):
         source = (Path(__file__).resolve().parents[1] / "app" / "live_zabbix_widget.py").read_text(encoding="utf-8")
-        self.assertIn("elif '\"submitted\":true' in text", source)
+        self.assertIn("if submitted:", source)
+        self.assertIn("elif duplicate and not ack_required:", source)
         self.assertIn("Комментарий Zabbix уже есть, пропуск", source)
+        self.assertIn("комментарий уже есть, но подтверждение не отправлено", source)
         self.assertIn("submit не выполнен", source)
-        self.assertNotIn("or '\"comment_added\":true' in text or '\"ack_touched\":true' in text", source)
+        self.assertNotIn("if '\"duplicate\":true' in text", source)
 
 
 if __name__ == "__main__":

@@ -3431,15 +3431,35 @@ class LiveZabbixMonitorWidget(QWidget):
     def _on_zabbix_ack_js_finished(self, result, view, entry):
         text = str(result or "")
         target = entry["target"]
-        if '"duplicate":true' in text:
-            self.poll_status_label.setText("Комментарий Zabbix уже есть, пропуск")
-            self._zabbix_ack_stats["skipped"] += 1
-        elif '"submitted":true' in text:
+        try:
+            payload = json.loads(text) if text else {}
+        except (TypeError, ValueError):
+            payload = {}
+
+        submitted = bool(payload.get("submitted")) or '"submitted":true' in text
+        duplicate = bool(payload.get("duplicate")) or '"duplicate":true' in text
+        ack_required = bool(payload.get("ack_required"))
+        comment_or_ack_touched = (
+            bool(payload.get("comment_added"))
+            or bool(payload.get("ack_touched"))
+            or '"comment_added":true' in text
+            or '"ack_touched":true' in text
+        )
+
+        if submitted:
             self.poll_status_label.setText(f"Zabbix подтверждён: {target.host} / {target.trigger}")
             self._zabbix_ack_stats["success"] += 1
+        elif duplicate and not ack_required:
+            self.poll_status_label.setText("Комментарий Zabbix уже есть, пропуск")
+            self._zabbix_ack_stats["skipped"] += 1
         else:
             self._zabbix_ack_stats["errors"] += 1
-            reason = "submit не выполнен" if ('"comment_added":true' in text or '"ack_touched":true' in text) else "форма не найдена"
+            if duplicate and ack_required:
+                reason = "комментарий уже есть, но подтверждение не отправлено"
+            elif comment_or_ack_touched:
+                reason = "submit не выполнен"
+            else:
+                reason = "форма не найдена"
             self.poll_status_label.setText(f"Ошибка подтверждения Zabbix: {reason} ({text[:160]})")
             self.logger.warning("Zabbix acknowledgement JS did not submit: %s", text[:500])
         safe_delete_web_view(view, logger=self.logger, context="LiveZabbixMonitorWidget automatic Zabbix acknowledgement")
