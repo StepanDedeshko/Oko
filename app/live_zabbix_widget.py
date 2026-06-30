@@ -30,10 +30,11 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QApplication,
 )
 
 from app.config import save_config
-from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter
+from app.live_zabbix import DOM_PARSER_SCRIPT_PLACEHOLDER, JS_HEALTH_CHECK_SCRIPT, JS_SMOKE_TEST_SCRIPT, LIVE_PERIOD_7_DAYS, LIVE_PERIOD_ALL, LIVE_PERIOD_TODAY, SnapshotDiff, apply_live_zabbix_table_filters, diff_snapshots, ensure_live_monitor_defaults, split_items_by_duty_filter, detect_node_version, normalize_host_name, detection_cache_get, resolve_node_version_details, live_zabbix_node_version_lists_from_config, safe_detection_identifier
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
@@ -232,6 +233,7 @@ class LiveZabbixMonitorWidget(QWidget):
             "Подтверждено",
             "Действия",
             "Теги",
+            "Сработки",
         ]
         self.table = QTableWidget(0, len(self.table_columns))
         self.table.setHorizontalHeaderLabels(self.table_columns)
@@ -281,7 +283,7 @@ class LiveZabbixMonitorWidget(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
-        defaults = [105, 110, 42, 145, 460, 76, 86, 120, 130]
+        defaults = [105, 110, 42, 145, 420, 76, 86, 120, 130, 155]
         widths = self.settings.get("table_column_widths") or defaults
         self._restoring_column_widths = True
         for index, width in enumerate(defaults):
@@ -962,6 +964,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 table_row += 1
 
             self.table.insertRow(table_row)
+            detection_status = self._detection_cell_payload(item)
             values = [
                 item.started_at,
                 item.severity,
@@ -972,6 +975,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 item.ack_text or ("Да" if item.acknowledged else "Нет"),
                 item.actions_text or "—",
                 item.tags,
+                detection_status.get("text", "не настроено"),
             ]
 
             for column, value in enumerate(values):
@@ -1016,6 +1020,12 @@ class LiveZabbixMonitorWidget(QWidget):
                 if column == 7 and item.actions_tooltip:
                     cell.setToolTip(item.actions_tooltip)
 
+                if column == 9:
+                    cell.setToolTip(detection_status.get("tooltip", ""))
+                    cell.setData(Qt.UserRole, detection_status)
+                    if detection_status.get("itemid"):
+                        cell.setForeground(self._clickable_cell_foreground())
+
                 self.table.setItem(table_row, column, cell)
 
             table_row += 1
@@ -1031,6 +1041,56 @@ class LiveZabbixMonitorWidget(QWidget):
         else:
             self.poll_status_label.setText(ZERO_PROBLEMS_MESSAGE)
         self._update_diagnostics(payload or {"safe_debug": {}, "items": []})
+
+    @staticmethod
+    def _safe_detection_log_host(host):
+        return safe_detection_identifier(host, prefix="host")
+
+
+    def _detection_cell_payload(self, item):
+        host = str(getattr(item, "host", "") or "").strip()
+        ip = str(getattr(item, "host_ip", "") or "").strip()
+        node_cfg = live_zabbix_node_version_lists_from_config(self.settings) or live_zabbix_node_version_lists_from_config(self.config)
+        discovery_cfg = self.settings.get("live_zabbix_detection_item_discovery", {})
+        details = resolve_node_version_details(host, ip, {"live_zabbix_node_version_lists": node_cfg}) if node_cfg.get("enabled", True) else {"version": "unknown", "source": "", "aliases": [], "matched_alias": "", "reason": "discovery disabled"}
+        version = details.get("version", "unknown")
+        source = details.get("source") or ("csv_" + version if version in {"v1", "v2"} else "fallback")
+        self.logger.info("Detection node version resolved: host=%s version=%s source=%s", self._safe_detection_log_host(host), version, source or "unknown")
+        if version == "unknown":
+            self.logger.info("Detection node version not found: host=%s", self._safe_detection_log_host(host))
+        cache = self.settings.setdefault("live_zabbix_detection_cache", {})
+        entry = detection_cache_get(cache, host, int(discovery_cfg.get("discovery_ttl_sec", 86400) or 86400), int(discovery_cfg.get("negative_ttl_sec", 300) or 300))
+        if version == "unknown" and not entry:
+            text = "узел не найден в CSV" if node_cfg.get("v1_nodes") or node_cfg.get("v2_nodes") else "не настроено"
+            reason = text
+        elif entry and entry.get("itemid"):
+            text = f"itemid: {entry.get('itemid')}"
+            reason = entry.get("reason", "itemid найден в cache")
+        elif entry and entry.get("status") == "itemid_not_found":
+            text = "itemid не найден"
+            reason = entry.get("reason", "negative cache")
+        else:
+            text = "itemid не найден" if version in {"v1", "v2"} else ("узел не найден в CSV" if node_cfg.get("v1_nodes") or node_cfg.get("v2_nodes") else "не настроено")
+            reason = "itemid не найден по aliases" if version in {"v1", "v2"} else text
+            self.logger.info("Detection item discovery failed: host=%s version=%s reason=item_not_found", self._safe_detection_log_host(host), version)
+        aliases = discovery_cfg.get(f"{version}_item_aliases", []) if version in {"v1", "v2"} else []
+        tooltip = "\n".join([
+            f"Узел: {host or '-'}",
+            f"Полное имя Zabbix: {host or '-'}",
+            f"Short host для CSV: {details.get('matched_alias') or '-'}",
+            f"Проверяли alias: {', '.join(details.get('aliases') or []) or '-'}",
+            f"IP: {ip or '-'}",
+            f"Версия по CSV: {version}",
+            f"Источник: {source}",
+            f"Item: {(entry or {}).get('item_name', '-')}",
+            f"ItemID: {(entry or {}).get('itemid', '-')}",
+            f"Последнее значение: {(entry or {}).get('last_value', '-')}",
+            f"Последнее время: {(entry or {}).get('last_timestamp', '-')}",
+            f"Статус: {text}",
+            f"Причина: {details.get('reason') or reason}",
+            ("Искали aliases: " + ", ".join(map(str, aliases)) if text == "itemid не найден" else ""),
+        ]).strip()
+        return {"text": text, "tooltip": tooltip, "host": host, "ip": ip, "version": version, "source": source, "matched_alias": details.get("matched_alias", ""), "itemid": (entry or {}).get("itemid", "")}
 
     @staticmethod
     def _severity_color(level, severity_class="", severity_text=""):
@@ -3331,6 +3391,17 @@ class LiveZabbixMonitorWidget(QWidget):
             else:
                 action = menu.addAction("Ссылка на подтверждение не найдена")
                 action.setEnabled(False)
+
+        if column == 9:
+            data = payload if isinstance(payload, dict) else {}
+            menu.addAction("Проверить сработки сейчас")
+            menu.addAction("Найти itemid заново")
+            hist = menu.addAction("Открыть history")
+            hist.setEnabled(bool(data.get("itemid")))
+            menu.addAction("Открыть страницу items узла")
+            menu.addAction("Копировать узел").triggered.connect(lambda _checked=False, v=data.get("host", ""): QApplication.clipboard().setText(str(v)))
+            menu.addAction("Копировать IP").triggered.connect(lambda _checked=False, v=data.get("ip", ""): QApplication.clipboard().setText(str(v)))
+            menu.addAction("Копировать itemid").triggered.connect(lambda _checked=False, v=data.get("itemid", ""): QApplication.clipboard().setText(str(v)))
 
         if menu.actions():
             menu.addSeparator()

@@ -5,7 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from html.parser import HTMLParser
+from urllib.parse import parse_qs, unquote, urlparse
+import csv
+import hashlib
+import io
 import json
+import re
+import time
 
 from app.trigger_model import ZabbixProblemSnapshotItem, build_problem_key
 from app.duty_zabbix import (
@@ -22,6 +29,277 @@ LIVE_PERIOD_ALL = "all"
 LIVE_PERIOD_TODAY = "today"
 LIVE_PERIOD_7_DAYS = "7_days"
 
+
+DEFAULT_NODE_VERSION_LISTS_CONFIG = {
+    "enabled": True,
+    "v1_nodes": [],
+    "v2_nodes": [],
+    "match_by": ["host", "ip"],
+    "prefer_csv_version": True,
+}
+
+DEFAULT_DETECTION_ITEM_DISCOVERY_CONFIG = {
+    "enabled": True,
+    "v2_item_aliases": ["Количество_сработок", "Количество сработок", "detection", "detect", "сработок"],
+    "v1_item_aliases": ["detected_human", "detected human", "human", "сработок"],
+    "discovery_ttl_sec": 86400,
+    "negative_ttl_sec": 300,
+}
+
+def normalize_host_name(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+def safe_detection_identifier(value: str, *, prefix: str = "host") -> str:
+    text = normalize_host_name(value)
+    if not text:
+        return f"{prefix}:empty"
+    digest = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return f"{prefix}:sha256:{digest}:len:{len(text)}"
+
+def normalize_ip(value: str) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)", text)
+    return match.group(0) if match else text
+
+def short_host_after_dash(host: str) -> str:
+    full = normalize_host_name(host)
+    if not full:
+        return ""
+    spaced_parts = re.split(r"\s[-–—]\s", full)
+    if len(spaced_parts) > 1 and spaced_parts[-1].strip():
+        return normalize_host_name(spaced_parts[-1])
+    for separator in ("-", "–", "—"):
+        if separator not in full:
+            continue
+        short = full.rsplit(separator, 1)[-1].strip()
+        if short:
+            return normalize_host_name(short)
+    return full
+
+def host_match_aliases(host: str) -> list[str]:
+    aliases = []
+    for candidate in (normalize_host_name(host), short_host_after_dash(host)):
+        if candidate and candidate not in aliases:
+            aliases.append(candidate)
+    return aliases
+
+def hosts_match(zabbix_host: str, csv_host: str) -> bool:
+    csv_key = normalize_host_name(csv_host)
+    return bool(csv_key and csv_key in set(host_match_aliases(zabbix_host)))
+
+def _node_indexes(nodes):
+    hosts, ips = set(), set()
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
+        host = node.get("normalized_host") or normalize_host_name(node.get("host", ""))
+        ip = normalize_ip(node.get("ip", ""))
+        if host:
+            hosts.add(host)
+        if ip:
+            ips.add(ip)
+    return hosts, ips
+
+def resolve_node_version_details(host: str, ip: str, config: dict) -> dict:
+    cfg = live_zabbix_node_version_lists_from_config(config) or (config or {})
+    aliases = host_match_aliases(host)
+    ip_key = normalize_ip(ip)
+    v1_hosts, v1_ips = _node_indexes(cfg.get("v1_nodes", []))
+    v2_hosts, v2_ips = _node_indexes(cfg.get("v2_nodes", []))
+    v1_host_alias = next((alias for alias in aliases if alias in v1_hosts), "")
+    v2_host_alias = next((alias for alias in aliases if alias in v2_hosts), "")
+    v1_ip_match = bool(ip_key and ip_key in v1_ips)
+    v2_ip_match = bool(ip_key and ip_key in v2_ips)
+    in_v1 = bool(v1_host_alias or v1_ip_match)
+    in_v2 = bool(v2_host_alias or v2_ip_match)
+    version = "v2" if in_v2 else ("v1" if in_v1 else "unknown")
+    matched_alias = v2_host_alias or v1_host_alias or ""
+    match_kind = "host" if matched_alias else ("ip" if (v2_ip_match or v1_ip_match) else "")
+    source = "csv_" + version if version in {"v1", "v2"} else ""
+    reason = ""
+    if in_v1 and in_v2:
+        reason = "node_version_conflict: найден в v1 и v2, выбран v2"
+    elif version == "unknown":
+        reason = "CSV v1/v2: совпадений нет"
+    return {
+        "version": version,
+        "source": source,
+        "matched_alias": matched_alias,
+        "match_kind": match_kind,
+        "aliases": aliases,
+        "ip": ip_key,
+        "conflict": bool(in_v1 and in_v2),
+        "reason": reason,
+    }
+
+def detect_node_version(host: str, ip: str, config: dict) -> str:
+    return resolve_node_version_details(host, ip, config).get("version", "unknown")
+
+def normalize_csv_header_name(value: str) -> str:
+    return normalize_host_name(value).replace("_", " ")
+
+def compact_csv_header_name(value: str) -> str:
+    return normalize_csv_header_name(value).replace(" ", "")
+
+def live_zabbix_node_version_lists_from_config(config_or_settings: dict) -> dict:
+    data = config_or_settings or {}
+    if "live_zabbix_node_version_lists" in data:
+        return data.get("live_zabbix_node_version_lists") or {}
+    monitor = data.get(LIVE_MONITOR_CONFIG_KEY, {}) if isinstance(data, dict) else {}
+    return monitor.get("live_zabbix_node_version_lists", {}) if isinstance(monitor, dict) else {}
+
+def parse_detection_node_csv_bytes(data: bytes, version: str) -> list[dict]:
+    raw = bytes(data or b"")
+    for enc in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+    sample = text[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=";,\t")
+    except csv.Error:
+        dialect = csv.excel
+        dialect.delimiter = ";" if ";" in sample else ("\t" if "\t" in sample else ",")
+    rows = [list(r) for r in csv.reader(io.StringIO(text), dialect) if any(str(c).strip() for c in r)]
+    if not rows:
+        return []
+    ip_aliases = {"ip", "адрес", "ipадрес", "address", "ipсервера", "ipserver"}
+    host_aliases = {"имя", "host", "server", "узел", "сервер", "имясервера", "имяузла"}
+    first = [compact_csv_header_name(c) for c in rows[0]]
+    has_header = any(c in ip_aliases or c in host_aliases for c in first)
+    ip_idx, host_idx = 0, 1
+    if has_header:
+        for i, c in enumerate(first):
+            if c in ip_aliases: ip_idx = i
+            if c in host_aliases: host_idx = i
+        rows = rows[1:]
+    result = []
+    seen = set()
+    for row in rows:
+        ip = normalize_ip(row[ip_idx] if ip_idx < len(row) else "")
+        host = str(row[host_idx] if host_idx < len(row) else "").strip()
+        n_host = normalize_host_name(host)
+        if not ip and not n_host:
+            continue
+        key = (ip, n_host, version)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"ip": ip, "host": host, "normalized_host": n_host, "version": version})
+    return result
+
+class _ZabbixItemLinkParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links = []
+        self._href = ""
+        self._text = []
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() == "a":
+            self._href = dict(attrs).get("href", "")
+            self._text = []
+    def handle_data(self, data):
+        if self._href:
+            self._text.append(data)
+    def handle_endtag(self, tag):
+        if tag.lower() == "a" and self._href:
+            self.links.append(("".join(self._text).strip(), self._href))
+            self._href = ""; self._text = []
+
+def extract_zabbix_detection_item_from_html(html: str, aliases) -> dict:
+    aliases_norm = [normalize_host_name(a).replace("_", " ") for a in aliases or [] if str(a).strip()]
+    parser = _ZabbixItemLinkParser(); parser.feed(str(html or ""))
+    candidates = parser.links[:]
+    for m in re.finditer(r'href=["\']([^"\']*(?:history\.php|items\.php|itemid=)[^"\']*)["\'][^>]*>(.*?)</a>', str(html or ""), re.I|re.S):
+        candidates.append((re.sub(r"<[^>]+>", " ", m.group(2)), m.group(1)))
+    for text, href in candidates:
+        hay = normalize_host_name(unquote(str(text) + " " + str(href))).replace("_", " ")
+        if aliases_norm and not any(a in hay for a in aliases_norm):
+            continue
+        parsed = urlparse(href)
+        qs = parse_qs(parsed.query)
+        itemid = (qs.get("itemid") or qs.get("itemids[]") or qs.get("itemids") or [""])[0]
+        if not itemid:
+            m = re.search(r"itemids(?:%5B%5D|\[\])?=(\d+)|itemid=(\d+)", href)
+            itemid = next((g for g in (m.groups() if m else []) if g), "")
+        if itemid:
+            return {"status": "ok", "itemid": str(itemid), "item_name": re.sub(r"\s+", " ", text).strip() or "—", "href": href}
+    return {"status": "itemid_not_found", "itemid": "", "item_name": ""}
+
+def detection_cache_get(cache: dict, host: str, ttl_sec: int = 86400, negative_ttl_sec: int = 300):
+    entry = (cache or {}).get(normalize_host_name(host))
+    if not entry: return None
+    age = time.time() - float(entry.get("discovered_at") or 0)
+    ttl = negative_ttl_sec if entry.get("status") == "itemid_not_found" else ttl_sec
+    return entry if age <= ttl else None
+
+def detection_cache_put(cache: dict, host: str, **entry):
+    key = normalize_host_name(host)
+    if not key: return cache
+    cache.setdefault(key, {}).update(entry)
+    cache[key].setdefault("discovered_at", time.time())
+    return cache
+
+
+
+FINAL_DETECTION_STATUSES = {
+    "OK", "zero", "zero_streak", "узел не найден в CSV", "itemid не найден",
+    "нет history", "нет данных", "auth", "timeout", "ошибка загрузки", "ошибка",
+}
+
+def normalize_detection_final_status(status: str) -> str:
+    value = str(status or "").strip()
+    aliases = {
+        "ok": "OK",
+        "itemid_not_found": "itemid не найден",
+        "no_history": "нет history",
+        "no_data": "нет данных",
+        "load_error": "ошибка загрузки",
+        "node_not_found": "узел не найден в CSV",
+    }
+    return aliases.get(value, value if value in FINAL_DETECTION_STATUSES else "ошибка")
+
+class DetectionCheckQueue:
+    """Small deterministic state holder for detection checks; every finish clears checking."""
+
+    def __init__(self):
+        self.queue = []
+        self.checking = set()
+        self.results = {}
+
+    def queue_check(self, key: str):
+        key = str(key or "").strip()
+        if not key:
+            return
+        if key not in self.checking:
+            self.queue.append(key)
+            self.checking.add(key)
+
+    def finish(self, key: str, status: str, reason: str = "") -> dict:
+        key = str(key or "").strip()
+        final_status = normalize_detection_final_status(status)
+        result = {"status": final_status, "reason": str(reason or final_status), "checking": False}
+        self.results[key] = result
+        self.checking.discard(key)
+        self.queue = [item for item in self.queue if item != key]
+        return result
+
+    def timeout(self, key: str, reason: str = "timeout") -> dict:
+        return self.finish(key, "timeout", reason)
+
+    def load_finished(self, key: str, ok: bool) -> dict | None:
+        if ok:
+            return None
+        return self.finish(key, "ошибка загрузки", "loadFinished(false)")
+
+    def item_not_found(self, key: str, aliases=None) -> dict:
+        suffix = ", ".join(map(str, aliases or []))
+        return self.finish(key, "itemid не найден", f"itemid не найден" + (f"; aliases: {suffix}" if suffix else ""))
+
+    def empty_history(self, key: str) -> dict:
+        return self.finish(key, "нет history", "history table has no values")
 
 def zabbix_auth_required_from_html(html: str) -> dict:
     """Detect Zabbix expired-session pages without exposing page text or secrets."""
@@ -93,7 +371,7 @@ def apply_live_zabbix_table_filters(items, *, period=LIVE_PERIOD_ALL, unprocesse
 
 
 def default_live_monitor_config() -> dict:
-    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 60, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True}
+    return {"enabled": False, "zabbix_id": "", "problems_url": "", "poll_interval_seconds": 60, "history_path": "data/live_zabbix_history.jsonl", "duty_filter_enabled": True, "live_zabbix_node_version_lists": dict(DEFAULT_NODE_VERSION_LISTS_CONFIG), "live_zabbix_detection_item_discovery": dict(DEFAULT_DETECTION_ITEM_DISCOVERY_CONFIG), "live_zabbix_detection_cache": {}}
 
 
 def ensure_live_monitor_defaults(config: dict) -> dict:
@@ -101,6 +379,13 @@ def ensure_live_monitor_defaults(config: dict) -> dict:
     defaults = default_live_monitor_config()
     for key, value in defaults.items():
         settings.setdefault(key, value)
+    node_lists = settings.setdefault("live_zabbix_node_version_lists", {})
+    for key, value in DEFAULT_NODE_VERSION_LISTS_CONFIG.items():
+        node_lists.setdefault(key, list(value) if isinstance(value, list) else value)
+    discovery = settings.setdefault("live_zabbix_detection_item_discovery", {})
+    for key, value in DEFAULT_DETECTION_ITEM_DISCOVERY_CONFIG.items():
+        discovery.setdefault(key, list(value) if isinstance(value, list) else value)
+    settings.setdefault("live_zabbix_detection_cache", {})
     try:
         settings["poll_interval_seconds"] = max(60, min(3600, int(settings.get("poll_interval_seconds", 60))))
     except (TypeError, ValueError):

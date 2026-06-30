@@ -74,7 +74,7 @@ from app.credentials import load_service_group_credentials, save_service_group_c
 from app.credentials import default_encrypted_profile_export_filename, export_profile_credentials_encrypted_file, import_profile_credentials_encrypted_file
 from app.safe_widgets import NoWheelComboBox
 from app.service_checks import ensure_service_checks_defaults
-from app.live_zabbix import ensure_live_monitor_defaults
+from app.live_zabbix import ensure_live_monitor_defaults, parse_detection_node_csv_bytes
 
 
 def clone(value):
@@ -228,6 +228,37 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
             )
         )
 
+        detection_group = QGroupBox("Сработки по узлам")
+        detection_layout = QVBoxLayout(detection_group)
+        self.detection_counts_label = QLabel()
+        detection_layout.addWidget(self.detection_counts_label)
+        import_buttons = QHBoxLayout()
+        import_v1 = QPushButton("Импорт узлов v1")
+        import_v2 = QPushButton("Импорт узлов v2")
+        clear_v1 = QPushButton("Очистить v1")
+        clear_v2 = QPushButton("Очистить v2")
+        import_v1.clicked.connect(lambda: self.import_detection_nodes("v1"))
+        import_v2.clicked.connect(lambda: self.import_detection_nodes("v2"))
+        clear_v1.clicked.connect(lambda: self.clear_detection_nodes("v1"))
+        clear_v2.clicked.connect(lambda: self.clear_detection_nodes("v2"))
+        for button in (import_v1, import_v2, clear_v1, clear_v2):
+            import_buttons.addWidget(button)
+        import_buttons.addStretch(1)
+        detection_layout.addLayout(import_buttons)
+        disc = self.settings.setdefault("live_zabbix_detection_item_discovery", {})
+        self.aliases_v1_input = QLineEdit(", ".join(disc.get("v1_item_aliases", [])))
+        self.aliases_v2_input = QLineEdit(", ".join(disc.get("v2_item_aliases", [])))
+        detection_layout.addWidget(QLabel("Aliases v1:")); detection_layout.addWidget(self.aliases_v1_input)
+        detection_layout.addWidget(QLabel("Aliases v2:")); detection_layout.addWidget(self.aliases_v2_input)
+        cache_buttons = QHBoxLayout()
+        check_node = QPushButton("Проверить выбранный узел")
+        reset_cache = QPushButton("Сбросить cache itemid")
+        reset_cache.clicked.connect(self.reset_detection_cache)
+        cache_buttons.addWidget(check_node); cache_buttons.addWidget(reset_cache); cache_buttons.addStretch(1)
+        detection_layout.addLayout(cache_buttons)
+        root.addWidget(detection_group)
+        self.refresh_detection_counts()
+
         form.addRow("URL Zabbix Problems:", self.url_input)
         form.addRow("Интервал опроса:", self.interval_input)
         form.addRow("Профиль Zabbix:", self.profile_input)
@@ -246,6 +277,40 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         buttons.addStretch(1)
         root.addLayout(buttons)
 
+
+    def _node_lists_settings(self):
+        return self.settings.setdefault("live_zabbix_node_version_lists", {"enabled": True, "v1_nodes": [], "v2_nodes": [], "match_by": ["host", "ip"], "prefer_csv_version": True})
+
+    def refresh_detection_counts(self):
+        node_lists = self._node_lists_settings()
+        if hasattr(self, "detection_counts_label"):
+            self.detection_counts_label.setText(f"v1: {len(node_lists.get('v1_nodes', []))} узлов · v2: {len(node_lists.get('v2_nodes', []))} узлов")
+
+    def import_detection_nodes(self, version):
+        path, _filter = QFileDialog.getOpenFileName(self, f"Импорт узлов {version}", "", "CSV/TXT/TSV (*.csv *.txt *.tsv);;All files (*)")
+        if not path:
+            return
+        try:
+            data = open(path, "rb").read()
+            nodes = parse_detection_node_csv_bytes(data, version)
+        except Exception as exc:
+            QMessageBox.warning(self, "Сработки по узлам", f"Не удалось импортировать CSV: {exc}")
+            return
+        self._node_lists_settings()[f"{version}_nodes"] = nodes
+        save_config(self.config)
+        self.refresh_detection_counts()
+        QMessageBox.information(self, "Сработки по узлам", f"Импортировано: {len(nodes)} узлов")
+
+    def clear_detection_nodes(self, version):
+        self._node_lists_settings()[f"{version}_nodes"] = []
+        save_config(self.config)
+        self.refresh_detection_counts()
+
+    def reset_detection_cache(self):
+        self.settings["live_zabbix_detection_cache"] = {}
+        save_config(self.config)
+        QMessageBox.information(self, "Сработки по узлам", "Cache itemid очищен.")
+
     def save_settings(self):
         url = self.url_input.text().strip()
         profile_id = self.profile_input.text().strip() or "zbx_product_1"
@@ -258,6 +323,9 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
         self.settings["profile_id"] = profile_id
         self.settings["show_live_zabbix_diagnostics"] = self.show_diagnostics_checkbox.isChecked()
         self.settings["mm_otrs_create_url"] = self.mm_otrs_create_url_input.text().strip()
+        disc = self.settings.setdefault("live_zabbix_detection_item_discovery", {})
+        disc["v1_item_aliases"] = [x.strip() for x in self.aliases_v1_input.text().split(",") if x.strip()]
+        disc["v2_item_aliases"] = [x.strip() for x in self.aliases_v2_input.text().split(",") if x.strip()]
 
         save_config(self.config)
 
