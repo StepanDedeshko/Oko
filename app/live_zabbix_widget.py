@@ -4470,3 +4470,6 @@ class LiveZabbixMonitorWidget(QWidget):
             safe_delete_web_view(self.view, logger=self.logger, context="LiveZabbixMonitorWidget", load_handler=self._on_loaded)
             self._load_finished_connected = False
             self.view = None
+
+# Backward-compatible access for tests and shared Redmine hybrid helpers.
+LiveZabbixMonitorWidget.description_injection_script = staticmethod(RedmineCreateDialog.description_injection_script)
