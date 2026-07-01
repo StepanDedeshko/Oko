@@ -336,3 +336,18 @@ class UpdateWidget(QWidget):
     def clear_update_thread_refs(self):
         self.update_thread = None
         self.update_worker = None
+
+    def cleanup(self):
+        """Stop background update/check threads before application shutdown."""
+        for thread_attr in ("release_thread", "update_thread"):
+            thread = getattr(self, thread_attr, None)
+            if thread is None:
+                continue
+            try:
+                thread.quit()
+                thread.wait(3000)
+            except Exception:
+                pass
+            setattr(self, thread_attr, None)
+        self.release_worker = None
+        self.update_worker = None

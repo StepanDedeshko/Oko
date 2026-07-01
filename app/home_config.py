@@ -2499,6 +2499,10 @@ class AppSettingsWidget(QWidget):
                 auto_start_install=auto_start_install,
             )
 
+    def cleanup(self):
+        if hasattr(self, "update_widget") and hasattr(self.update_widget, "cleanup"):
+            self.update_widget.cleanup()
+
 
 
 class HomePageWidget(QWidget):
@@ -2511,7 +2515,7 @@ class HomePageWidget(QWidget):
         "Обновление",
     ]
 
-    def __init__(self, config, open_duty_callback=None, open_settings_callback=None, update_check_callback=None, logout_callback=None, parent=None):
+    def __init__(self, config, open_duty_callback=None, open_settings_callback=None, update_check_callback=None, logout_callback=None, exit_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         self.setObjectName("HomeShell")
@@ -2519,6 +2523,7 @@ class HomePageWidget(QWidget):
         self.open_settings_callback = open_settings_callback
         self.update_check_callback = update_check_callback
         self.logout_callback = logout_callback
+        self.exit_callback = exit_callback
 
         root = QVBoxLayout(self)
 
@@ -2576,8 +2581,10 @@ class HomePageWidget(QWidget):
             self.open_duty()
             return
         if action_name == "Выход":
-            if self.logout_callback:
-                self.logout_callback()
+            if self.exit_callback:
+                self.exit_callback()
+            else:
+                QApplication.quit()
             return
         if action_name == "Настройки":
             if not can_open_section(self.config.get("_current_user"), "Настройки"):

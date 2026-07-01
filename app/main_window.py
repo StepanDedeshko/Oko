@@ -78,6 +78,7 @@ class MainWindow(QMainWindow):
         self.auth_page_index = None
         self.auth_web_views = []
         self._last_memory_warning = False
+        self._shutdown_completed = False
 
         self.is_updating_selectors = False
         self.metrics_provider = SystemMetricsProvider()
@@ -144,6 +145,62 @@ class MainWindow(QMainWindow):
     def refresh_user_badge(self):
         if hasattr(self, "user_badge_label"):
             self.user_badge_label.setText(f"  {self.user_badge_text()}  ")
+
+    def request_application_exit(self):
+        self.logger.info("Application exit requested from main menu")
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("Закрыть Око?")
+        message_box.setText("Закрыть Око?")
+        message_box.setInformativeText("Режим дежурства и все фоновые проверки будут остановлены.")
+        close_button = message_box.addButton("Закрыть Око", QMessageBox.AcceptRole)
+        message_box.addButton("Отмена", QMessageBox.RejectRole)
+        message_box.setDefaultButton(close_button)
+        message_box.exec()
+        if message_box.clickedButton() is not close_button:
+            return
+        self.shutdown_application()
+
+    def shutdown_application(self):
+        self.stop_background_activity_for_exit()
+        self.close()
+        QApplication.quit()
+
+    def stop_background_activity_for_exit(self):
+        if self._shutdown_completed:
+            return
+        self.logger.info("Stopping duty mode before exit")
+        if self.duty_mode_widget is not None:
+            try:
+                self.duty_mode_widget.disable_for_shutdown()
+            except Exception:
+                self.logger.exception("Failed to stop duty mode before exit")
+        self.logger.info("Stopping service checks before exit")
+        if self.duty_mode_widget is not None:
+            try:
+                if hasattr(self.duty_mode_widget, "service_check_queue"):
+                    self.duty_mode_widget.service_check_queue = []
+                if hasattr(self.duty_mode_widget, "_set_service_check_running"):
+                    self.duty_mode_widget._set_service_check_running(False)
+            except Exception:
+                self.logger.exception("Failed to stop service checks before exit")
+        self.logger.info("Stopping background timers before exit")
+        for timer_name in ("metrics_timer", "memory_diagnostics_timer"):
+            timer = getattr(self, timer_name, None)
+            if timer is not None:
+                try:
+                    timer.stop()
+                except Exception:
+                    self.logger.exception("Failed to stop timer before exit: %s", timer_name)
+        self.logger.info("Stopping Live Zabbix Monitor before exit")
+        if self.live_zabbix_monitor_widget is not None:
+            try:
+                if hasattr(self.live_zabbix_monitor_widget, "stop_monitor"):
+                    self.live_zabbix_monitor_widget.stop_monitor()
+            except Exception:
+                self.logger.exception("Failed to stop Live Zabbix Monitor before exit")
+        self.cleanup_web_resources()
+        self._shutdown_completed = True
+        self.logger.info("Application shutdown completed")
 
     def logout_user(self):
         message = "Выйти из аккаунта Око на этом компьютере? Сохранённый вход будет удалён. После выхода приложение закроется."
@@ -508,6 +565,7 @@ class MainWindow(QMainWindow):
             open_settings_callback=self.open_settings_section,
             update_check_callback=self.check_for_updates_from_settings,
             logout_callback=self.logout_user,
+            exit_callback=self.request_application_exit,
         )
 
         self.home_page_index = self.stack.addWidget(self.home_page_widget)
@@ -839,6 +897,10 @@ class MainWindow(QMainWindow):
         for widget in list(self.dashboard_widgets):
             if hasattr(widget, "cleanup"):
                 widget.cleanup()
+        for index in range(self.stack.count()):
+            widget = self.stack.widget(index)
+            if widget not in self.dashboard_widgets and hasattr(widget, "cleanup"):
+                widget.cleanup()
         for view, _page in list(self.auth_web_views):
             safe_delete_web_view(view, logger=self.logger, context="auth hidden WebView")
         self.auth_web_views.clear()
@@ -900,13 +962,7 @@ class MainWindow(QMainWindow):
         view.page().runJavaScript(js)
 
     def closeEvent(self, event):
-        if self.duty_mode_widget is not None:
-            self.duty_mode_widget.disable_for_shutdown()
-        if getattr(self, "metrics_timer", None) is not None:
-            self.metrics_timer.stop()
-        if getattr(self, "memory_diagnostics_timer", None) is not None:
-            self.memory_diagnostics_timer.stop()
-        self.cleanup_web_resources()
+        self.stop_background_activity_for_exit()
         super().closeEvent(event)
 
     def set_time_range(self, range_value):
