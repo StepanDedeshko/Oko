@@ -41,7 +41,7 @@ from app.live_zabbix import DEFAULT_REDMINE_LOGIN_URL, DOM_PARSER_SCRIPT_PLACEHO
 from app.logger import get_logger
 from app.templates import get_redmine_task_template
 from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich_problem, format_graph_links
-from app.webengine_lifecycle import register_web_view, safe_delete_web_view
+from app.webengine_lifecycle import register_web_view, run_javascript_if_alive, safe_delete_web_view
 
 DOM_PARSER_SCRIPT = DOM_PARSER_SCRIPT_PLACEHOLDER
 REDMINE_URL_TRIGGER_LIMIT = 10
@@ -184,11 +184,11 @@ class RedmineAuthorizationDialog(QDialog):
         page = self.view.page() if self.view is not None else None
         if page is None:
             return
-        page.runJavaScript(self.login_success_script(), self._on_login_success_check)
+        run_javascript_if_alive(page, self.login_success_script(), self._on_login_success_check)
         username = str(self.settings.get("redmine_username") or "")
         password = str(self.settings.get("redmine_password") or "")
         if username and password:
-            page.runJavaScript(self.autofill_script(username, password))
+            run_javascript_if_alive(page, self.autofill_script(username, password))
 
     def _on_login_success_check(self, result):
         try:
@@ -273,7 +273,7 @@ class RedmineCreateDialog(QDialog):
         page = self.view.page() if self.view is not None else None
         if page is None:
             return
-        page.runJavaScript(self.issue_form_guard_script(), self._on_create_guard_result)
+        run_javascript_if_alive(page, self.issue_form_guard_script(), self._on_create_guard_result)
 
     def _on_create_guard_result(self, result):
         try:
@@ -332,7 +332,7 @@ class RedmineCreateDialog(QDialog):
         if page is None:
             return
         self._description_injection_attempts += 1
-        page.runJavaScript(self.description_injection_script(self.pending_description), self._on_description_injection_result)
+        run_javascript_if_alive(page, self.description_injection_script(self.pending_description), self._on_description_injection_result)
 
     def _on_description_injection_result(self, result):
         try:
@@ -820,7 +820,7 @@ class LiveZabbixMonitorWidget(QWidget):
 
     def _run_dom_parser(self, force=False):
         if self.view is not None and self.view.page() is not None:
-            self.view.page().runJavaScript(JS_SMOKE_TEST_SCRIPT, lambda smoke: self._on_js_smoke_checked(smoke, force=force))
+            run_javascript_if_alive(self.view, JS_SMOKE_TEST_SCRIPT, lambda smoke: self._on_js_smoke_checked(smoke, force=force))
 
     def _js_result_meta(self, result):
         preview = repr(result)
@@ -876,7 +876,7 @@ class LiveZabbixMonitorWidget(QWidget):
             self._parse_attempts.append(payload)
             self._update_diagnostics(payload, status_text=self._js_error_status(meta))
             return
-        self.view.page().runJavaScript(JS_HEALTH_CHECK_SCRIPT, lambda health: self._on_js_health_checked(health, force=force))
+        run_javascript_if_alive(self.view, JS_HEALTH_CHECK_SCRIPT, lambda health: self._on_js_health_checked(health, force=force))
 
     def _on_js_health_checked(self, health_result, force=False):
         health, meta = self._decode_js_json_result(health_result)
@@ -887,7 +887,7 @@ class LiveZabbixMonitorWidget(QWidget):
             self._parse_attempts.append(payload)
             self._update_diagnostics(payload, status_text=self._js_error_status(meta))
             return
-        self.view.page().runJavaScript(DOM_PARSER_SCRIPT, lambda result: self._on_dom_parsed(result, force=force))
+        run_javascript_if_alive(self.view, DOM_PARSER_SCRIPT, lambda result: self._on_dom_parsed(result, force=force))
 
     def _history_path(self) -> Path:
         path = Path(str(self.settings.get("history_path") or "data/live_zabbix_history.jsonl"))
@@ -1009,7 +1009,7 @@ class LiveZabbixMonitorWidget(QWidget):
             else:
                 self._zabbix_auth_retrying = False
                 self.poll_status_label.setText("Zabbix: нет сохранённых доступов")
-        page.runJavaScript(js, after)
+        run_javascript_if_alive(page, js, after)
 
     def _finish_zabbix_autologin(self):
         self._zabbix_auth_retrying = False
@@ -1895,7 +1895,7 @@ class LiveZabbixMonitorWidget(QWidget):
             self._load_next_redmine_graph_lookup()
             return
 
-        page.runJavaScript(
+        run_javascript_if_alive(page,
             self._graph_link_lookup_script(),
             lambda result, current_item=item, current_token=token: self._on_redmine_graph_lookup_js_result(result, current_item, current_token),
         )
@@ -2008,7 +2008,7 @@ class LiveZabbixMonitorWidget(QWidget):
             self._load_next_redmine_ip_lookup()
             return
 
-        page.runJavaScript(
+        run_javascript_if_alive(page,
             self._host_ip_open_host_menu_script(item),
             lambda result, current_item=item, current_token=token: self._on_redmine_ip_host_menu_result(result, current_item, current_token),
         )
@@ -2053,7 +2053,7 @@ class LiveZabbixMonitorWidget(QWidget):
             self._load_next_redmine_ip_lookup()
             return
 
-        page.runJavaScript(
+        run_javascript_if_alive(page,
             self._host_ip_click_traceroute_script(),
             lambda result, current_item=item, current_attempt=attempt, current_token=token: self._on_redmine_traceroute_menu_result(result, current_item, current_attempt, current_token),
         )
@@ -2088,7 +2088,7 @@ class LiveZabbixMonitorWidget(QWidget):
             self._load_next_redmine_ip_lookup()
             return
 
-        page.runJavaScript(
+        run_javascript_if_alive(page,
             self._host_ip_extract_traceroute_script(),
             lambda result, current_item=item, current_attempt=attempt, current_token=token: self._on_redmine_traceroute_ip_result(result, current_item, current_attempt, current_token),
         )
@@ -2904,7 +2904,7 @@ class LiveZabbixMonitorWidget(QWidget):
 
             status_label.setText("Не удалось определить форму задачи или форму логина ОТРС ММ.")
 
-        page.runJavaScript(js, after_login_check)
+        run_javascript_if_alive(page, js, after_login_check)
 
 
     def _mm_otrs_required_field_steps(self):
@@ -3103,7 +3103,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 f"Результат: {text[:300]}"
             )
 
-        page.runJavaScript(js, after_step)
+        run_javascript_if_alive(page, js, after_step)
 
 
     def _fill_mm_otrs_direct_fields(self, view, status_label, subject, body, attempt=1, step_index=0):
@@ -3261,7 +3261,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 ),
             )
 
-        page.runJavaScript(js, after_step)
+        run_javascript_if_alive(page, js, after_step)
 
 
     def _fill_mm_otrs_customer(self, view, status_label, subject, body, attempt=1):
@@ -3609,7 +3609,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 lambda: self._fill_mm_otrs_direct_fields(view, status_label, subject, body, 1, 1),
             )
 
-        page.runJavaScript(js, after_customer)
+        run_javascript_if_alive(page, js, after_customer)
 
 
     def _fill_mm_otrs_form(self, view, status_label, subject, body, attempt=1):
@@ -3713,7 +3713,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 f"Результат: {text[:300]}"
             )
 
-        page.runJavaScript(js, after_fill)
+        run_javascript_if_alive(page, js, after_fill)
 
 
     def open_acknowledgement(self, url):
@@ -4095,7 +4095,7 @@ class LiveZabbixMonitorWidget(QWidget):
         ctx = self._zbx_workers.get(worker_id)
         if not ctx:
             return
-        ctx["view"].page().runJavaScript(
+        run_javascript_if_alive(ctx["view"],
             self._zabbix_comment_script(step, self._zbx_comment, self._zbx_ack_missing),
             lambda result, wid=worker_id, current_step=step: self._handle_zbx_step_result(wid, current_step, result),
         )
@@ -4106,7 +4106,7 @@ class LiveZabbixMonitorWidget(QWidget):
             return
         payload = self._parse_zbx_payload(result, step, worker_id)
         if payload.get("needs_diagnostics"):
-            ctx["view"].page().runJavaScript(
+            run_javascript_if_alive(ctx["view"],
                 self._zabbix_comment_diagnostics_script(),
                 lambda diag, wid=worker_id, failed_payload=payload: self._handle_zbx_empty_result_with_diagnostics(wid, failed_payload, diag),
             )
@@ -4191,13 +4191,13 @@ class LiveZabbixMonitorWidget(QWidget):
             return
 
         if datetime.now().timestamp() >= float(ctx.get("poll_deadline", 0)):
-            ctx["view"].page().runJavaScript(
+            run_javascript_if_alive(ctx["view"],
                 self._zabbix_comment_diagnostics_script(),
                 lambda diag, wid=worker_id, timeout_step=step: self._handle_zbx_poll_timeout(wid, timeout_step, diag),
             )
             return
 
-        ctx["view"].page().runJavaScript(
+        run_javascript_if_alive(ctx["view"],
             self._zabbix_comment_script(step, self._zbx_comment, self._zbx_ack_missing),
             lambda result, wid=worker_id, current_step=step, current_interval=interval_ms: self._handle_zbx_poll_result(wid, current_step, current_interval, result),
         )
@@ -4299,7 +4299,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 self.logger.warning("Task comment scan failed to load: %s", url)
                 self._scan_next_task_comment_page()
                 return
-            self._task_comment_scan_view.page().runJavaScript(self._task_comment_scan_script(), done)
+            run_javascript_if_alive(self._task_comment_scan_view, self._task_comment_scan_script(), done)
 
         def done(result):
             try:

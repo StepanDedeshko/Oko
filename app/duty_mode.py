@@ -48,7 +48,7 @@ from app.duty_triggers import diagnose_metric_html, evaluate_stagnation_trigger
 from app.logger import get_logger
 from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.redmine_triggers import format_graph_links, special_redmine_graph_urls
-from app.webengine_lifecycle import register_web_view, safe_delete_web_view
+from app.webengine_lifecycle import register_web_view, run_javascript_if_alive, safe_delete_web_view
 from app.graph_window_utils import apply_resizable_graph_window, install_maximize_shortcut
 from app.duty_tasks import (
     TASK_LABELS,
@@ -570,7 +570,7 @@ class ZabbixProblemsDialog(QDialog):
         password = str(self.credentials.get("password", "") or "")
         js = make_zabbix_login_js(login, password)
         if js and self.page is not None:
-            self.page.runJavaScript(js)
+            run_javascript_if_alive(self.page, js)
         QTimer.singleShot(1800, self.start_csv_problem_export)
 
     def _connect_csv_download_handler(self):
@@ -588,7 +588,7 @@ class ZabbixProblemsDialog(QDialog):
         self._csv_download_requested = False
         self._csv_download_finished = False
         self.status_label.setText("Пытаюсь скачать CSV со списком проблем Zabbix...")
-        self.page.runJavaScript(
+        run_javascript_if_alive(self.page,
             """
             (function() {
                 const button = document.querySelector('#export_csv');
@@ -680,7 +680,7 @@ class ZabbixProblemsDialog(QDialog):
         if self.page is None:
             self.update_problem_counter([], read_failed=True)
             return
-        self.page.runJavaScript(zabbix_problems_collect_js(), self.after_collect_problems)
+        run_javascript_if_alive(self.page, zabbix_problems_collect_js(), self.after_collect_problems)
 
     def after_collect_problems(self, result):
         settings = self.config.get("duty_mode", {}) if isinstance(self.config, dict) else {}
@@ -710,7 +710,7 @@ class ZabbixProblemsDialog(QDialog):
             and len(self._problem_collect_rows) < 500
             and self.page is not None
         ):
-            self.page.runJavaScript(zabbix_problems_next_page_js())
+            run_javascript_if_alive(self.page, zabbix_problems_next_page_js())
             QTimer.singleShot(900, self._collect_current_problem_page)
             return
         catalog = load_zabbix_trigger_catalog(config=self.config, logger=self.logger)
@@ -1158,7 +1158,7 @@ class AttachExistingTaskDialog(QDialog):
         }})();
         """
 
-        self.view.page().runJavaScript(js)
+        run_javascript_if_alive(self.view, js)
 
     def extract_ticket_id_from_url(self, url):
         match = re.search(r"[?;]TicketID=([^;&?#]+)", url or "")
@@ -1375,7 +1375,7 @@ class AttachExistingTaskDialog(QDialog):
             return result;
         })();
         """
-        self.view.page().runJavaScript(js, self.after_detect_task_number_js)
+        run_javascript_if_alive(self.view, js, self.after_detect_task_number_js)
 
     def after_detect_task_number_js(self, result):
         number = ""
@@ -1729,7 +1729,7 @@ class OtrsCreateTaskDialog(QDialog):
         }})();
         """
 
-        self.view.page().runJavaScript(js)
+        run_javascript_if_alive(self.view, js)
 
     def load_create_page(self):
         url = self.url_input.text().strip()
@@ -1857,7 +1857,7 @@ class OtrsCreateTaskDialog(QDialog):
             return "";
         })();
         """
-        self.view.page().runJavaScript(js, self.after_detect_ticket_number)
+        run_javascript_if_alive(self.view, js, self.after_detect_ticket_number)
 
     def after_detect_ticket_number(self, number):
         number = str(number or "").strip()
@@ -2064,7 +2064,7 @@ class OtrsNoteDialog(QDialog):
         }})();
         """
 
-        self.view.page().runJavaScript(js)
+        run_javascript_if_alive(self.view, js)
 
 
     def get_settings(self):
@@ -2222,7 +2222,7 @@ class OtrsNoteDialog(QDialog):
         page = self._web_page_or_none("ticket title detection")
         if page is None:
             return
-        page.runJavaScript(js, self.after_detect_ticket_title)
+        run_javascript_if_alive(page, js, self.after_detect_ticket_title)
 
     def after_detect_ticket_title(self, result):
         if not isinstance(result, dict):
@@ -2306,7 +2306,7 @@ class OtrsNoteDialog(QDialog):
         })();
         """
 
-        page.runJavaScript(js)
+        run_javascript_if_alive(page, js)
         if self._observers_stopped or self._is_closing:
             return
         if self.send_watch_timer is not None:
@@ -2326,7 +2326,7 @@ class OtrsNoteDialog(QDialog):
                 timer.stop()
             return
         js = "Boolean(window.__dezhurkaSendClicked);"
-        page.runJavaScript(js, self.after_check_send_clicked)
+        run_javascript_if_alive(page, js, self.after_check_send_clicked)
 
     def after_check_send_clicked(self, clicked):
         if clicked and not self.note_saved:
@@ -2410,7 +2410,7 @@ class OtrsNoteDialog(QDialog):
         page = self._web_page_or_none("inject_note_text")
         if page is None:
             return
-        page.runJavaScript(
+        run_javascript_if_alive(page,
             js,
             lambda result: self.after_inject_note_text(result, show_message)
         )
@@ -2742,7 +2742,7 @@ class DutyGraphCard(QFrame):
             self.credentials.get("password", "")
         )
         if js and not self._cleaned_up and self.view is not None:
-            self.view.page().runJavaScript(js)
+            run_javascript_if_alive(self.view, js)
         QTimer.singleShot(500, self.fit_content_height)
         QTimer.singleShot(1500, self.fit_content_height)
         QTimer.singleShot(2500, self.fit_content_height)
@@ -2802,7 +2802,7 @@ class DutyGraphCard(QFrame):
         })();
         """
         if not self._cleaned_up and self.view is not None:
-            self.view.page().runJavaScript(js, self.apply_content_height)
+            run_javascript_if_alive(self.view, js, self.apply_content_height)
 
     def apply_content_height(self, height):
         if self._cleaned_up or self.view is None:
@@ -2975,7 +2975,7 @@ class ServiceCheckVisibleDialog(QDialog):
             callback(result)
 
         try:
-            page.runJavaScript(script, guarded_callback)
+            run_javascript_if_alive(page, script, guarded_callback)
         except (RuntimeError, AttributeError) as exc:
             self.logger.info(
                 "Service check ignored %s: page was deleted service_id=%s error=%s",
@@ -4837,7 +4837,7 @@ class DutyModeWidget(QWidget):
                 return
             if service.get("logout_menu_selector"):
                 self.logger.info("Service check logout menu click: service_id=%s selector=%s", service_id, service.get("logout_menu_selector"))
-                page.runJavaScript(build_click_selector_js(service.get("logout_menu_selector")), after_logout_menu_click)
+                run_javascript_if_alive(page, build_click_selector_js(service.get("logout_menu_selector")), after_logout_menu_click)
                 return
             click_logout_button()
 
@@ -4855,7 +4855,7 @@ class DutyModeWidget(QWidget):
         def wait_logout_button():
             if context.get("finished"):
                 return
-            page.runJavaScript(build_wait_selector_js([service.get("logout_button_selector", "")]), after_wait_logout_button)
+            run_javascript_if_alive(page, build_wait_selector_js([service.get("logout_button_selector", "")]), after_wait_logout_button)
 
         def after_wait_logout_button(result):
             service_id = service.get("id", "")
@@ -4872,7 +4872,7 @@ class DutyModeWidget(QWidget):
         def click_logout_button():
             service_id = service.get("id", "")
             self.logger.info("Service check logout button click: service_id=%s selector=%s", service_id, service.get("logout_button_selector", ""))
-            page.runJavaScript(build_click_selector_js(service.get("logout_button_selector", "")), after_logout_button_click)
+            run_javascript_if_alive(page, build_click_selector_js(service.get("logout_button_selector", "")), after_logout_button_click)
 
         def after_logout_button_click(result):
             service_id = service.get("id", "")
@@ -4887,7 +4887,7 @@ class DutyModeWidget(QWidget):
         def check_logout_success():
             if context.get("finished"):
                 return
-            page.runJavaScript(build_wait_selector_js(service.get("logout_success_selectors", [])), after_logout_success_selectors)
+            run_javascript_if_alive(page, build_wait_selector_js(service.get("logout_success_selectors", [])), after_logout_success_selectors)
 
         def after_logout_success_selectors(result):
             service_id = service.get("id", "")
@@ -4896,7 +4896,7 @@ class DutyModeWidget(QWidget):
                 self.logger.info("Service check logout success: service_id=%s", service_id)
                 finish("ok", html_text=context.get("logout_html_text", ""), matched_success=context.get("logout_matched_success", ""), matched_error=context.get("logout_matched_error", ""), details="Вход выполнен, сервис работает, выход выполнен")
                 return
-            page.runJavaScript("document.body ? document.body.innerText : ''", after_logout_success_text)
+            run_javascript_if_alive(page, "document.body ? document.body.innerText : ''", after_logout_success_text)
 
         def after_logout_success_text(text):
             service_id = service.get("id", "")
@@ -4928,12 +4928,12 @@ class DutyModeWidget(QWidget):
                 self.logger.info("Service check result success selector matched: service_id=%s selector=%s", service_id, result.get("matched_success_selector", ""))
             if error_found:
                 self.logger.info("Service check result error selector matched: service_id=%s selector=%s", service_id, result.get("matched_error_selector", ""))
-            page.runJavaScript("document.body ? document.body.innerText : ''", analyze_text)
+            run_javascript_if_alive(page, "document.body ? document.body.innerText : ''", analyze_text)
 
         def read_text_after_login():
             if context.get("finished"):
                 return
-            page.runJavaScript(build_result_selector_check_js(service), after_result_selector_check)
+            run_javascript_if_alive(page, build_result_selector_check_js(service), after_result_selector_check)
 
         def after_login_js(result):
             service_id = service.get("id", "")
@@ -4974,7 +4974,7 @@ class DutyModeWidget(QWidget):
             self.logger.info("Service check autofill script length: service_id=%s length=%s", service_id, len(js))
             head, tail = safe_autofill_script_preview(js, creds)
             self.logger.info("Service check autofill script preview: service_id=%s head=%s tail=%s", service_id, head, tail)
-            page.runJavaScript(js, after_login_js)
+            run_javascript_if_alive(page, js, after_login_js)
 
         def start_autofill_wait():
             context["autofill_wait_attempt"] = 0
@@ -4986,7 +4986,7 @@ class DutyModeWidget(QWidget):
             if context.get("finished") or context.get("timed_out"):
                 return
             context["autofill_wait_attempt"] = int(context.get("autofill_wait_attempt", 0)) + 1
-            page.runJavaScript(build_auth_form_presence_js(service), after_autofill_wait_js)
+            run_javascript_if_alive(page, build_auth_form_presence_js(service), after_autofill_wait_js)
 
         def after_autofill_wait_js(result):
             if context.get("finished") or context.get("timed_out"):
@@ -6245,7 +6245,7 @@ class DutyModeWidget(QWidget):
                     self.credentials.get(zid, {}).get("password", ""),
                 )
                 if js:
-                    current_page.runJavaScript(js)
+                    run_javascript_if_alive(current_page, js)
                 self.logger.info(
                     "Duty trigger waiting before HTML read: id=%s display_name=%s delay_ms=%s",
                     t.get("id", ""),
