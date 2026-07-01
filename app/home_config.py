@@ -2417,10 +2417,11 @@ class SettingsMenuWidget(QWidget):
         root.addStretch(2)
 
 class AppSettingsWidget(QWidget):
-    def __init__(self, config, logout_callback=None, parent=None):
+    def __init__(self, config, logout_callback=None, parent=None, startup_update_callback=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         self.logout_callback = logout_callback
+        self.startup_update_callback = startup_update_callback
         self.section_indexes = {}
         self.settings_menu_index = None
         self.settings_menu_sections = []
@@ -2433,7 +2434,12 @@ class AppSettingsWidget(QWidget):
         self.stack = QStackedWidget()
         root.addWidget(self.stack, stretch=1)
 
-        self.update_widget = UpdateWidget(self.config, request_application_restart, show_title=False)
+        self.update_widget = UpdateWidget(
+            self.config,
+            request_application_restart,
+            show_title=False,
+            startup_update_callback=self.startup_update_callback,
+        )
         candidates = [
             ("Перенос настроек", lambda: SettingsTransferWidget(self.config)),
             ("Настройки дежурки", lambda: DutyModeSettingsWidget(self.config, show_title=False)),
@@ -2510,6 +2516,11 @@ class AppSettingsWidget(QWidget):
                 interactive=interactive,
                 auto_start_install=auto_start_install,
             )
+
+    def open_update_page_and_start(self, update_info=None):
+        if hasattr(self, "update_widget") and self.update_widget:
+            self.open_section("Обновление")
+            self.update_widget.start_update_from_prompt(update_info)
 
     def cleanup(self):
         if hasattr(self, "update_widget") and hasattr(self.update_widget, "cleanup"):

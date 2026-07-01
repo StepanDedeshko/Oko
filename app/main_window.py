@@ -515,7 +515,11 @@ class MainWindow(QMainWindow):
         self.page_has_time_buttons[self.auth_page_index] = False
 
     def create_settings_page(self):
-        settings_widget = AppSettingsWidget(config=self.config, logout_callback=self.logout_user)
+        settings_widget = AppSettingsWidget(
+            config=self.config,
+            logout_callback=self.logout_user,
+            startup_update_callback=self.open_update_page_and_start,
+        )
 
         self.settings_page_index = self.stack.addWidget(settings_widget)
         self.page_has_time_buttons[self.settings_page_index] = False
@@ -917,6 +921,18 @@ class MainWindow(QMainWindow):
             self.set_time_selector_visible(False)
             self.update_duty_section_switch(None)
             self.pause_inactive_web_dashboards()
+
+    def open_update_page_and_start(self, update_info=None):
+        self.logger.info("Opening update page from startup prompt")
+        if self.settings_page_index is None:
+            return
+        widget = self.stack.widget(self.settings_page_index)
+        if hasattr(widget, "open_update_page_and_start"):
+            self.stack.setCurrentIndex(self.settings_page_index)
+            self.set_time_selector_visible(False)
+            self.update_duty_section_switch(None)
+            self.pause_inactive_web_dashboards()
+            widget.open_update_page_and_start(update_info)
 
     def check_for_updates_from_settings(self, interactive=False, auto_start_install=False):
         if self.settings_page_index is None:

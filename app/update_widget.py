@@ -66,10 +66,11 @@ class ReleaseCheckWorker(QObject):
 
 
 class UpdateWidget(QWidget):
-    def __init__(self, config, request_restart_callback, parent=None, show_title=True):
+    def __init__(self, config, request_restart_callback, parent=None, show_title=True, startup_update_callback=None):
         super().__init__(parent)
         self.config = config
         self.request_restart_callback = request_restart_callback
+        self.startup_update_callback = startup_update_callback
         self.logger = get_logger()
         self.release_check_interactive = False
         self.release_check_auto_start_install = False
@@ -132,6 +133,7 @@ class UpdateWidget(QWidget):
         self.update_worker = None
         self.release_thread = None
         self.release_worker = None
+        self.cached_update_info = None
 
     def apply_prepared_config(self):
         selected_path, _ = QFileDialog.getOpenFileName(
@@ -226,6 +228,8 @@ class UpdateWidget(QWidget):
                 self.append_status("Обновление не требуется")
                 QMessageBox.information(self, "Обновление", "У вас уже установлена актуальная версия.")
             return
+        self.cached_update_info = payload
+        self.logger.info("Startup update check found new version: current=%s latest=%s", current_version, latest_tag)
         if not asset_url:
             self.append_status("Ошибка обновления")
             QMessageBox.information(
@@ -235,6 +239,7 @@ class UpdateWidget(QWidget):
             )
             return
 
+        self.logger.info("Startup update prompt shown")
         answer = QMessageBox.question(
             self,
             "Доступно обновление",
@@ -245,11 +250,19 @@ class UpdateWidget(QWidget):
             QMessageBox.Yes
         )
         if answer != QMessageBox.Yes:
+            self.logger.info("Startup update prompt declined")
+            self.logger.info("User declined startup update prompt")
             return
+        self.logger.info("Startup update prompt accepted")
         self.url_input.setText(asset_url)
-        self.open_update_tab()
         if auto_start_install:
-            self.download_and_install()
+            if self.startup_update_callback is not None:
+                self.startup_update_callback(payload)
+            else:
+                self.open_update_tab()
+                self.start_update_from_prompt(payload)
+            return
+        self.open_update_tab()
 
     def on_release_check_failed(self, error_text):
         interactive = self.release_check_interactive
@@ -277,8 +290,6 @@ class UpdateWidget(QWidget):
         if not update_url:
             QMessageBox.warning(self, "Обновление", "Укажи URL архива обновления.")
             return
-        self.config.setdefault("settings", {})["update_archive_url"] = update_url
-        save_config(self.config)
         answer = QMessageBox.question(
             self,
             "Подтверждение обновления",
@@ -288,9 +299,43 @@ class UpdateWidget(QWidget):
         )
         if answer != QMessageBox.Yes:
             return
+        self._start_download_and_install(update_url)
 
+    def start_update_from_prompt(self, update_info=None):
+        self.logger.info("Starting update from startup prompt")
+        if self.update_thread is not None:
+            self.logger.info("Update already running, focusing update page")
+            self.open_update_tab()
+            self.append_status("Обновление уже выполняется")
+            return False
+        if update_info:
+            self.cached_update_info = update_info
+        update_info = update_info or self.cached_update_info or {}
+        update_url = str(update_info.get("update_asset_url") or update_info.get("update_url") or self.url_input.text() or "").strip()
+        if not update_url:
+            self.logger.error("Startup update accepted but update URL is missing")
+            self.append_status("Не удалось запустить обновление: ссылка на обновление не найдена.")
+            return False
+        self.url_input.setText(update_url)
+        self.append_status("Подготовка обновления...")
+        try:
+            return self._start_download_and_install(update_url)
+        except Exception:
+            self.logger.exception("Failed to start update from startup prompt")
+            self.append_status("Failed to start update from startup prompt")
+            return False
+
+    def _start_download_and_install(self, update_url):
+        if self.update_thread is not None:
+            self.logger.info("Update already running, focusing update page")
+            self.open_update_tab()
+            self.append_status("Обновление уже выполняется")
+            return False
+        self.config.setdefault("settings", {})["update_archive_url"] = update_url
+        save_config(self.config)
         self.logger.info("Начало установки обновления из URL: %s", update_url)
         self.status_log.clear()
+        self.append_status("Подготовка обновления...")
         self.append_status("Скачивание обновления...")
         self.install_button.setEnabled(False)
         self.update_thread = QThread(self)
@@ -307,6 +352,7 @@ class UpdateWidget(QWidget):
         self.update_thread.finished.connect(self.update_thread.deleteLater)
         self.update_thread.finished.connect(self.clear_update_thread_refs)
         self.update_thread.start()
+        return True
 
     def on_update_finished(self, stdout_text, stderr_text):
         self.logger.info("Обновление успешно завершено")
@@ -350,4 +396,5 @@ class UpdateWidget(QWidget):
                 pass
             setattr(self, thread_attr, None)
         self.release_worker = None
+        self.cached_update_info = None
         self.update_worker = None
