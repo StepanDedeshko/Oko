@@ -460,7 +460,8 @@ class MainWindow(QMainWindow):
             config=self.config,
             open_duty_callback=self.open_duty_page,
             open_settings_callback=self.open_settings_section,
-            update_check_callback=self.check_for_updates_from_settings
+            update_check_callback=self.check_for_updates_from_settings,
+            logout_callback=self.logout_user,
         )
 
         self.home_page_index = self.stack.addWidget(self.home_page_widget)
@@ -722,7 +723,7 @@ class MainWindow(QMainWindow):
     def open_settings_section(self, section_name=None):
         if self.settings_page_index is not None:
             widget = self.stack.widget(self.settings_page_index)
-            if section_name and hasattr(widget, "open_section"):
+            if hasattr(widget, "open_section"):
                 widget.open_section(section_name)
             self.stack.setCurrentIndex(self.settings_page_index)
             self.set_time_selector_visible(False)
