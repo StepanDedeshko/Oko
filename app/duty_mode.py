@@ -1536,6 +1536,8 @@ class AttachExistingTaskDialog(QDialog):
         if getattr(self, "_cleaned_up", False):
             return
         self._cleaned_up = True
+        self._is_closing = True
+        self._observers_stopped = True
         view = getattr(self, "view", None)
         self.view = None
         self.page = None
@@ -1895,6 +1897,8 @@ class OtrsCreateTaskDialog(QDialog):
         if getattr(self, "_cleaned_up", False):
             return
         self._cleaned_up = True
+        self._is_closing = True
+        self._observers_stopped = True
         view = getattr(self, "view", None)
         self.view = None
         self.page = None
@@ -1926,6 +1930,9 @@ class OtrsNoteDialog(QDialog):
         self.saved_log_message = saved_log_message
         self.initial_note_url = str(initial_note_url or "").strip()
         self.note_saved = False
+        self._is_closing = False
+        self._observers_stopped = False
+        self.send_watch_timer = None
         self.logger = get_logger()
 
         self.setWindowTitle("Заметка в задачу ОТРС")
@@ -2184,13 +2191,13 @@ class OtrsNoteDialog(QDialog):
             self.save_ticket_id_from_url(url)
 
     def on_loaded(self, ok):
-        if ok:
+        if ok and not self._observers_stopped and not self._is_closing:
             self.inject_otrs_login_if_needed()
             self.detect_ticket_title()
             # Даём CKEditor время прогрузиться, потом пробуем мягко вставить текст.
-            QTimer.singleShot(1500, self.inject_note_text_silent)
+            QTimer.singleShot(1500, lambda: None if self._observers_stopped or self._is_closing else self.inject_note_text_silent())
             # Ставим наблюдатель за кнопкой "Отправить".
-            QTimer.singleShot(2200, self.install_send_button_observer)
+            QTimer.singleShot(2200, lambda: None if self._observers_stopped or self._is_closing else self.install_send_button_observer())
 
     def detect_ticket_title(self):
         js = r"""
@@ -2208,7 +2215,10 @@ class OtrsNoteDialog(QDialog):
             return result;
         })();
         """
-        self.view.page().runJavaScript(js, self.after_detect_ticket_title)
+        page = self._web_page_or_none("ticket title detection")
+        if page is None:
+            return
+        page.runJavaScript(js, self.after_detect_ticket_title)
 
     def after_detect_ticket_title(self, result):
         if not isinstance(result, dict):
@@ -2233,12 +2243,33 @@ class OtrsNoteDialog(QDialog):
                 self.info_label.text() + f"\nСтраница ОТРС: {title}"
             )
 
+    def _web_page_or_none(self, context="observer"):
+        if self._observers_stopped or self._is_closing:
+            self.logger.debug("Send button observer skipped: WebView is not available (%s stopped)", context)
+            return None
+        view = getattr(self, "view", None)
+        if view is None:
+            self.logger.debug("Send button observer skipped: WebView is not available")
+            return None
+        try:
+            page = view.page()
+        except RuntimeError:
+            self.logger.debug("Send button observer skipped: WebView is not available")
+            return None
+        if page is None:
+            self.logger.debug("Send button observer skipped: WebView is not available")
+            return None
+        return page
+
     def install_send_button_observer(self):
         """
         Слушает ручное нажатие кнопки "Отправить" на странице заметки.
         Кнопку не нажимаем автоматически.
         После ручного нажатия закрываем окно заметки.
         """
+        page = self._web_page_or_none("install_send_button_observer")
+        if page is None:
+            return
         js = r"""
         (function() {
             if (window.__dezhurkaSendObserverInstalled) {
@@ -2271,14 +2302,27 @@ class OtrsNoteDialog(QDialog):
         })();
         """
 
-        self.view.page().runJavaScript(js)
+        page.runJavaScript(js)
+        if self._observers_stopped or self._is_closing:
+            return
+        if self.send_watch_timer is not None:
+            try:
+                self.send_watch_timer.stop()
+            except RuntimeError:
+                pass
         self.send_watch_timer = QTimer(self)
         self.send_watch_timer.timeout.connect(self.check_send_clicked)
         self.send_watch_timer.start(700)
 
     def check_send_clicked(self):
+        page = self._web_page_or_none("check_send_clicked")
+        if page is None:
+            timer = getattr(self, "send_watch_timer", None)
+            if timer is not None:
+                timer.stop()
+            return
         js = "Boolean(window.__dezhurkaSendClicked);"
-        self.view.page().runJavaScript(js, self.after_check_send_clicked)
+        page.runJavaScript(js, self.after_check_send_clicked)
 
     def after_check_send_clicked(self, clicked):
         if clicked and not self.note_saved:
@@ -2359,7 +2403,10 @@ class OtrsNoteDialog(QDialog):
         }})();
         """
 
-        self.view.page().runJavaScript(
+        page = self._web_page_or_none("inject_note_text")
+        if page is None:
+            return
+        page.runJavaScript(
             js,
             lambda result: self.after_inject_note_text(result, show_message)
         )
@@ -2384,6 +2431,8 @@ class OtrsNoteDialog(QDialog):
         if getattr(self, "_cleaned_up", False):
             return
         self._cleaned_up = True
+        self._is_closing = True
+        self._observers_stopped = True
         if getattr(self, "send_watch_timer", None) is not None:
             try:
                 self.send_watch_timer.stop()
@@ -2392,6 +2441,15 @@ class OtrsNoteDialog(QDialog):
                 pass
             self.send_watch_timer = None
         view = getattr(self, "view", None)
+        if view is not None:
+            try:
+                view.stop()
+            except RuntimeError:
+                pass
+            try:
+                view.loadFinished.disconnect(self.on_loaded)
+            except (RuntimeError, TypeError):
+                pass
         self.view = None
         self.page = None
         safe_delete_web_view(view, logger=get_logger(), context="OtrsNoteDialog", load_handler=self.on_loaded)

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QSizePolicy,
+    QScrollArea,
 )
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -289,7 +290,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         content = QLabel()
         content.setWordWrap(True)
-        layout.addWidget(content)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setMaximumHeight(300)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: 0; }")
+        content_box = QWidget()
+        content_layout = QVBoxLayout(content_box)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.addWidget(content)
+        content_layout.addStretch(1)
+        scroll.setWidget(content_box)
+        layout.addWidget(scroll)
         row = QHBoxLayout()
         refresh = QPushButton("Обновить")
         close = QPushButton("Закрыть")
@@ -298,7 +310,7 @@ class MainWindow(QMainWindow):
 
         def refresh_content():
             summary = collect_memory_summary()
-            processes = collect_top_memory_processes(limit=5)
+            processes = collect_top_memory_processes(limit=20)
             lines = [
                 f"Всего: {format_bytes(summary['total'])}",
                 f"Использовано: {format_bytes(summary['used'])} ({summary['percent']:.0f}%)",
@@ -313,8 +325,28 @@ class MainWindow(QMainWindow):
         refresh.clicked.connect(refresh_content)
         close.clicked.connect(dialog.close)
         refresh_content()
-        pos = self.memory_label.mapToGlobal(self.memory_label.rect().bottomLeft())
-        dialog.move(pos)
+        dialog.setMaximumHeight(420)
+        dialog.adjustSize()
+
+        margin = 10
+        gap = 6
+        anchor_top_left = self.memory_label.mapToGlobal(self.memory_label.rect().topLeft())
+        anchor_bottom_right = self.memory_label.mapToGlobal(self.memory_label.rect().bottomRight())
+        screen = QApplication.screenAt(anchor_bottom_right) or QApplication.screenAt(anchor_top_left) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else QGuiApplication.primaryScreen().availableGeometry()
+        popup_size = dialog.sizeHint().boundedTo(dialog.maximumSize())
+        popup_width = min(max(popup_size.width(), 360), max(360, available.width() - margin * 2))
+        popup_height = min(max(popup_size.height(), 220), 420, max(220, available.height() - margin * 2))
+        dialog.resize(popup_width, popup_height)
+
+        if anchor_bottom_right.y() + gap + popup_height <= available.bottom() - margin:
+            y = anchor_bottom_right.y() + gap
+        else:
+            y = anchor_top_left.y() - popup_height - gap
+        x = anchor_top_left.x()
+        x = max(available.left() + margin, min(x, available.right() - popup_width - margin + 1))
+        y = max(available.top() + margin, min(y, available.bottom() - popup_height - margin + 1))
+        dialog.move(x, y)
         dialog.show()
 
     def update_bottom_hud(self):
