@@ -9,7 +9,7 @@ from app.service_checks import default_service_checks_config
 from app.redmine_triggers import default_special_redmine_triggers_config, ensure_special_redmine_triggers_defaults
 from app.trigger_model import default_trigger_catalog_config, ensure_trigger_catalog_defaults
 from app.live_zabbix import default_live_monitor_config, ensure_live_monitor_defaults
-from app.permissions import ensure_duty_links, build_user_settings_export, import_user_settings_payload
+from app.permissions import ensure_duty_links, build_user_settings_export, import_user_settings_payload, normalize_user_permissions
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 CONFIG_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "config.example.json"
@@ -206,11 +206,57 @@ def _default_config():
         "special_redmine_triggers": default_special_redmine_triggers_config(),
         "live_zabbix_monitor": default_live_monitor_config(),
         "service_checks": default_service_checks_config(),
+        "templates": {},
+        "links": {},
+        "products_pages": [],
+        "update": {"check_updates_on_startup": True},
         "duty_links": {},
+        "zabbix_triggers": {"version": 1, "problems": [], "filters": []},
         "zabbix_trigger_catalog": {"version": 1, "triggers": []},
         "app": {"name": "Око"},
     }
 
+
+
+def get_default_config():
+    return deepcopy(_default_config())
+
+
+def merge_missing_defaults(user_config, default_config=None):
+    user_config = deepcopy(user_config or {})
+    default_config = deepcopy(default_config or get_default_config())
+    def merge(current, defaults):
+        if isinstance(current, dict) and isinstance(defaults, dict):
+            for key, value in defaults.items():
+                if key not in current:
+                    current[key] = deepcopy(value)
+                else:
+                    current[key] = merge(current[key], value)
+        return current
+    merged = merge(user_config, default_config)
+    if "_current_user" in merged:
+        merged["_current_user"] = normalize_user_permissions(merged.get("_current_user") or {"role": "agent"})
+    return merged
+
+
+def migrate_config(config):
+    config = merge_missing_defaults(config, get_default_config())
+    if "zabbix_triggers" not in config or not isinstance(config.get("zabbix_triggers"), dict):
+        catalog = config.get("zabbix_trigger_catalog") or {}
+        config["zabbix_triggers"] = {
+            "version": 1,
+            "problems": deepcopy(catalog.get("triggers") or []),
+            "filters": [],
+        }
+    else:
+        config["zabbix_triggers"].setdefault("version", 1)
+        catalog_triggers = deepcopy((config.get("zabbix_trigger_catalog") or {}).get("triggers") or [])
+        config["zabbix_triggers"].setdefault("problems", catalog_triggers)
+        if not config["zabbix_triggers"].get("problems") and catalog_triggers:
+            config["zabbix_triggers"]["problems"] = catalog_triggers
+        config["zabbix_triggers"].setdefault("filters", [])
+    ensure_duty_mode_defaults(config)
+    return config
 
 
 SETTINGS_EXPORT_FORMAT = "oko_settings_export"
@@ -241,6 +287,10 @@ EXPORTABLE_CONFIG_KEYS = (
     "special_redmine_triggers",
     "service_checks",
     "templates",
+    "links",
+    "products_pages",
+    "update",
+    "zabbix_triggers",
     "zabbix_trigger_catalog",
     "duty_links",
     "app",
@@ -399,11 +449,12 @@ def apply_prepared_config_file(source_path, current_config: dict | None = None) 
         else:
             incoming_settings = payload
         safe_settings = collect_exportable_settings(incoming_settings)
-        result = deepcopy(current)
+        result = migrate_config(deepcopy(current))
         for key, value in safe_settings.items():
             if key in FORBIDDEN_IMPORTED_ACCESS_KEYS:
                 continue
             result[key] = deepcopy(value)
+        result = migrate_config(result)
         from app.permissions import normalize_user_permissions
         result["_current_user"] = normalize_user_permissions(current.get("_current_user") or {"role": "agent"})
         ensure_duty_links(result)

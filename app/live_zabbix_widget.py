@@ -13,6 +13,7 @@ from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
+    QApplication,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
@@ -43,6 +44,9 @@ from app.trigger_model import SPECIAL_TRIGGER_KIND, append_history_event, enrich
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
 
 DOM_PARSER_SCRIPT = DOM_PARSER_SCRIPT_PLACEHOLDER
+REDMINE_URL_TRIGGER_LIMIT = 10
+REDMINE_URL_LENGTH_LIMIT = 1800
+REDMINE_DESCRIPTION_PLACEHOLDER = "[Описание будет вставлено автоматически из Око]"
 ZABBIX_TASK_COMMENT_RE = re.compile(r"Задача Redmine #\d+: https?://\S+|Задача на ММ #\d+(?:: https?://\S+)?|Задача на ММ: \d{6,}|Задача ММ: \d{6,}|ММ: \d{6,}|OTRS: \d{6,}")
 
 def build_redmine_zabbix_comment(issue_number, issue_url):
@@ -211,7 +215,7 @@ class RedmineCreateDialog(QDialog):
     LOGIN_MARKERS = ('form[action*="/login"]', 'input#username', 'input[name="username"]', 'input#password', 'input[name="password"]')
     ISSUE_FORM_MARKERS = ('input[name="issue[subject]"]', 'textarea[name="issue[description]"]')
 
-    def __init__(self, profile, redmine_url, settings, parent=None, success_callback=None, selected_items=None):
+    def __init__(self, profile, redmine_url, settings, parent=None, success_callback=None, selected_items=None, pending_description=""):
         super().__init__(parent)
         self.setWindowTitle("Создание задачи Redmine")
         self.resize(1100, 760)
@@ -222,6 +226,9 @@ class RedmineCreateDialog(QDialog):
         self.success_callback = success_callback
         self.selected_items = list(selected_items or [])
         self._issue_detected = False
+        self.pending_description = str(pending_description or "")
+        self._description_injected = False
+        self._description_injection_attempts = 0
         self.view = register_web_view(QWebEngineView(self))
         if profile is not None:
             self.page = QWebEnginePage(profile, self.view)
@@ -283,14 +290,74 @@ class RedmineCreateDialog(QDialog):
                 self.success_callback(list(self.selected_items), issue["issue_number"], issue["issue_url"])
             return
         if payload.get("valid_issue_form"):
-            self.status_label.setText("")
-            self.status_label.setVisible(False)
+            if self.pending_description and not self._description_injected:
+                self._start_description_injection()
+            else:
+                self.status_label.setText("")
+                self.status_label.setVisible(False)
             return
         if payload.get("login_required") or payload.get("broken"):
             self._open_redmine_auth_dialog()
             return
         self.status_label.setText("Redmine не открыл форму создания задачи. Проверьте авторизацию Redmine и настройки шаблона.")
         self.status_label.setVisible(True)
+
+
+    @staticmethod
+    def description_injection_script(description):
+        payload = json.dumps(str(description or ""), ensure_ascii=False)
+        return f"""
+(function() {{
+  var value = {payload};
+  var field = document.querySelector('textarea#issue_description, textarea[name="issue[description]"], #issue_description');
+  if (!field) return JSON.stringify({{ok:false, reason:'field_not_found'}});
+  field.value = value;
+  field.dispatchEvent(new Event('input', {{bubbles:true}}));
+  field.dispatchEvent(new Event('change', {{bubbles:true}}));
+  return JSON.stringify({{ok:true, length:value.length}});
+}})();
+"""
+
+    def _start_description_injection(self):
+        get_logger().info("Redmine description injection started")
+        self.status_label.setText("Вставляю описание задачи в Redmine...")
+        self.status_label.setVisible(True)
+        for delay in (0, 500, 1000, 2000):
+            QTimer.singleShot(delay, self._try_description_injection)
+
+    def _try_description_injection(self):
+        if self._description_injected:
+            return
+        page = self.view.page() if self.view is not None else None
+        if page is None:
+            return
+        self._description_injection_attempts += 1
+        page.runJavaScript(self.description_injection_script(self.pending_description), self._on_description_injection_result)
+
+    def _on_description_injection_result(self, result):
+        try:
+            payload = json.loads(result or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if payload.get("ok"):
+            self._description_injected = True
+            get_logger().info("Redmine description injection success")
+            self.status_label.setText("")
+            self.status_label.setVisible(False)
+            return
+        if self._description_injection_attempts >= 4 and not self._description_injected:
+            self._description_injected = True
+            get_logger().warning("Redmine description injection failed")
+            clipboard = QApplication.clipboard()
+            if clipboard is not None:
+                clipboard.setText(self.pending_description)
+            get_logger().info("Redmine description copied to clipboard after injection failure")
+            self.status_label.setText(
+                "Не удалось автоматически вставить описание в Redmine.\n"
+                "Описание скопировано в буфер обмена. Вставьте его вручную в поле описания Redmine вместо строки:\n"
+                + REDMINE_DESCRIPTION_PLACEHOLDER
+            )
+            self.status_label.setVisible(True)
 
     def _open_redmine_auth_dialog(self):
         profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
@@ -1659,10 +1726,21 @@ class LiveZabbixMonitorWidget(QWidget):
         }
 
         redmine_url = self._merge_redmine_url_params(create_url, dynamic_params, default_params)
-        if len(redmine_url) > 6500:
-            return redmine_url, f"Redmine-ссылка длинная: {len(redmine_url)} символов. Лучше выбрать меньше строк."
+        trigger_count = len(items)
+        if trigger_count <= REDMINE_URL_TRIGGER_LIMIT and len(redmine_url) <= REDMINE_URL_LENGTH_LIMIT:
+            self._pending_redmine_description = ""
+            self.logger.info("Redmine task link mode: normal trigger_count=%s url_length=%s", trigger_count, len(redmine_url))
+            return redmine_url, ""
 
-        return redmine_url, ""
+        reason = "trigger_limit" if trigger_count > REDMINE_URL_TRIGGER_LIMIT else "url_length"
+        self.logger.info("Redmine task link mode: hybrid trigger_count=%s url_length=%s reason=%s", trigger_count, len(redmine_url), reason)
+        short_params = {
+            "issue[subject]": subject,
+            "issue[description]": REDMINE_DESCRIPTION_PLACEHOLDER,
+        }
+        short_url = self._merge_redmine_url_params(create_url, short_params, default_params)
+        self._pending_redmine_description = description
+        return short_url, ""
 
     @staticmethod
     def _graph_link_lookup_script():
@@ -2407,7 +2485,7 @@ class LiveZabbixMonitorWidget(QWidget):
             self.logger.info("Redmine dialog opening")
             self.poll_status_label.setText("Открываю окно Redmine...")
             profile = self.view.page().profile() if self.view is not None and self.view.page() is not None else None
-            dialog = RedmineCreateDialog(profile, redmine_url, ensure_live_monitor_defaults(self.config), self, self._on_redmine_issue_created, list(items))
+            dialog = RedmineCreateDialog(profile, redmine_url, ensure_live_monitor_defaults(self.config), self, self._on_redmine_issue_created, list(items), getattr(self, "_pending_redmine_description", ""))
             self.redmine_dialogs.append(dialog)
             dialog.finished.connect(lambda _result, d=dialog: self.redmine_dialogs.remove(d) if d in self.redmine_dialogs else None)
             dialog.show()
@@ -4392,3 +4470,6 @@ class LiveZabbixMonitorWidget(QWidget):
             safe_delete_web_view(self.view, logger=self.logger, context="LiveZabbixMonitorWidget", load_handler=self._on_loaded)
             self._load_finished_connected = False
             self.view = None
+
+# Backward-compatible access for tests and shared Redmine hybrid helpers.
+LiveZabbixMonitorWidget.description_injection_script = staticmethod(RedmineCreateDialog.description_injection_script)

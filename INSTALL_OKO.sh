@@ -59,16 +59,22 @@ if command -v apt >/dev/null 2>&1; then
     fi
 fi
 
+echo "Проверяю Python..."
+python3 --version
+echo "Проверяю виртуальное окружение..."
 if [ ! -d ".venv" ]; then
     echo "Создаю виртуальное окружение..."
     python3 -m venv .venv
+else
+    echo "Виртуальное окружение найдено."
 fi
 
 source .venv/bin/activate
 
-echo "Устанавливаю Python-зависимости..."
+echo "Проверяю зависимости..."
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+echo "Зависимости готовы."
 
 echo "Создаю ярлык..."
 bash ./CREATE_DESKTOP_SHORTCUT.sh --no-pause || true
