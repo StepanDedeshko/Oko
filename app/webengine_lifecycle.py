@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 import weakref
 
 from PySide6.QtCore import QCoreApplication, QEvent, QUrl
@@ -89,8 +90,12 @@ def _log(logger, level, message, *args):
 
 
 def _safe_disconnect(signal, handler=None):
+    """Disconnect a Qt signal without leaking PySide RuntimeWarning noise."""
+    if signal is None:
+        return
     try:
-        if signal is not None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
             if handler is None:
                 signal.disconnect()
             else:
@@ -126,14 +131,16 @@ def safe_delete_web_view(view, logger=None, context="", load_handler=None, extra
         except Exception:
             pass
 
+        known_signal_handlers = {"loadFinished": load_handler} if load_handler is not None else {}
         for signal_name in ("loadFinished", "loadStarted", "urlChanged"):
             try:
                 signal = getattr(hidden_view, signal_name, None)
-                if signal_name == "loadFinished" and load_handler is not None:
-                    _safe_disconnect(signal, load_handler)
-                    _safe_disconnect(signal)
-                else:
-                    _safe_disconnect(signal)
+                handler = known_signal_handlers.get(signal_name)
+                if handler is not None:
+                    _safe_disconnect(signal, handler)
+                # Some WebViews have dynamically connected slots we do not own here.
+                # The no-argument disconnect is intentionally warning-suppressed.
+                _safe_disconnect(signal)
             except RuntimeError:
                 pass
             except Exception:
