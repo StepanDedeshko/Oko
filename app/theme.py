@@ -331,7 +331,7 @@ def build_stylesheet(theme_name: str) -> str:
     }}
 
     QComboBox:hover {{
-        border: 1px solid {p['accent2']};
+        border: 1px solid rgba(150, 235, 255, 180);
         background-color: {p['bg_card2']};
     }}
 
@@ -368,8 +368,8 @@ def build_stylesheet(theme_name: str) -> str:
     QPushButton, QToolButton {{
         background-color: {p['bg_card']};
         color: {p['text_title']};
-        border: 1px solid {p['accent']};
-        border-radius: 7px;
+        border: 1px solid rgba(101, 214, 255, 115);
+        border-radius: 12px;
         padding: 8px 16px;
         font-weight: bold;
         min-height: 24px;
@@ -377,7 +377,7 @@ def build_stylesheet(theme_name: str) -> str:
 
     QPushButton:hover, QToolButton:hover {{
         background-color: {p['bg_card2']};
-        border: 1px solid {p['accent2']};
+        border: 1px solid rgba(150, 235, 255, 180);
     }}
 
     QPushButton:pressed, QToolButton:pressed {{
@@ -470,7 +470,7 @@ def build_stylesheet(theme_name: str) -> str:
 
     QCheckBox::indicator:checked {{
         background-color: {p['accent']};
-        border: 1px solid {p['accent2']};
+        border: 1px solid rgba(150, 235, 255, 180);
     }}
 
     QScrollArea {{
@@ -641,7 +641,7 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
 
     QPushButton#GraphOpenButton:hover {{
         background: {p['selected']};
-        border: 1px solid {p['accent2']};
+        border: 1px solid rgba(150, 235, 255, 180);
     }}
 
     QFrame#GraphWebContainer, QWidget#GraphWebContainer {{
@@ -703,7 +703,7 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
 
     QPushButton:pressed, QToolButton:pressed {{
         background: {p['accent']};
-        border: 1px solid {p['accent2']};
+        border: 1px solid rgba(150, 235, 255, 180);
         color: {primary_text};
     }}
 
@@ -717,7 +717,7 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
             stop:0 {p['accent']}, stop:1 {p['accent2']});
         color: {primary_text};
-        border: 1px solid {p['accent2']};
+        border: 1px solid rgba(150, 235, 255, 180);
     }}
 
     QPushButton#DestructiveAction {{
@@ -812,7 +812,7 @@ def _build_nextgen_stylesheet(theme_name: str, p: dict) -> str:
 
     QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
         background: {p['accent']};
-        border: 1px solid {p['accent2']};
+        border: 1px solid rgba(150, 235, 255, 180);
     }}
 
     QTabWidget::pane {{

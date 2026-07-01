@@ -5821,21 +5821,13 @@ class DutyModeWidget(QWidget):
             )
             self.finish_duty_check_flow()
             return
-        zabbix_id = str((page or {}).get("zabbix_id") or (page or {}).get("zabbix_profile") or (page or {}).get("zabbix_profile_id") or zabbix_profile or "").strip()
-        profile = self.profiles.get(zabbix_id)
-        credentials = self.credentials.get(zabbix_id, {}) if zabbix_id else {}
-        self.duty_zabbix_problems_status = "Открыто для проверки"
+        self.logger.info("Skipping legacy Zabbix problems check dialog")
+        self.logger.info("Opening graphs directly")
+        self.duty_zabbix_problems_status = "Пропущено"
+        self.status_label.setText("Открытие графиков")
         self.update_dashboard_summary()
         token = self._duty_guard.token()
-        dialog = ZabbixProblemsDialog(url, profile=profile, credentials=credentials, config=self.config, parent=self)
-        self.zabbix_problems_dialog = dialog
-        dialog.problemsDetected.connect(lambda problems, r=token.run_id, st=token.stage_id: self._remember_detected_zabbix_problems(problems, r, st))
-        dialog.problemsSelected.connect(lambda problems, r=token.run_id, st=token.stage_id: self._remember_selected_zabbix_problems(problems, r, st))
-        dialog.confirmed.connect(lambda r=token.run_id, st=token.stage_id: self._finish_zabbix_problems_stage(r, st))
-        dialog.finished.connect(lambda _result: setattr(self, "zabbix_problems_dialog", None))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        self._finish_zabbix_problems_stage(token.run_id, token.stage_id)
 
     def _remember_detected_zabbix_problems(self, problems, run_id=None, stage_id=None):
         if run_id is not None and not self._duty_callback_is_current(run_id, stage_id, "zabbix_problems_detected"):
@@ -5877,7 +5869,13 @@ class DutyModeWidget(QWidget):
         self.duty_zabbix_graphs_status = "Открыто для проверки"
         self.duty_zabbix_graph_statuses = {item.get("id"): "Открыто для проверки" for item in self.check_graphs}
         self.update_dashboard_summary()
-        self.open_graph_check_overlay(run_triggers_after_open=True)
+        try:
+            self.open_graph_check_overlay(run_triggers_after_open=True)
+            self.logger.info("Graphs opened")
+        except Exception:
+            self.logger.exception("Failed to open graphs")
+            QMessageBox.warning(self, "Графики", "Не удалось открыть графики")
+            self.finish_duty_check_flow()
 
     def start_duty_zabbix_stage(self):
         self._start_duty_stage("zabbix_problems")

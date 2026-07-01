@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QRect, QTimer, Qt, QUrl
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QComboBox,
     QApplication,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QFrame,
     QToolBar,
     QWidget,
     QVBoxLayout,
@@ -32,6 +34,7 @@ from app.live_zabbix_widget import LiveZabbixMonitorWidget
 from app.system_info_widget import SystemInfoWidget
 from app.zabbix_profile import create_profile
 from app.system_metrics import SystemMetricsProvider
+from app.memory_details import collect_memory_summary, collect_top_memory_processes, format_bytes
 from app.theme import apply_theme
 from app.theme_logo import load_theme_logo
 from app.app_info import APP_NAME
@@ -243,6 +246,9 @@ class MainWindow(QMainWindow):
 
         self.cpu_temp_label = QLabel("CPU temp.: н/д")
         self.memory_label = QLabel("Память: н/д")
+        self.memory_label.setCursor(Qt.PointingHandCursor)
+        self.memory_label.setToolTip("Показать процессы, которые используют больше всего RAM")
+        self.memory_label.mousePressEvent = self.show_memory_details
         self.network_label = QLabel("Сеть: н/д")
         self.updated_label = QLabel("Данные обновлены: --:--:--")
 
@@ -264,6 +270,52 @@ class MainWindow(QMainWindow):
 
         self.update_bottom_hud()
         self.log_memory_status()
+
+
+    def show_memory_details(self, _event=None):
+        dialog = QDialog(self, Qt.Popup)
+        dialog.setWindowTitle("Использование памяти")
+        dialog.setObjectName("MemoryDetailsPopup")
+        dialog.setStyleSheet("""
+            QDialog#MemoryDetailsPopup { background: rgba(10, 18, 28, 245); border: 1px solid rgba(101, 214, 255, 130); border-radius: 12px; }
+            QLabel { color: #d7f4ff; }
+            QPushButton { background: rgba(37, 74, 96, 190); border: 1px solid rgba(101, 214, 255, 120); border-radius: 8px; padding: 6px 12px; color: #e8fbff; }
+            QPushButton:hover { background: rgba(57, 115, 148, 220); }
+        """)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 12, 14, 12)
+        title = QLabel("Использование памяти")
+        title.setObjectName("PageTitle")
+        layout.addWidget(title)
+        content = QLabel()
+        content.setWordWrap(True)
+        layout.addWidget(content)
+        row = QHBoxLayout()
+        refresh = QPushButton("Обновить")
+        close = QPushButton("Закрыть")
+        row.addStretch(1); row.addWidget(refresh); row.addWidget(close)
+        layout.addLayout(row)
+
+        def refresh_content():
+            summary = collect_memory_summary()
+            processes = collect_top_memory_processes(limit=5)
+            lines = [
+                f"Всего: {format_bytes(summary['total'])}",
+                f"Использовано: {format_bytes(summary['used'])} ({summary['percent']:.0f}%)",
+                f"Доступно: {format_bytes(summary['available'])}",
+                "",
+                "Больше всего используют:",
+            ]
+            for index, proc in enumerate(processes, 1):
+                suffix = " (это приложение)" if proc.get('is_current_app') else ""
+                lines.append(f"{index}. {proc['name']} — {format_bytes(proc['rss'])}, процессов: {proc['count']}{suffix}")
+            content.setText("\n".join(lines))
+        refresh.clicked.connect(refresh_content)
+        close.clicked.connect(dialog.close)
+        refresh_content()
+        pos = self.memory_label.mapToGlobal(self.memory_label.rect().bottomLeft())
+        dialog.move(pos)
+        dialog.show()
 
     def update_bottom_hud(self):
         metrics = self.metrics_provider.get_metrics()

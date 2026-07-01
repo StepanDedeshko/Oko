@@ -5,8 +5,10 @@ import hmac
 import json
 import os
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -2386,11 +2388,13 @@ class SettingsMenuWidget(QWidget):
         center_row = QHBoxLayout()
         center_row.addStretch(1)
         menu = QWidget()
-        menu.setMaximumWidth(520)
+        menu.setObjectName("MenuCard")
+        menu.setStyleSheet("QWidget#MenuCard { background: rgba(14, 25, 38, 150); border: 1px solid rgba(101, 214, 255, 80); border-radius: 18px; }")
+        menu.setMaximumWidth(560)
         menu.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         menu_layout = QVBoxLayout(menu)
-        menu_layout.setSpacing(10)
-        menu_layout.setContentsMargins(0, 0, 0, 0)
+        menu_layout.setSpacing(12)
+        menu_layout.setContentsMargins(18, 18, 18, 18)
         for section_name in self.section_names:
             button = QPushButton(section_name)
             button.setObjectName("SecondaryAction")
@@ -2400,6 +2404,14 @@ class SettingsMenuWidget(QWidget):
             button.clicked.connect(lambda checked=False, name=section_name: self.open_section_callback(name))
             menu_layout.addWidget(button)
         center_row.addWidget(menu)
+        illustration_path = Path(__file__).resolve().parent.parent / "assets" / "ui" / "home_illustration.png"
+        if illustration_path.exists():
+            illustration = QLabel()
+            illustration.setObjectName("HomeIllustration")
+            illustration.setPixmap(QPixmap(str(illustration_path)).scaled(260, 260, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            illustration.setAlignment(Qt.AlignCenter)
+            center_row.addSpacing(28)
+            center_row.addWidget(illustration)
         center_row.addStretch(1)
         root.addLayout(center_row)
         root.addStretch(2)
@@ -2539,11 +2551,13 @@ class HomePageWidget(QWidget):
         center_row = QHBoxLayout()
         center_row.addStretch(1)
         menu = QWidget()
-        menu.setMaximumWidth(520)
+        menu.setObjectName("HomeMenuCard")
+        menu.setStyleSheet("QWidget#HomeMenuCard { background: rgba(14, 25, 38, 155); border: 1px solid rgba(101, 214, 255, 85); border-radius: 20px; }")
+        menu.setMaximumWidth(560)
         menu.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         tiles = QVBoxLayout(menu)
-        tiles.setSpacing(10)
-        tiles.setContentsMargins(0, 0, 0, 0)
+        tiles.setSpacing(12)
+        tiles.setContentsMargins(18, 18, 18, 18)
         for action_name in self.visible_main_actions():
             button = QPushButton(action_name)
             button.setObjectName("PrimaryAction" if action_name == "Перейти в режим дежурства" else "SecondaryAction")
