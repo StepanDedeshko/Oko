@@ -25,6 +25,7 @@ from app.duty_mode import DutyModeWidget
 from app.app_users import clear_remembered_user
 from app.home_config import AppSettingsWidget, HomePageWidget
 from app.config import save_config
+from app.permissions import normalize_user_permissions
 from app.dashboard_widgets import GraphsDashboard, ProblemPageDashboard, SimplePageDashboard, ModePagesDashboard
 from app.hotkeys_widget import HotkeysWidget
 from app.live_zabbix_widget import LiveZabbixMonitorWidget
@@ -121,6 +122,29 @@ class MainWindow(QMainWindow):
 
         self.apply_initial_window_mode()
 
+    def role_title(self, role):
+        role = str(role or "agent").lower()
+        return {
+            "agent": "Агент",
+            "user": "Агент",
+            "admin": "Администратор",
+            "owner": "Владелец",
+            "developer": "Разработчик",
+        }.get(role, "Агент")
+
+    def user_badge_text(self):
+        user = normalize_user_permissions(self.config.get("_current_user") or {})
+        login = str(user.get("login") or user.get("username") or "неизвестно")
+        role = self.role_title(user.get("role"))
+        parts = [login, role]
+        if user.get("developer_unlocked") or user.get("developer_mode"):
+            parts.append("Dev")
+        return " · ".join(parts)
+
+    def refresh_user_badge(self):
+        if hasattr(self, "user_badge_label"):
+            self.user_badge_label.setText(f"  {self.user_badge_text()}  ")
+
     def logout_user(self):
         message = "Выйти из аккаунта Око на этом компьютере? Сохранённый вход будет удалён. После выхода приложение закроется."
 
@@ -137,6 +161,7 @@ class MainWindow(QMainWindow):
         try:
             clear_remembered_user()
             self.config.pop("_current_user", None)
+            self.refresh_user_badge()
             self.logger.info("Oko user logged out")
         except Exception:
             self.logger.exception("Failed to clear remembered Oko login on logout")
@@ -270,6 +295,27 @@ class MainWindow(QMainWindow):
         self.time_label_action = self.toolbar.addWidget(QLabel("Период: "))
         self.time_combo_action = self.toolbar.addWidget(self.time_combo)
         self.toolbar.addSeparator()
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.toolbar.addWidget(spacer)
+
+        self.user_badge_label = QLabel()
+        self.user_badge_label.setObjectName("UserRoleBadge")
+        self.user_badge_label.setToolTip("Текущая учётная запись и применённая роль доступа")
+        self.user_badge_label.setAlignment(Qt.AlignCenter)
+        self.user_badge_label.setStyleSheet(
+            "QLabel#UserRoleBadge {"
+            "color: #dbeafe;"
+            "background: rgba(15, 23, 42, 0.58);"
+            "border: 1px solid rgba(147, 197, 253, 0.45);"
+            "border-radius: 10px;"
+            "padding: 4px 10px;"
+            "font-size: 12px;"
+            "}"
+        )
+        self.toolbar.addWidget(self.user_badge_label)
+        self.refresh_user_badge()
 
     def configure_toolbar_combo(self, combo, minimum_width, maximum_width):
         combo.setMinimumWidth(minimum_width)
