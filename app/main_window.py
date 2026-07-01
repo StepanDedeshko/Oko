@@ -25,6 +25,7 @@ from app.duty_mode import DutyModeWidget
 from app.app_users import clear_remembered_user
 from app.home_config import AppSettingsWidget, HomePageWidget
 from app.config import save_config
+from app.permissions import normalize_user_permissions
 from app.dashboard_widgets import GraphsDashboard, ProblemPageDashboard, SimplePageDashboard, ModePagesDashboard
 from app.hotkeys_widget import HotkeysWidget
 from app.live_zabbix_widget import LiveZabbixMonitorWidget
@@ -77,6 +78,7 @@ class MainWindow(QMainWindow):
         self.auth_page_index = None
         self.auth_web_views = []
         self._last_memory_warning = False
+        self._shutdown_completed = False
 
         self.is_updating_selectors = False
         self.metrics_provider = SystemMetricsProvider()
@@ -121,6 +123,85 @@ class MainWindow(QMainWindow):
 
         self.apply_initial_window_mode()
 
+    def role_title(self, role):
+        role = str(role or "agent").lower()
+        return {
+            "agent": "Агент",
+            "user": "Агент",
+            "admin": "Администратор",
+            "owner": "Владелец",
+            "developer": "Разработчик",
+        }.get(role, "Агент")
+
+    def user_badge_text(self):
+        user = normalize_user_permissions(self.config.get("_current_user") or {})
+        login = str(user.get("login") or user.get("username") or "неизвестно")
+        role = self.role_title(user.get("role"))
+        parts = [login, role]
+        if user.get("developer_unlocked") or user.get("developer_mode"):
+            parts.append("Dev")
+        return " · ".join(parts)
+
+    def refresh_user_badge(self):
+        if hasattr(self, "user_badge_label"):
+            self.user_badge_label.setText(f"  {self.user_badge_text()}  ")
+
+    def request_application_exit(self):
+        self.logger.info("Application exit requested from main menu")
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("Закрыть Око?")
+        message_box.setText("Закрыть Око?")
+        message_box.setInformativeText("Режим дежурства и все фоновые проверки будут остановлены.")
+        close_button = message_box.addButton("Закрыть Око", QMessageBox.AcceptRole)
+        message_box.addButton("Отмена", QMessageBox.RejectRole)
+        message_box.setDefaultButton(close_button)
+        message_box.exec()
+        if message_box.clickedButton() is not close_button:
+            return
+        self.shutdown_application()
+
+    def shutdown_application(self):
+        self.stop_background_activity_for_exit()
+        self.close()
+        QApplication.quit()
+
+    def stop_background_activity_for_exit(self):
+        if self._shutdown_completed:
+            return
+        self.logger.info("Stopping duty mode before exit")
+        if self.duty_mode_widget is not None:
+            try:
+                self.duty_mode_widget.disable_for_shutdown()
+            except Exception:
+                self.logger.exception("Failed to stop duty mode before exit")
+        self.logger.info("Stopping service checks before exit")
+        if self.duty_mode_widget is not None:
+            try:
+                if hasattr(self.duty_mode_widget, "service_check_queue"):
+                    self.duty_mode_widget.service_check_queue = []
+                if hasattr(self.duty_mode_widget, "_set_service_check_running"):
+                    self.duty_mode_widget._set_service_check_running(False)
+            except Exception:
+                self.logger.exception("Failed to stop service checks before exit")
+        self.logger.info("Stopping background timers before exit")
+        for timer_name in ("metrics_timer", "memory_diagnostics_timer"):
+            timer = getattr(self, timer_name, None)
+            if timer is not None:
+                try:
+                    timer.stop()
+                except Exception:
+                    self.logger.exception("Failed to stop timer before exit: %s", timer_name)
+        self.logger.info("Stopping Live Zabbix Monitor before exit")
+        if self.live_zabbix_monitor_widget is not None:
+            try:
+                if hasattr(self.live_zabbix_monitor_widget, "stop_monitor"):
+                    self.live_zabbix_monitor_widget.stop_monitor()
+            except Exception:
+                self.logger.exception("Failed to stop Live Zabbix Monitor before exit")
+        self.cleanup_web_resources()
+        self._shutdown_completed = True
+        self.logger.info("Application shutdown completed")
+
     def logout_user(self):
         message = "Выйти из аккаунта Око на этом компьютере? Сохранённый вход будет удалён. После выхода приложение закроется."
 
@@ -137,6 +218,7 @@ class MainWindow(QMainWindow):
         try:
             clear_remembered_user()
             self.config.pop("_current_user", None)
+            self.refresh_user_badge()
             self.logger.info("Oko user logged out")
         except Exception:
             self.logger.exception("Failed to clear remembered Oko login on logout")
@@ -270,6 +352,27 @@ class MainWindow(QMainWindow):
         self.time_label_action = self.toolbar.addWidget(QLabel("Период: "))
         self.time_combo_action = self.toolbar.addWidget(self.time_combo)
         self.toolbar.addSeparator()
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.toolbar.addWidget(spacer)
+
+        self.user_badge_label = QLabel()
+        self.user_badge_label.setObjectName("UserRoleBadge")
+        self.user_badge_label.setToolTip("Текущая учётная запись и применённая роль доступа")
+        self.user_badge_label.setAlignment(Qt.AlignCenter)
+        self.user_badge_label.setStyleSheet(
+            "QLabel#UserRoleBadge {"
+            "color: #dbeafe;"
+            "background: rgba(15, 23, 42, 0.58);"
+            "border: 1px solid rgba(147, 197, 253, 0.45);"
+            "border-radius: 10px;"
+            "padding: 4px 10px;"
+            "font-size: 12px;"
+            "}"
+        )
+        self.toolbar.addWidget(self.user_badge_label)
+        self.refresh_user_badge()
 
     def configure_toolbar_combo(self, combo, minimum_width, maximum_width):
         combo.setMinimumWidth(minimum_width)
@@ -460,7 +563,9 @@ class MainWindow(QMainWindow):
             config=self.config,
             open_duty_callback=self.open_duty_page,
             open_settings_callback=self.open_settings_section,
-            update_check_callback=self.check_for_updates_from_settings
+            update_check_callback=self.check_for_updates_from_settings,
+            logout_callback=self.logout_user,
+            exit_callback=self.request_application_exit,
         )
 
         self.home_page_index = self.stack.addWidget(self.home_page_widget)
@@ -722,7 +827,7 @@ class MainWindow(QMainWindow):
     def open_settings_section(self, section_name=None):
         if self.settings_page_index is not None:
             widget = self.stack.widget(self.settings_page_index)
-            if section_name and hasattr(widget, "open_section"):
+            if hasattr(widget, "open_section"):
                 widget.open_section(section_name)
             self.stack.setCurrentIndex(self.settings_page_index)
             self.set_time_selector_visible(False)
@@ -792,6 +897,10 @@ class MainWindow(QMainWindow):
         for widget in list(self.dashboard_widgets):
             if hasattr(widget, "cleanup"):
                 widget.cleanup()
+        for index in range(self.stack.count()):
+            widget = self.stack.widget(index)
+            if widget not in self.dashboard_widgets and hasattr(widget, "cleanup"):
+                widget.cleanup()
         for view, _page in list(self.auth_web_views):
             safe_delete_web_view(view, logger=self.logger, context="auth hidden WebView")
         self.auth_web_views.clear()
@@ -853,13 +962,7 @@ class MainWindow(QMainWindow):
         view.page().runJavaScript(js)
 
     def closeEvent(self, event):
-        if self.duty_mode_widget is not None:
-            self.duty_mode_widget.disable_for_shutdown()
-        if getattr(self, "metrics_timer", None) is not None:
-            self.metrics_timer.stop()
-        if getattr(self, "memory_diagnostics_timer", None) is not None:
-            self.memory_diagnostics_timer.stop()
-        self.cleanup_web_resources()
+        self.stop_background_activity_for_exit()
         super().closeEvent(event)
 
     def set_time_range(self, range_value):

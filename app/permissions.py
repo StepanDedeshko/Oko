@@ -15,15 +15,17 @@ SECTION_PRODUCTS_PAGES = "section.products_pages"
 SECTION_DEVELOPER = "section.developer"
 SECTION_TEMPLATES = "section.templates"
 SECTION_SERVICE_CHECKS_TECHNICAL = "section.service_checks_technical"
+SECTION_SETTINGS = "section.settings"
+SECTION_TRANSFER_SETTINGS = "section.transfer_settings"
+SECTION_LINKS = "section.links"
 
 ALL_SECTION_PERMISSIONS = [
     SECTION_PROFILE, SECTION_DUTY_SETTINGS, SECTION_SERVICE_CHECKS_USER, SECTION_NOTES,
     SECTION_UPDATE, SECTION_THEME, SECTION_CHANGELOG, SECTION_ADMIN, SECTION_PRODUCTS_PAGES,
-    SECTION_DEVELOPER, SECTION_TEMPLATES, SECTION_SERVICE_CHECKS_TECHNICAL,
+    SECTION_DEVELOPER, SECTION_TEMPLATES, SECTION_SERVICE_CHECKS_TECHNICAL, SECTION_SETTINGS, SECTION_TRANSFER_SETTINGS, SECTION_LINKS,
 ]
 SAFE_AGENT_SECTION_PERMISSIONS = [
-    SECTION_PROFILE, SECTION_DUTY_SETTINGS, SECTION_SERVICE_CHECKS_USER, SECTION_NOTES,
-    SECTION_UPDATE, SECTION_THEME, SECTION_CHANGELOG,
+    SECTION_PROFILE, SECTION_UPDATE, SECTION_THEME,
 ]
 SECTION_NAMES = {
     SECTION_PROFILE: "Профиль",
@@ -38,9 +40,13 @@ SECTION_NAMES = {
     SECTION_DEVELOPER: "Режим разработчика",
     SECTION_TEMPLATES: "Шаблоны",
     SECTION_SERVICE_CHECKS_TECHNICAL: "Технические настройки проверок",
+    SECTION_SETTINGS: "Настройки",
+    SECTION_TRANSFER_SETTINGS: "Перенос настроек",
+    SECTION_LINKS: "Ссылки",
 }
 SECTION_BY_NAME = {v: k for k, v in SECTION_NAMES.items()}
 ADMIN_ROLES = {"owner", "admin"}
+TECHNICAL_SETTINGS_PERMISSIONS = {SECTION_LINKS, SECTION_PRODUCTS_PAGES, SECTION_SERVICE_CHECKS_USER, SECTION_SERVICE_CHECKS_TECHNICAL, SECTION_DUTY_SETTINGS, SECTION_TEMPLATES, SECTION_CHANGELOG, SECTION_THEME}
 AGENT_ROLES = {"agent", "user"}
 
 LEGACY_DUTY_URL_KEYS = {
@@ -65,6 +71,7 @@ def normalize_user_permissions(user: dict | None) -> dict:
     if role == "user":
         role = "agent"
     user["role"] = role
+    developer_unlocked = bool(user.get("developer_unlocked") or user.get("developer_mode"))
     permissions = user.get("section_permissions")
     if permissions is None:
         permissions = user.get("permissions")
@@ -72,14 +79,62 @@ def normalize_user_permissions(user: dict | None) -> dict:
         permissions = default_permissions_for_role(role)
     if role in ADMIN_ROLES:
         permissions = ALL_SECTION_PERMISSIONS
+    elif developer_unlocked:
+        permissions = sorted(set(permissions or []) | TECHNICAL_SETTINGS_PERMISSIONS | {SECTION_SETTINGS})
     user["section_permissions"] = sorted({p for p in permissions if p in ALL_SECTION_PERMISSIONS})
     groups = user.get("service_group_ids")
     if groups is None:
         groups = user.get("service_groups", [])
     user["service_group_ids"] = sorted({str(g) for g in (groups or []) if str(g)})
+    user["permissions"] = permissions_for_role(role, developer_unlocked=developer_unlocked)
     user.setdefault("active", True)
     return user
 
+
+
+ROLE_MAIN_CARDS = {
+    "agent": ["duty_mode", "profile", "theme", "update", "exit"],
+    "user": ["duty_mode", "profile", "theme", "update", "exit"],
+    "admin": ["duty_mode", "profile", "settings", "update", "exit"],
+    "owner": ["*"],
+}
+ROLE_SETTINGS_SECTIONS = {
+    "agent": [],
+    "user": [],
+    "admin": ["transfer_settings", "duty_settings", "service_checks", "templates", "whats_new", "theme", "products_pages", "links"],
+    "owner": ["*"],
+}
+
+def permissions_for_role(role: str, developer_unlocked: bool = False) -> dict:
+    role = str(role or "agent").lower()
+    if role == "user":
+        role = "agent"
+    all_permissions = role == "owner"
+    main_cards = ROLE_MAIN_CARDS.get(role, ROLE_MAIN_CARDS["agent"])
+    settings_sections = ROLE_SETTINGS_SECTIONS.get(role, [])
+    if developer_unlocked and not all_permissions:
+        settings_sections = sorted(set(settings_sections) | {"links", "products_pages", "service_checks", "duty_settings", "templates", "whats_new", "theme"})
+        if "settings" not in main_cards:
+            main_cards = [*main_cards, "settings"]
+    can_open_settings = all_permissions or bool(settings_sections)
+    return {
+        "main_cards": list(main_cards),
+        "settings_sections": list(settings_sections),
+        "can_open_settings": can_open_settings,
+        "can_transfer_settings": all_permissions or role == "admin",
+        "can_edit_links": all_permissions or role == "admin" or developer_unlocked,
+        "can_edit_templates": all_permissions or role == "admin" or developer_unlocked,
+        "can_edit_products": all_permissions or role == "admin" or developer_unlocked,
+        "can_edit_service_checks": all_permissions or role == "admin" or developer_unlocked,
+        "can_edit_duty_settings": all_permissions or role == "admin" or developer_unlocked,
+        "all_permissions": all_permissions,
+    }
+
+def get_main_cards_for_role(role: str) -> list[str]:
+    return permissions_for_role(role).get("main_cards", ROLE_MAIN_CARDS["agent"])
+
+def get_settings_sections_for_role(role: str, developer_unlocked: bool = False) -> list[str]:
+    return permissions_for_role(role, developer_unlocked).get("settings_sections", [])
 
 def has_permission(user: dict | None, permission: str) -> bool:
     user = normalize_user_permissions(user)
@@ -190,13 +245,41 @@ def build_user_settings_export(config: dict, user: dict) -> dict:
     return sanitize_export_data(payload)
 
 
-def import_user_settings_payload(current_config: dict, payload: dict, keep_passwords: bool = True) -> dict:
+def import_user_settings_payload(current_config: dict, payload: dict, keep_passwords: bool = True, accept_imported_service_groups: bool = False) -> dict:
     if payload.get("format") != "oko_user_settings_export":
         raise ValueError("unsupported user settings export format")
     result = deepcopy(current_config or {})
     for key, value in (payload.get("settings") or {}).items():
         result[key] = deepcopy(value)
-    user = normalize_user_permissions(payload.get("user") or {})
+    # Imported files are not trusted to grant roles/permissions/developer access.
+    # Keep the local account identity and force role-derived permissions.
+    local_user = deepcopy((current_config or {}).get("_current_user") or {})
+    imported_user = payload.get("user") or {}
+    if not local_user:
+        # Compatibility: old per-user exports with role=custom may carry a restricted
+        # section/group allow-list. Never accept elevated admin/owner/developer flags.
+        if str(imported_user.get("role") or "").lower() == "custom":
+            local_user = {
+                "login": imported_user.get("login", ""),
+                "display_name": imported_user.get("display_name", ""),
+                "role": "custom",
+                "section_permissions": imported_user.get("section_permissions") or [],
+                "service_group_ids": imported_user.get("service_group_ids") or [],
+            }
+        else:
+            local_user = {"login": imported_user.get("login", ""), "display_name": imported_user.get("display_name", ""), "role": "agent"}
+    if accept_imported_service_groups and isinstance(imported_user, dict):
+        groups = imported_user.get("service_group_ids")
+        if groups is None:
+            groups = imported_user.get("service_groups")
+        if groups is not None:
+            local_user["service_group_ids"] = groups
+    user = normalize_user_permissions(local_user)
+    # Never keep legacy privilege flags from imported/user configs.
+    user["is_owner"] = user.get("role") == "owner"
+    user["is_admin"] = user.get("role") in ADMIN_ROLES
+    user["is_developer"] = False
+    user["developer_mode"] = False
     result["_current_user"] = user
     ensure_duty_links(result)
     return result

@@ -1,6 +1,7 @@
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFileDialog,
     QFormLayout,
     QLabel,
     QLineEdit,
@@ -13,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.app_info import APP_VERSION
-from app.config import save_config
+from app.config import apply_prepared_config_file, save_config
 from app.logger import get_logger
 from app.updater import (
     download_and_install_update,
@@ -115,12 +116,65 @@ class UpdateWidget(QWidget):
         self.check_updates_now_button = QPushButton("Проверить обновления сейчас")
         self.check_updates_now_button.clicked.connect(self.check_updates_now)
         root.addWidget(self.check_updates_now_button)
+
+        apply_hint = QLabel(
+            "Если администратор передал подготовленный конфиг Око, примените его здесь. "
+            "Роль и права текущего пользователя при этом не повышаются."
+        )
+        apply_hint.setWordWrap(True)
+        root.addWidget(apply_hint)
+        self.apply_config_button = QPushButton("Применить конфиг")
+        self.apply_config_button.clicked.connect(self.apply_prepared_config)
+        root.addWidget(self.apply_config_button)
         root.addStretch()
 
         self.update_thread = None
         self.update_worker = None
         self.release_thread = None
         self.release_worker = None
+
+    def apply_prepared_config(self):
+        selected_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Применить конфиг Око",
+            "",
+            "JSON (*.json);;Все файлы (*)",
+        )
+        if not selected_path:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Применить конфиг",
+            "Будут применены рабочие настройки из выбранного файла. "
+            "Роль, права и доступ к настройкам останутся назначенными локально.\n\n"
+            "Продолжить?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            applied_config, summary = apply_prepared_config_file(selected_path, self.config)
+            self.config.clear()
+            self.config.update(applied_config)
+        except Exception as exc:
+            self.logger.exception("Не удалось применить конфиг Око")
+            QMessageBox.warning(self, "Применить конфиг", f"Не удалось применить конфиг:\n{exc}")
+            return
+        role_title = {"agent": "Агент", "admin": "Администратор", "owner": "Владелец"}.get(str(summary.get("role") or "agent"), str(summary.get("role") or "agent"))
+        groups = ", ".join(summary.get("service_group_ids") or []) or "не заданы"
+        message = (
+            "Конфиг успешно применён.\n\n"
+            f"Роль: {role_title}\n"
+            f"Доступные группы сервисов: {groups}\n"
+            f"Перенесено сервисов: {summary.get('services_count', 0)}\n"
+            f"Перенесено ссылок: {summary.get('links_count', 0)}\n"
+            f"Перенесено шаблонов: {summary.get('templates_count', 0)}\n"
+            "Ограничения сохранены.\n\n"
+            "Для полного применения настроек перезапустите приложение."
+        )
+        self.append_status("Конфиг Око применён")
+        QMessageBox.information(self, "Применить конфиг", message)
 
     def append_status(self, text):
         self.status_log.appendPlainText(text)
@@ -281,4 +335,19 @@ class UpdateWidget(QWidget):
 
     def clear_update_thread_refs(self):
         self.update_thread = None
+        self.update_worker = None
+
+    def cleanup(self):
+        """Stop background update/check threads before application shutdown."""
+        for thread_attr in ("release_thread", "update_thread"):
+            thread = getattr(self, thread_attr, None)
+            if thread is None:
+                continue
+            try:
+                thread.quit()
+                thread.wait(3000)
+            except Exception:
+                pass
+            setattr(self, thread_attr, None)
+        self.release_worker = None
         self.update_worker = None

@@ -83,7 +83,7 @@ def clone(value):
 
 from app.permissions import (
     ALL_SECTION_PERMISSIONS, SECTION_NAMES, can_open_section, visible_sections_for_user,
-    normalize_user_permissions, build_user_settings_export, ensure_duty_links,
+    normalize_user_permissions, build_user_settings_export, ensure_duty_links, get_duty_link, set_duty_link,
 )
 
 def ensure_home_defaults(config):
@@ -228,14 +228,16 @@ class LiveZabbixDeveloperSettingsWidget(QGroupBox):
             )
         )
 
-        form.addRow("URL Zabbix Problems:", self.url_input)
+        self.url_input.setReadOnly(True)
+        form.addRow("URL Zabbix Problems (редактируется в Настройки → Ссылки):", self.url_input)
         form.addRow("Интервал опроса:", self.interval_input)
         form.addRow("Профиль Zabbix:", self.profile_input)
         form.addRow("", self.show_diagnostics_checkbox)
         self.mm_otrs_create_url_input = QLineEdit()
         self.mm_otrs_create_url_input.setText(str(self.settings.get("mm_otrs_create_url", "") or ""))
         self.mm_otrs_create_url_input.setPlaceholderText("https://itsm... URL создания задачи ОТРС ММ")
-        form.addRow("URL создания задачи ОТРС ММ:", self.mm_otrs_create_url_input)
+        self.mm_otrs_create_url_input.setReadOnly(True)
+        form.addRow("URL создания задачи ОТРС ММ (Настройки → Ссылки):", self.mm_otrs_create_url_input)
 
         root.addLayout(form)
 
@@ -282,6 +284,62 @@ class DeveloperToolsWidget(QWidget):
 
         self.diagnostics = DiagnosticsWidget(self.config)
         root.addWidget(self.diagnostics, stretch=1)
+
+
+class LinksSettingsWidget(QWidget):
+    """Единый раздел технических URL: Настройки → Ссылки."""
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = ensure_home_defaults(config)
+        root = QVBoxLayout(self)
+        title = QLabel("Ссылки")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+        hint = QLabel(
+            "Здесь редактируются технические URL, которые используются дежуркой, Redmine, ОТРС, "
+            "Live Zabbix Monitor, шаблонами и проверкой сервисов. Старые поля в профиле, шаблонах "
+            "и режиме разработчика больше не являются основным местом редактирования."
+        )
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+        form = QFormLayout()
+        self.redmine_create_url_input = QLineEdit(get_duty_link(self.config, "redmine_create_url"))
+        self.redmine_login_url_input = QLineEdit(str(ensure_live_monitor_defaults(self.config).get("redmine_login_url") or DEFAULT_REDMINE_LOGIN_URL))
+        self.mm_otrs_create_url_input = QLineEdit(get_duty_link(self.config, "mm_otrs_create_url"))
+        self.zabbix_problems_url_input = QLineEdit(get_duty_link(self.config, "live_zabbix_url"))
+        form.addRow("URL создания задачи Redmine:", self.redmine_create_url_input)
+        form.addRow("URL окна авторизации Redmine:", self.redmine_login_url_input)
+        form.addRow("URL создания задачи ОТРС ММ:", self.mm_otrs_create_url_input)
+        form.addRow("URL Zabbix Problems:", self.zabbix_problems_url_input)
+        root.addLayout(form)
+        save = QPushButton("Сохранить ссылки")
+        save.setObjectName("PrimaryAction")
+        save.clicked.connect(self.save_links)
+        root.addWidget(save)
+        root.addStretch(1)
+
+    def save_links(self):
+        redmine_create = self.redmine_create_url_input.text().strip()
+        redmine_login = self.redmine_login_url_input.text().strip() or DEFAULT_REDMINE_LOGIN_URL
+        mm_otrs = self.mm_otrs_create_url_input.text().strip()
+        zabbix = self.zabbix_problems_url_input.text().strip()
+        set_duty_link(self.config, "redmine_create_url", redmine_create)
+        set_duty_link(self.config, "mm_otrs_create_url", mm_otrs)
+        set_duty_link(self.config, "live_zabbix_url", zabbix)
+        live = ensure_live_monitor_defaults(self.config)
+        live["redmine_login_url"] = redmine_login
+        live["redmine_create_url"] = redmine_create
+        live["mm_otrs_create_url"] = mm_otrs
+        live["problems_url"] = zabbix
+        live["url"] = zabbix
+        templates = ensure_templates_defaults(self.config)
+        if REDMINE_TASK_TEMPLATE_KEY in templates:
+            templates[REDMINE_TASK_TEMPLATE_KEY]["create_url"] = redmine_create
+        if REDMINE_SPECIAL_TASK_TEMPLATE_KEY in templates:
+            templates[REDMINE_SPECIAL_TASK_TEMPLATE_KEY]["create_url"] = redmine_create
+        save_config(self.config)
+        QMessageBox.information(self, "Ссылки", "Ссылки сохранены.")
 
 
 class DeveloperModeGateWidget(QWidget):
@@ -1192,11 +1250,12 @@ class ProfileWidget(QWidget):
         redmine_settings = ensure_live_monitor_defaults(self.config)
         redmine_url_row = QHBoxLayout()
         redmine_url_row.setSpacing(10)
-        redmine_url_label = QLabel("Login URL:")
+        redmine_url_label = QLabel("Login URL (Настройки → Ссылки):")
         redmine_url_label.setMinimumWidth(90)
         redmine_url_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.redmine_login_url_input = QLineEdit(str(redmine_settings.get("redmine_login_url") or DEFAULT_REDMINE_LOGIN_URL))
         self.redmine_login_url_input.setPlaceholderText(DEFAULT_REDMINE_LOGIN_URL)
+        self.redmine_login_url_input.setReadOnly(True)
         self.redmine_login_url_input.setMinimumHeight(40)
         self.redmine_login_url_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         redmine_url_row.addWidget(redmine_url_label)
@@ -1736,7 +1795,8 @@ class TemplatesWidget(QWidget):
         special = templates[REDMINE_SPECIAL_TASK_TEMPLATE_KEY]
 
         form = QFormLayout()
-        self.redmine_create_url_input = QLineEdit(current.get("create_url", ""))
+        self.redmine_create_url_input = QLineEdit(get_duty_link(self.config, "redmine_create_url") or current.get("create_url", ""))
+        self.redmine_create_url_input.setReadOnly(True)
         self.redmine_subject_input = QLineEdit(current.get("subject_template", ""))
         self.redmine_description_input = QTextEdit()
         self.redmine_description_input.setPlainText(current.get("description_template", ""))
@@ -1749,7 +1809,7 @@ class TemplatesWidget(QWidget):
         self.redmine_special_description_input.setPlainText(special.get("description_template", ""))
         self.redmine_special_description_input.setMinimumHeight(180)
 
-        form.addRow("URL создания задачи Redmine:", self.redmine_create_url_input)
+        form.addRow("URL создания задачи Redmine (Настройки → Ссылки):", self.redmine_create_url_input)
         form.addRow("Шаблон темы:", self.redmine_subject_input)
         form.addRow("Шаблон описания:", self.redmine_description_input)
         form.addRow("tracker_id:", self.redmine_tracker_input)
@@ -2080,6 +2140,10 @@ class AdministrationWidget(QWidget):
         create_form.addRow("Пароль:", self.new_password_input)
         create_form.addRow("Повтор:", self.new_password_confirm_input)
         create_form.addRow("Роль:", self.new_role_input)
+        self.new_service_groups_list = QListWidget()
+        self.new_service_groups_list.setToolTip("Выберите группы сервисов, которые будут доступны пользователю после создания.")
+        create_form.addRow("Группы сервисов:", self.new_service_groups_list)
+        self._reload_create_service_groups()
 
         create_button = QPushButton("Создать")
         create_button.clicked.connect(self.create_new_user)
@@ -2172,6 +2236,21 @@ class AdministrationWidget(QWidget):
             item = widget.item(index)
             item.setCheckState(Qt.Checked if item.data(Qt.UserRole) in allowed else Qt.Unchecked)
 
+    def _reload_create_service_groups(self):
+        if not hasattr(self, "new_service_groups_list"):
+            return
+        self.new_service_groups_list.clear()
+        groups = (self.config.get("service_checks", {}) or {}).get("credential_groups", []) or []
+        for group in groups:
+            group_id = str(group.get("id", "") or "")
+            if not group_id:
+                continue
+            item = QListWidgetItem(str(group.get("name", "") or group_id))
+            item.setData(Qt.UserRole, group_id)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.new_service_groups_list.addItem(item)
+
     def _reload_service_groups(self, selected):
         selected = set(selected or [])
         self.service_groups_list.clear()
@@ -2221,7 +2300,8 @@ class AdministrationWidget(QWidget):
             return
 
         try:
-            create_user(login, password, role=role, display_name=display_name)
+            created = create_user(login, password, role=role, display_name=display_name)
+            update_user(created.get("login", login), service_group_ids=self._checked_values(self.new_service_groups_list))
         except Exception as exc:
             QMessageBox.warning(self, "Администрирование", str(exc))
             return
@@ -2230,6 +2310,7 @@ class AdministrationWidget(QWidget):
         self.new_display_name_input.clear()
         self.new_password_input.clear()
         self.new_password_confirm_input.clear()
+        self._reload_create_service_groups()
         self.refresh_users()
         QMessageBox.information(self, "Администрирование", "Пользователь создан.")
 
@@ -2283,12 +2364,54 @@ class AdministrationWidget(QWidget):
         self.reset_password_confirm_input.clear()
         QMessageBox.information(self, "Администрирование", "Пароль обновлён.")
 
+
+class SettingsMenuWidget(QWidget):
+    """Compact menu for the Settings container."""
+
+    def __init__(self, section_names, open_section_callback, parent=None):
+        super().__init__(parent)
+        self.section_names = list(section_names or [])
+        self.open_section_callback = open_section_callback
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(14)
+
+        hint = QLabel("Выберите подраздел настроек.")
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignCenter)
+        root.addWidget(hint)
+        root.addStretch(1)
+
+        center_row = QHBoxLayout()
+        center_row.addStretch(1)
+        menu = QWidget()
+        menu.setMaximumWidth(520)
+        menu.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        menu_layout = QVBoxLayout(menu)
+        menu_layout.setSpacing(10)
+        menu_layout.setContentsMargins(0, 0, 0, 0)
+        for section_name in self.section_names:
+            button = QPushButton(section_name)
+            button.setObjectName("SecondaryAction")
+            button.setMinimumHeight(52)
+            button.setMaximumWidth(520)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.clicked.connect(lambda checked=False, name=section_name: self.open_section_callback(name))
+            menu_layout.addWidget(button)
+        center_row.addWidget(menu)
+        center_row.addStretch(1)
+        root.addLayout(center_row)
+        root.addStretch(2)
+
 class AppSettingsWidget(QWidget):
     def __init__(self, config, logout_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         self.logout_callback = logout_callback
         self.section_indexes = {}
+        self.settings_menu_index = None
+        self.settings_menu_sections = []
 
         root = QVBoxLayout(self)
         self.title = QLabel("Настройки")
@@ -2300,23 +2423,42 @@ class AppSettingsWidget(QWidget):
 
         self.update_widget = UpdateWidget(self.config, request_application_restart, show_title=False)
         candidates = [
-            ("Профиль", lambda: ProfileWidget(self.config, logout_callback=self.logout_callback)),
-            ("Администрирование", lambda: AdministrationWidget(self.config)),
-            ("Продукты и страницы", lambda: ProductsWidget(self.config)),
+            ("Перенос настроек", lambda: SettingsTransferWidget(self.config)),
             ("Настройки дежурки", lambda: DutyModeSettingsWidget(self.config, show_title=False)),
             ("Проверка сервисов", lambda: ServiceChecksSettingsWidget(self.config)),
             ("Шаблоны", lambda: TemplatesWidget(self.config)),
             ("Что нового", lambda: ChangelogWidget()),
             ("Тема", lambda: ThemeWidget(self.config)),
+            ("Продукты и страницы", lambda: ProductsWidget(self.config)),
+            ("Ссылки", lambda: LinksSettingsWidget(self.config)),
+            ("Профиль", lambda: ProfileWidget(self.config, logout_callback=self.logout_callback)),
+            ("Администрирование", lambda: AdministrationWidget(self.config)),
             ("Заметки", lambda: NotesWidget(self.config)),
             ("Обновление", lambda: self.update_widget),
             ("Режим разработчика", lambda: DeveloperModeGateWidget(self.config, DeveloperToolsWidget(self.config))),
         ]
+        settings_section_names = [
+            "Перенос настроек",
+            "Настройки дежурки",
+            "Проверка сервисов",
+            "Шаблоны",
+            "Что нового",
+            "Тема",
+            "Продукты и страницы",
+            "Ссылки",
+        ]
         for name, factory in candidates:
             if can_open_section(self.config.get("_current_user"), name):
                 self.add_section(name, factory())
+                if name in settings_section_names:
+                    self.settings_menu_sections.append(name)
 
-        self.open_section("Продукты и страницы")
+        self.settings_menu_index = self.stack.insertWidget(0, SettingsMenuWidget(self.settings_menu_sections, self.open_section))
+        self.section_indexes = {name: index + 1 for name, index in self.section_indexes.items()}
+        if can_open_section(self.config.get("_current_user"), "Настройки"):
+            self.open_section(None)
+        else:
+            self.open_section(next(iter(self.section_indexes), None))
 
     def add_section(self, section_name, widget):
         self.section_indexes[section_name] = self.stack.addWidget(widget)
@@ -2331,12 +2473,19 @@ class AppSettingsWidget(QWidget):
         old_widget.deleteLater()
         self.section_indexes["Профиль"] = self.stack.insertWidget(index, new_widget)
 
-    def open_section(self, section_name):
+    def open_section(self, section_name=None):
+        if not section_name or section_name == "Настройки":
+            if self.settings_menu_index is None or not can_open_section(self.config.get("_current_user"), "Настройки"):
+                QMessageBox.warning(self, "Нет доступа", "Недостаточно прав для открытия раздела.")
+                return
+            self.stack.setCurrentIndex(self.settings_menu_index)
+            self.title.setText("Настройки")
+            return
         if section_name == "Профиль":
             self.rebuild_profile_section()
         index = self.section_indexes.get(section_name)
         if index is None or not can_open_section(self.config.get("_current_user"), section_name):
-            QMessageBox.warning(self, "Нет доступа", "У текущего пользователя нет доступа к этому разделу.")
+            QMessageBox.warning(self, "Нет доступа", "Недостаточно прав для открытия раздела.")
             fallback = next(iter(self.section_indexes), "Профиль")
             index = self.section_indexes.get(fallback, 0)
             section_name = fallback
@@ -2350,31 +2499,31 @@ class AppSettingsWidget(QWidget):
                 auto_start_install=auto_start_install,
             )
 
+    def cleanup(self):
+        if hasattr(self, "update_widget") and hasattr(self.update_widget, "cleanup"):
+            self.update_widget.cleanup()
+
 
 
 class HomePageWidget(QWidget):
     SETTINGS_SECTIONS = [
         "Профиль",
+        "Настройки",
         "Администрирование",
-        "Продукты и страницы",
-        "Настройки дежурки",
-        "Проверка сервисов",
-        "Перенос настроек",
-        "Шаблоны",
-        "Что нового",
-        "Тема",
-        "Заметки",
-        "Обновление",
         "Режим разработчика",
+        "Тема",
+        "Обновление",
     ]
 
-    def __init__(self, config, open_duty_callback=None, open_settings_callback=None, update_check_callback=None, parent=None):
+    def __init__(self, config, open_duty_callback=None, open_settings_callback=None, update_check_callback=None, logout_callback=None, exit_callback=None, parent=None):
         super().__init__(parent)
         self.config = ensure_home_defaults(config)
         self.setObjectName("HomeShell")
         self.open_duty_callback = open_duty_callback
         self.open_settings_callback = open_settings_callback
         self.update_check_callback = update_check_callback
+        self.logout_callback = logout_callback
+        self.exit_callback = exit_callback
 
         root = QVBoxLayout(self)
 
@@ -2386,23 +2535,28 @@ class HomePageWidget(QWidget):
         subtitle.setWordWrap(True)
         root.addWidget(subtitle)
 
-        tiles = QVBoxLayout()
-        tiles.setSpacing(10)
-        for section_name in self.visible_settings_sections():
-            button = QPushButton(section_name)
-            button.setObjectName("SecondaryAction")
-            button.setMinimumHeight(72)
-            button.setToolTip(f"Открыть раздел «{section_name}»")
-            button.clicked.connect(lambda checked=False, name=section_name: self.open_settings_section(name))
-            tiles.addWidget(button)
-
-        duty = QPushButton("Перейти в режим дежурства")
-        duty.setObjectName("PrimaryAction")
-        duty.setMinimumHeight(72)
-        duty.clicked.connect(self.open_duty)
-        tiles.addWidget(duty)
-        root.addLayout(tiles)
         root.addStretch(1)
+        center_row = QHBoxLayout()
+        center_row.addStretch(1)
+        menu = QWidget()
+        menu.setMaximumWidth(520)
+        menu.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        tiles = QVBoxLayout(menu)
+        tiles.setSpacing(10)
+        tiles.setContentsMargins(0, 0, 0, 0)
+        for action_name in self.visible_main_actions():
+            button = QPushButton(action_name)
+            button.setObjectName("PrimaryAction" if action_name == "Перейти в режим дежурства" else "SecondaryAction")
+            button.setMinimumHeight(56)
+            button.setMaximumWidth(520)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setToolTip(f"Открыть раздел «{action_name}»")
+            button.clicked.connect(lambda checked=False, name=action_name: self.open_main_action(name))
+            tiles.addWidget(button)
+        center_row.addWidget(menu)
+        center_row.addStretch(1)
+        root.addLayout(center_row)
+        root.addStretch(2)
 
         footer = QLabel(f"Версия: {APP_VERSION}\n{APP_DESCRIPTION}")
         footer.setObjectName("AppFooter")
@@ -2413,15 +2567,37 @@ class HomePageWidget(QWidget):
 
         self.fade_in()
 
-    def visible_settings_sections(self):
-        return visible_sections_for_user(self.config.get("_current_user"), list(self.SETTINGS_SECTIONS))
+    def visible_main_actions(self):
+        user = normalize_user_permissions(self.config.get("_current_user"))
+        role = str(user.get("role") or "agent")
+        if role == ROLE_OWNER:
+            return ["Перейти в режим дежурства", "Профиль", "Настройки", "Администрирование", "Режим разработчика", "Обновление", "Выход"]
+        if role == ROLE_ADMIN:
+            return ["Перейти в режим дежурства", "Профиль", "Настройки", "Обновление", "Выход"]
+        return ["Перейти в режим дежурства", "Профиль", "Тема", "Обновление", "Выход"]
 
-    def open_settings_section(self, section_name):
-        if not can_open_section(self.config.get("_current_user"), section_name):
-            QMessageBox.warning(self, "Нет доступа", "У текущего пользователя нет доступа к этому разделу.")
+    def open_main_action(self, action_name):
+        if action_name == "Перейти в режим дежурства":
+            self.open_duty()
+            return
+        if action_name == "Выход":
+            if self.exit_callback:
+                self.exit_callback()
+            else:
+                QApplication.quit()
+            return
+        if action_name == "Настройки":
+            if not can_open_section(self.config.get("_current_user"), "Настройки"):
+                QMessageBox.warning(self, "Нет доступа", "Недостаточно прав для открытия раздела.")
+                return
+            if self.open_settings_callback:
+                self.open_settings_callback(None)
+            return
+        if not can_open_section(self.config.get("_current_user"), action_name):
+            QMessageBox.warning(self, "Нет доступа", "Недостаточно прав для открытия раздела.")
             return
         if self.open_settings_callback:
-            self.open_settings_callback(section_name)
+            self.open_settings_callback(action_name)
 
     def open_duty(self):
         if self.open_duty_callback:
