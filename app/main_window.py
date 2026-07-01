@@ -41,7 +41,7 @@ from app.theme_logo import load_theme_logo
 from app.app_info import APP_NAME
 from app.logger import get_logger
 from app.screen_utils import clamp_rect_to_available, rect_fits_available, safe_window_size
-from app.webengine_lifecycle import current_rss_mb, register_web_view, safe_delete_web_view, tracked_web_view_count
+from app.webengine_lifecycle import cleanup_tracked_web_views, current_rss_mb, register_web_view, run_javascript_if_alive, safe_delete_web_view, tracked_web_view_count
 
 
 class MainWindow(QMainWindow):
@@ -203,6 +203,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 self.logger.exception("Failed to stop Live Zabbix Monitor before exit")
         self.cleanup_web_resources()
+        cleanup_tracked_web_views(logger=self.logger, context="application shutdown sweep")
         self._shutdown_completed = True
         self.logger.info("Application shutdown completed")
 
@@ -1059,7 +1060,9 @@ class MainWindow(QMainWindow):
         }})();
         """
 
-        view.page().runJavaScript(js)
+        if self._shutdown_completed:
+            return
+        run_javascript_if_alive(view, js)
 
     def closeEvent(self, event):
         self.stop_background_activity_for_exit()

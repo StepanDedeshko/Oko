@@ -17,7 +17,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.autologin import make_zabbix_login_js
 from app.logger import get_logger
-from app.webengine_lifecycle import register_web_view, safe_delete_web_view
+from app.webengine_lifecycle import register_web_view, run_javascript_if_alive, safe_delete_web_view
 
 
 def _resolve_web_colors():
@@ -243,7 +243,7 @@ class GraphCard(QFrame):
             self.credentials.get("password", "")
         )
         if js and not self._cleaned_up and self.view is not None:
-            self.view.page().runJavaScript(js)
+            run_javascript_if_alive(self.view, js)
 
     def inject_fit_script(self):
         if self._cleaned_up or self.view is None:
@@ -312,7 +312,7 @@ class GraphCard(QFrame):
         })();
         """
         if not self._cleaned_up and self.view is not None:
-            self.view.page().runJavaScript(js, self.apply_content_height)
+            run_javascript_if_alive(self.view, js, self.apply_content_height)
 
     def pause_refresh(self):
         if getattr(self, "timer", None) is not None:
@@ -599,7 +599,7 @@ class SimplePageDashboard(QWidget):
             self.credentials.get("password", "")
         )
         if js and not self._cleaned_up and self.view is not None:
-            self.view.page().runJavaScript(js)
+            run_javascript_if_alive(self.view, js)
 
     def open_current_external(self):
         current_url = self.view.url().toString()
@@ -759,7 +759,7 @@ class ModePagesDashboard(QWidget):
             self.credentials.get("password", "")
         )
         if js:
-            self.view.page().runJavaScript(js)
+            run_javascript_if_alive(self.view, js)
 
     def open_current_external(self):
         url = self.view.url().toString() or self.get_current_url()

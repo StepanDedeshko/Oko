@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+import warnings
 import weakref
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QCoreApplication, QEvent, QUrl
 
 _TRACKED_WEB_VIEWS = weakref.WeakSet()
 
@@ -18,6 +19,38 @@ def register_web_view(view):
         except TypeError:
             pass
     return view
+
+
+def is_web_view_alive(view):
+    if view is None:
+        return False
+    try:
+        # Accessing the QObject name is a cheap way to detect already-deleted Qt wrappers.
+        view.objectName()
+        return True
+    except RuntimeError:
+        return False
+    except Exception:
+        return False
+
+
+def run_javascript_if_alive(view_or_page, script, callback=None):
+    """Run JavaScript only while the WebEngine object is still alive."""
+    if view_or_page is None:
+        return False
+    try:
+        target = view_or_page.page() if hasattr(view_or_page, "page") else view_or_page
+        if target is None:
+            return False
+        if callback is None:
+            target.runJavaScript(script)
+        else:
+            target.runJavaScript(script, callback)
+        return True
+    except RuntimeError:
+        return False
+    except Exception:
+        return False
 
 
 def tracked_web_view_count():
@@ -57,8 +90,12 @@ def _log(logger, level, message, *args):
 
 
 def _safe_disconnect(signal, handler=None):
+    """Disconnect a Qt signal without leaking PySide RuntimeWarning noise."""
+    if signal is None:
+        return
     try:
-        if signal is not None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
             if handler is None:
                 signal.disconnect()
             else:
@@ -69,7 +106,7 @@ def _safe_disconnect(signal, handler=None):
 
 def safe_delete_web_view(view, logger=None, context="", load_handler=None, extra_signals=None):
     """
-    Stop and delete a QWebEngineView/QWebEnginePage pair safely via the Qt event loop.
+    Stop, detach, and schedule deletion for a QWebEngineView/QWebEnginePage pair safely.
 
     Callers should clear their own references after invoking this helper.
     """
@@ -94,15 +131,20 @@ def safe_delete_web_view(view, logger=None, context="", load_handler=None, extra
         except Exception:
             pass
 
-        try:
-            if load_handler is not None:
-                _safe_disconnect(hidden_view.loadFinished, load_handler)
-            else:
-                _safe_disconnect(hidden_view.loadFinished)
-        except RuntimeError:
-            pass
-        except Exception:
-            pass
+        known_signal_handlers = {"loadFinished": load_handler} if load_handler is not None else {}
+        for signal_name in ("loadFinished", "loadStarted", "urlChanged"):
+            try:
+                signal = getattr(hidden_view, signal_name, None)
+                handler = known_signal_handlers.get(signal_name)
+                if handler is not None:
+                    _safe_disconnect(signal, handler)
+                # Some WebViews have dynamically connected slots we do not own here.
+                # The no-argument disconnect is intentionally warning-suppressed.
+                _safe_disconnect(signal)
+            except RuntimeError:
+                pass
+            except Exception:
+                pass
 
         for signal_handler in extra_signals or ():
             if not signal_handler:
@@ -133,6 +175,15 @@ def safe_delete_web_view(view, logger=None, context="", load_handler=None, extra
             pass
 
         try:
+            parent = hidden_view.parentWidget()
+            if parent is not None and parent.layout() is not None:
+                parent.layout().removeWidget(hidden_view)
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
+        try:
             hidden_view.setParent(None)
             hidden_view.deleteLater()
         except RuntimeError:
@@ -142,4 +193,16 @@ def safe_delete_web_view(view, logger=None, context="", load_handler=None, extra
 
         _log(logger, "info", "WebEngine cleanup finished%s", label)
 
-    QTimer.singleShot(0, delete_objects)
+    delete_objects()
+
+
+def cleanup_tracked_web_views(logger=None, context="tracked WebViews"):
+    """Best-effort cleanup for every registered QWebEngineView still alive."""
+    for view in list(_TRACKED_WEB_VIEWS):
+        safe_delete_web_view(view, logger=logger, context=context)
+    try:
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        QCoreApplication.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    except Exception:
+        pass
