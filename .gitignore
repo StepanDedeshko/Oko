@@ -23,3 +23,9 @@ config.backup*
 data/
 web_profiles/
 remember.local.json
+
+build_deb/
+dist/
+.pytest_cache/
+__pycache__/
+*.pyc
