@@ -99,7 +99,7 @@ def main():
                 return
             settings = config.get("settings", {})
             if settings.get("check_updates_on_startup", True):
-                home.check_for_updates(interactive=False, auto_start_install=False)
+                home.check_for_updates(interactive=False, auto_start_install=True)
         except Exception:
             logger.exception("Не удалось проверить обновления при запуске")
 

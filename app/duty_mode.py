@@ -49,6 +49,7 @@ from app.logger import get_logger
 from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.redmine_triggers import format_graph_links, special_redmine_graph_urls
 from app.webengine_lifecycle import register_web_view, safe_delete_web_view
+from app.graph_window_utils import apply_resizable_graph_window, install_maximize_shortcut
 from app.duty_tasks import (
     TASK_LABELS,
     TASK_SERVICES,
@@ -798,14 +799,13 @@ class GraphCheckOverlayDialog(QDialog):
         self.setWindowTitle("Проверка графиков")
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
-        # Minimum size is clamped in _resize_to_work_area() so the window manager can still resize on small work areas.
+        apply_resizable_graph_window(self, logger=self.logger)
 
         app = QApplication.instance()
         self.theme_name = "mass_effect"
         if app is not None:
             self.theme_name = str(app.property("oko_theme_name") or self.theme_name)
         self.theme_name = self.config.get("settings", {}).get("theme", self.theme_name)
-        self._resize_to_work_area()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
@@ -823,11 +823,13 @@ class GraphCheckOverlayDialog(QDialog):
         title.setObjectName("PageTitle")
         subtitle = QLabel("Основная область — выбранные графики; декоративные слои не накладываются на рабочую зону.")
         subtitle.setWordWrap(True)
+        maximize_button = QPushButton("Развернуть")
         close_button = QPushButton("Закрыть")
         close_button.setObjectName("DestructiveAction")
         close_button.clicked.connect(self.request_close)
         header.addWidget(title)
         header.addWidget(subtitle, stretch=1)
+        header.addWidget(maximize_button)
         header.addWidget(close_button)
         content_root.addLayout(header)
 
@@ -870,6 +872,7 @@ class GraphCheckOverlayDialog(QDialog):
         actions.addWidget(confirm_button)
         actions.addWidget(bottom_close_button)
         content_root.addLayout(actions)
+        self.toggle_maximized = install_maximize_shortcut(self, logger=self.logger, button=maximize_button)
 
     def _resize_to_work_area(self):
         screen = None
@@ -949,8 +952,8 @@ class GraphCheckOverlayDialog(QDialog):
         super().reject()
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
-            self.request_close()
+        if event.key() == Qt.Key_F11:
+            self.toggle_maximized()
             return
         super().keyPressEvent(event)
 
@@ -976,6 +979,7 @@ class GraphCheckOverlayDialog(QDialog):
         self._force_closing = True
         event.accept()
         self.cleanup()
+        self.logger.info("Graph check window closed")
         super().closeEvent(event)
 
 
