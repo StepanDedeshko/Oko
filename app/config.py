@@ -350,6 +350,76 @@ def load_settings_export(source_path):
     return sanitize_export_data(settings)
 
 
+
+FORBIDDEN_IMPORTED_ACCESS_KEYS = {
+    "role", "permissions", "is_admin", "is_owner", "is_developer", "developer_mode",
+    "developer_password", "dev_password", "allowed_tabs", "allowed_sections",
+    "allowed_settings", "can_admin", "can_transfer_settings", "can_edit_links",
+    "can_edit_templates", "can_edit_products", "can_edit_service_checks",
+    "can_edit_duty_settings", "section_permissions",
+}
+
+
+def _count_service_items(config: dict) -> int:
+    service_checks = (config or {}).get("service_checks") or {}
+    return len(service_checks.get("items") or []) if isinstance(service_checks, dict) else 0
+
+
+def _count_links(config: dict) -> int:
+    links = ensure_duty_links(config or {})
+    return sum(1 for value in links.values() if value)
+
+
+def _count_templates(config: dict) -> int:
+    templates = (config or {}).get("templates") or {}
+    return len(templates) if isinstance(templates, dict) else 0
+
+
+def apply_prepared_config_file(source_path, current_config: dict | None = None) -> tuple[dict, dict]:
+    """Apply a prepared Oko config without accepting role/permission escalation.
+
+    This is used by agents from Update → Apply config. It accepts regular settings
+    exports, per-user settings exports and raw config-like JSON, but it only merges
+    work settings and then re-applies the local role-derived restrictions.
+    """
+    source_path = Path(source_path)
+    current = deepcopy(current_config or load_config())
+    with source_path.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+    if not isinstance(payload, dict):
+        raise ValueError("unsupported settings export format")
+
+    if payload.get("format") == "oko_user_settings_export":
+        result = import_user_settings_payload(current, sanitize_export_data(payload), keep_passwords=True, accept_imported_service_groups=True)
+    else:
+        if payload.get("format") == SETTINGS_EXPORT_FORMAT:
+            if payload.get("format_version") != SETTINGS_EXPORT_FORMAT_VERSION:
+                raise ValueError("unsupported settings export version")
+            incoming_settings = payload.get("settings") or {}
+        else:
+            incoming_settings = payload
+        safe_settings = collect_exportable_settings(incoming_settings)
+        result = deepcopy(current)
+        for key, value in safe_settings.items():
+            if key in FORBIDDEN_IMPORTED_ACCESS_KEYS:
+                continue
+            result[key] = deepcopy(value)
+        from app.permissions import normalize_user_permissions
+        result["_current_user"] = normalize_user_permissions(current.get("_current_user") or {"role": "agent"})
+        ensure_duty_links(result)
+
+    result.pop("developer_password", None)
+    result.pop("dev_password", None)
+    save_config(result)
+    summary = {
+        "role": ((result.get("_current_user") or {}).get("role") or "agent"),
+        "service_group_ids": list((result.get("_current_user") or {}).get("service_group_ids") or []),
+        "services_count": _count_service_items(result),
+        "links_count": _count_links(result),
+        "templates_count": _count_templates(result),
+    }
+    return result, summary
+
 def import_settings_file(source_path, config_path=None):
     """Import a safe Oko settings export and backup the current config first."""
     config_path = Path(config_path) if config_path is not None else CONFIG_PATH
