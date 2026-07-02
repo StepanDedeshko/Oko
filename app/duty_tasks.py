@@ -87,7 +87,6 @@ def is_valid_duty_task_binding(settings: dict, task_type: str) -> bool:
         settings.get("enabled") is True
         and session_id
         and binding["session_id"] == session_id
-        and binding["number"]
         and (binding["id"] or binding["url"])
         and binding["status"] == "linked"
     )
@@ -119,7 +118,7 @@ def bind_duty_task(settings: dict, task_type: str, parsed: dict, status: str = "
     url = str(parsed.get("url", "") or "").strip()
     system = str(parsed.get("system", "") or "").strip()
     session_id = str(settings.get("duty_session_id", "") or "").strip()
-    valid = bool(settings.get("enabled") is True and session_id and number and (ticket_id or url))
+    valid = bool(settings.get("enabled") is True and session_id and (ticket_id or url))
 
     settings[f"{prefix}_number"] = number
     settings[f"{prefix}_id"] = ticket_id
@@ -136,7 +135,7 @@ def bind_duty_task(settings: dict, task_type: str, parsed: dict, status: str = "
     settings[f"{prefix}_status"] = "incomplete"
     settings[f"{prefix}_linked_at"] = ""
     settings[f"{prefix}_session_id"] = ""
-    reason = "Не удалось определить номер задачи. Укажите номер задачи вручную." if not number else "Дежурство не включено. Начните новое дежурство и привяжите задачу."
+    reason = "Не удалось получить TicketID или URL задачи." if not (ticket_id or url) else "Дежурство не включено. Начните новое дежурство и привяжите задачу."
     return {"valid": False, "status": "incomplete", "reason": reason}
 
 

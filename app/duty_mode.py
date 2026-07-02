@@ -1762,7 +1762,7 @@ class OtrsCreateTaskDialog(QDialog):
             if result.get("valid"):
                 self.status_label.setText(f"TicketID найден автоматически: {ticket_id}. Задача дежурства привязана.")
             else:
-                self.status_label.setText("TicketID найден, но номер задачи не найден. Не удалось определить номер задачи. Укажите номер задачи вручную.")
+                self.status_label.setText(result.get("reason") or "Не удалось получить TicketID или URL задачи.")
 
             # После перехода в задачу пробуем достать номер из текста страницы,
             # но не мешаем работе, если номер не найдётся.
@@ -1796,7 +1796,7 @@ class OtrsCreateTaskDialog(QDialog):
                     self._task_create_title() + " привязана к задаче: " + ", ".join(parts)
                 )
         else:
-            message = result.get("reason") or "Не удалось определить номер задачи. Укажите номер задачи вручную."
+            message = result.get("reason") or "Не удалось получить TicketID или URL задачи."
             self.status_label.setText(message)
             if show_message:
                 QMessageBox.warning(self, self._task_create_title(), message)
@@ -1865,7 +1865,7 @@ class OtrsCreateTaskDialog(QDialog):
 
         self.ticket_number_input.setText(number)
         result = self.save_ticket_binding(ticket_number=number, show_message=False)
-        self.status_label.setText(f"Найден номер задачи: {number}" if result.get("valid") else result.get("reason", "Не удалось определить номер задачи. Укажите номер задачи вручную."))
+        self.status_label.setText(f"Найден номер задачи: {number}" if result.get("valid") else result.get("reason", "Не удалось получить TicketID или URL задачи."))
 
     def save_ticket_number(self):
         number = self.ticket_number_input.text().strip()
@@ -5138,31 +5138,34 @@ class DutyModeWidget(QWidget):
     def _service_checks_task_number(self):
         return self.get_settings().get("duty_service_checks_task_number", "").strip()
 
-    def _task_summary(self, number):
-        return f"№{number}" if number else "не привязана"
+    def _task_summary(self, number, task_type=None):
+        if number:
+            return f"№{number}"
+        if task_type:
+            active = get_active_duty_task(self.get_settings(), task_type) or {}
+            ticket_id = str(active.get("id") or "").strip()
+            if ticket_id:
+                return f"Привязана по TicketID={ticket_id}"
+        return "не привязана"
 
 
     def _duty_task_url(self, task_type):
         settings = self.get_settings()
-        if task_type == "service_checks":
-            url = str(settings.get("duty_service_checks_task_url", "") or "").strip()
-            ticket_id = str(settings.get("duty_service_checks_task_id", "") or "").strip()
-        else:
-            active = get_active_duty_task(settings, TASK_ZABBIX) or {}
-            url = str(active.get("url") or "").strip()
-            ticket_id = str(active.get("id") or "").strip()
-        if url:
-            return url
+        active = get_active_duty_task(settings, task_type) or {}
+        ticket_id = str(active.get("id") or "").strip()
+        url = str(active.get("url") or "").strip()
         if ticket_id:
             base = str(settings.get("otrs", {}).get("note_url_base", "") or "").strip()
             if base:
                 return base + ticket_id
+        if url:
+            return url
         return ""
 
     def _task_summary_html(self, task_type, number):
-        summary = self._task_summary(number)
+        summary = self._task_summary(number, task_type)
         url = self._duty_task_url(task_type)
-        if not url or not number:
+        if not url or summary == "не привязана":
             return summary
         import html
         escaped_url = html.escape(url, quote=True)
@@ -5185,8 +5188,8 @@ class DutyModeWidget(QWidget):
             self.duty_service_checks_status = "отключено"
 
         self.duty_state_value.setText("включено" if enabled else "выключено")
-        self.zabbix_task_state_value.setText(self._task_summary(self._zabbix_task_number()))
-        self.service_task_state_value.setText(self._task_summary(self._service_checks_task_number()))
+        self.zabbix_task_state_value.setText(self._task_summary(self._zabbix_task_number(), TASK_ZABBIX))
+        self.service_task_state_value.setText(self._task_summary(self._service_checks_task_number(), TASK_SERVICES))
         self.zabbix_status_value.setText(self.duty_zabbix_status)
         self.service_duty_status_value.setText(self.duty_service_checks_status if service_enabled else "отключено")
         if hasattr(self, "duty_stage_value"):
@@ -5201,7 +5204,7 @@ class DutyModeWidget(QWidget):
             self.duty_zabbix_enabled_checkbox.blockSignals(False)
         if hasattr(self, "service_task_hint_label"):
             self.service_task_hint_label.setText(
-                f"Задача для проверки сервисов: {self._task_summary(self._service_checks_task_number())}. "
+                f"Задача для проверки сервисов: {self._task_summary(self._service_checks_task_number(), TASK_SERVICES)}. "
                 f"Автозапуск в дежурстве: {'включён' if service_enabled else 'отключён'}."
             )
         self.last_check_value.setText(

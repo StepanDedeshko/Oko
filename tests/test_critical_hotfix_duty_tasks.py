@@ -53,24 +53,27 @@ def test_migration_marks_disabled_linked_tasks_stale():
     assert duty["duty_legacy_tasks_backup"]["duty_zabbix_task_id"] == "70413"
 
 
-def test_bind_duty_task_without_number_is_incomplete_and_no_session_id():
+def test_ticket_id_url_without_task_number_creates_valid_linked_binding():
     settings = {"enabled": True, "duty_session_id": "s"}
     result = bind_duty_task(settings, TASK_ZABBIX, {"id": "70413", "url": "https://otrs/TicketID=70413"})
-    assert result["valid"] is False
-    assert settings["duty_zabbix_task_status"] == "incomplete"
-    assert settings["duty_zabbix_task_session_id"] == ""
-    assert get_active_duty_task(settings, TASK_ZABBIX) is None
+    assert result["valid"] is True
+    assert settings["duty_zabbix_task_status"] == "linked"
+    assert settings["duty_zabbix_task_session_id"] == "s"
+    assert settings["duty_zabbix_task_number"] == ""
+    assert get_active_duty_task(settings, TASK_ZABBIX)["active"] is True
+    assert can_send_duty_note(settings, TASK_ZABBIX) == (True, "")
 
 
-def test_save_task_binding_with_ticket_id_but_no_number_does_not_set_linked():
+def test_save_task_binding_with_ticket_id_but_no_number_sets_linked():
     settings = {"enabled": True, "duty_session_id": "s"}
     result = save_task_binding(settings, TASK_ZABBIX, parse_ticket_url("https://otrs/index.pl?Action=AgentTicketZoom;TicketID=70413"))
-    assert result["valid"] is False
-    assert settings["duty_zabbix_task_status"] == "incomplete"
+    assert result["valid"] is True
+    assert settings["duty_zabbix_task_status"] == "linked"
     assert settings["duty_zabbix_task_number"] == ""
+    assert get_active_duty_task(settings, TASK_ZABBIX)["id"] == "70413"
 
 
-def test_active_task_requires_enabled_linked_number_session_and_target():
+def test_active_task_requires_enabled_linked_session_and_target():
     settings = {"enabled": True, "duty_session_id": "s"}
     bind_duty_task(settings, TASK_ZABBIX, {"number": "100069955", "id": "70413", "url": "u"})
     assert is_valid_duty_task_binding(settings, TASK_ZABBIX) is True
@@ -81,13 +84,15 @@ def test_active_task_requires_enabled_linked_number_session_and_target():
     assert ok is False
 
 
-def test_migration_clears_invalid_linked_with_empty_number_or_wrong_session():
+def test_migration_keeps_ticket_id_without_number_when_session_is_current():
     config = {"duty_mode": {"enabled": True, "duty_session_id": "s", "duty_zabbix_task_status": "linked", "duty_zabbix_task_id": "70413", "duty_zabbix_task_session_id": "s"}}
     duty = migrate_config(config)["duty_mode"]
-    assert duty["duty_zabbix_task_status"] == ""
-    assert duty["duty_zabbix_task_id"] == ""
-    assert duty["duty_legacy_tasks_backup"]["duty_zabbix_task_id"] == "70413"
+    assert duty["duty_zabbix_task_status"] == "linked"
+    assert duty["duty_zabbix_task_id"] == "70413"
+    assert get_active_duty_task(duty, TASK_ZABBIX)["active"] is True
 
+
+def test_migration_clears_invalid_linked_with_wrong_session():
     config = {"duty_mode": {"enabled": True, "duty_session_id": "s", "duty_zabbix_task_number": "100", "duty_zabbix_task_status": "linked", "duty_zabbix_task_id": "70413", "duty_zabbix_task_session_id": "old"}}
     duty = migrate_config(config)["duty_mode"]
     assert duty["duty_zabbix_task_status"] == ""
@@ -101,3 +106,17 @@ def test_manual_number_plus_ticket_id_url_creates_valid_linked_binding():
     assert settings["duty_zabbix_task_status"] == "linked"
     assert settings["duty_zabbix_task_session_id"] == "s"
     assert get_active_duty_task(settings, TASK_ZABBIX)["active"] is True
+
+
+def test_disabled_duty_and_stale_without_session_are_not_active():
+    settings = {"enabled": False, "duty_session_id": "s"}
+    bind_duty_task(settings, TASK_ZABBIX, {"id": "70413", "url": "u"})
+    assert get_active_duty_task(settings, TASK_ZABBIX) is None
+
+    stale = {"enabled": True, "duty_session_id": "s", "duty_zabbix_task_status": "linked", "duty_zabbix_task_id": "70413", "duty_zabbix_task_url": "u", "duty_zabbix_task_session_id": ""}
+    assert get_active_duty_task(stale, TASK_ZABBIX) is None
+
+
+def test_ui_summary_source_shows_ticketid_when_number_empty():
+    source = __import__("pathlib").Path("app/duty_mode.py").read_text(encoding="utf-8")
+    assert "Привязана по TicketID=" in source
