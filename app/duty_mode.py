@@ -61,6 +61,7 @@ from app.duty_tasks import (
     finish_duty_session,
     get_active_duty_task,
     has_current_task,
+    parse_otrs_task_number,
     parse_ticket_url,
     planned_actions,
     save_task_binding as save_duty_task_binding,
@@ -1831,29 +1832,37 @@ class OtrsCreateTaskDialog(QDialog):
     def try_detect_ticket_number(self):
         js = r"""
         (function() {
-            const text = (document.body.innerText || document.body.textContent || '').trim();
-
-            // Частые варианты: "Заявка №...", "Ticket#...", "Ticket Number ..."
-            const patterns = [
-                /(?:Заявка|Задача|Ticket|TicketNumber|Ticket Number|Номер заявки|Номер задачи)[^\d]{0,30}(\d{5,})/i,
-                /№\s*(\d{5,})/i,
-                /\b(\d{10,})\b/
+            const visibleText = (document.body && (document.body.innerText || document.body.textContent) || '').trim();
+            const sources = [
+                document.title || '',
+                (document.querySelector('h1') && document.querySelector('h1').innerText) || '',
+                (document.querySelector('h2') && document.querySelector('h2').innerText) || '',
+                visibleText
             ];
-
-            for (const pattern of patterns) {
-                const match = text.match(pattern);
-                if (match && match[1]) {
-                    return match[1];
+            const patterns = [
+                /Заявка\s*[#№]\s*(\d{6,})/i,
+                /Ticket\s*#\s*(\d{6,})/i,
+                /^\s*(\d{6,})\s*[-–—]/
+            ];
+            for (const source of sources) {
+                const text = String(source || '').trim();
+                if (!text) {
+                    continue;
+                }
+                for (const pattern of patterns) {
+                    const match = text.match(pattern);
+                    if (match && match[1]) {
+                        return match[1];
+                    }
                 }
             }
-
             return "";
         })();
         """
         run_javascript_if_alive(self.view, js, self.after_detect_ticket_number)
 
     def after_detect_ticket_number(self, number):
-        number = str(number or "").strip()
+        number = parse_otrs_task_number(str(number or "")) or str(number or "").strip()
 
         if not number:
             QMessageBox.warning(

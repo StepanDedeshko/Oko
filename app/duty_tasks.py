@@ -113,10 +113,10 @@ def bind_duty_task(settings: dict, task_type: str, parsed: dict, status: str = "
     settings = {} if settings is None else settings
     parsed = parsed or {}
     prefix = _prefix(task_type)
-    number = str(parsed.get("number", "") or "").strip()
-    ticket_id = str(parsed.get("id", "") or "").strip()
-    url = str(parsed.get("url", "") or "").strip()
-    system = str(parsed.get("system", "") or "").strip()
+    number = str(parsed.get("number", "") or "").strip() or str(settings.get(f"{prefix}_number", "") or "").strip()
+    ticket_id = str(parsed.get("id", "") or "").strip() or str(settings.get(f"{prefix}_id", "") or "").strip()
+    url = str(parsed.get("url", "") or "").strip() or str(settings.get(f"{prefix}_url", "") or "").strip()
+    system = str(parsed.get("system", "") or "").strip() or str(settings.get(f"{prefix}_system", "") or "").strip()
     session_id = str(settings.get("duty_session_id", "") or "").strip()
     valid = bool(settings.get("enabled") is True and session_id and (ticket_id or url))
 
@@ -171,6 +171,22 @@ def planned_actions(values: dict, task_types: list[str] | tuple[str, ...]) -> di
         for task_type in (task_types or [])
     }
 
+
+
+def parse_otrs_task_number(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    patterns = (
+        r"Заявка\s*[#№]\s*(\d{6,})",
+        r"Ticket\s*#\s*(\d{6,})",
+        r"^\s*(\d{6,})\s*[-–—]",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, value, re.IGNORECASE | re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+    return ""
 
 def parse_ticket_url(value: str) -> dict:
     raw = str(value or "").strip()

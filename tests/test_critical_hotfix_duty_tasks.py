@@ -6,6 +6,7 @@ from app.duty_tasks import (
     current_task_binding,
     get_active_duty_task,
     is_valid_duty_task_binding,
+    parse_otrs_task_number,
     parse_ticket_url,
     save_task_binding,
     start_new_duty_session,
@@ -120,3 +121,45 @@ def test_disabled_duty_and_stale_without_session_are_not_active():
 def test_ui_summary_source_shows_ticketid_when_number_empty():
     source = __import__("pathlib").Path("app/duty_mode.py").read_text(encoding="utf-8")
     assert "Привязана по TicketID=" in source
+
+
+def test_parse_otrs_task_number_from_title_and_headers():
+    assert parse_otrs_task_number("100070490 - Подробно - Заявки - Service Desk") == "100070490"
+    assert parse_otrs_task_number("Заявка#100070490 — Проверка Zabbix (Важных IT-сервисов)") == "100070490"
+    assert parse_otrs_task_number("Заявка #100070490") == "100070490"
+    assert parse_otrs_task_number("Заявка №100070490") == "100070490"
+    assert parse_otrs_task_number("Ticket#100070490") == "100070490"
+    assert parse_otrs_task_number("Ticket #100070490") == "100070490"
+
+
+def test_parse_otrs_task_number_ignores_priority_and_short_numbers():
+    assert parse_otrs_task_number("5 Не применим") == ""
+    assert parse_otrs_task_number("PriorityID-6") == ""
+
+
+def test_binding_merge_ticketid_first_then_number():
+    settings = {"enabled": True, "duty_session_id": "s"}
+    bind_duty_task(settings, TASK_ZABBIX, {"id": "70304", "url": "https://otrs/TicketID=70304"})
+    result = bind_duty_task(settings, TASK_ZABBIX, {"number": "100070490"})
+    assert result["valid"] is True
+    assert settings["duty_zabbix_task_number"] == "100070490"
+    assert settings["duty_zabbix_task_id"] == "70304"
+    assert settings["duty_zabbix_task_url"] == "https://otrs/TicketID=70304"
+    assert settings["duty_zabbix_task_status"] == "linked"
+
+
+def test_binding_merge_number_first_then_ticketid():
+    settings = {"enabled": True, "duty_session_id": "s"}
+    bind_duty_task(settings, TASK_ZABBIX, {"number": "100070490"})
+    result = bind_duty_task(settings, TASK_ZABBIX, {"id": "70304", "url": "https://otrs/TicketID=70304"})
+    assert result["valid"] is True
+    assert settings["duty_zabbix_task_number"] == "100070490"
+    assert settings["duty_zabbix_task_id"] == "70304"
+    assert settings["duty_zabbix_task_status"] == "linked"
+
+
+def test_ui_summary_source_prefers_number_over_ticketid():
+    source = __import__("pathlib").Path("app/duty_mode.py").read_text(encoding="utf-8")
+    assert 'if number:' in source
+    assert 'return f"№{number}"' in source
+    assert 'Привязана по TicketID=' in source
