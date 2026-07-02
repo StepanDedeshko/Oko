@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 import re
 
+from app.duty_otrs_flow import visible_task_status
+
 TASK_ZABBIX = "zabbix"
 TASK_SERVICES = "service_checks"
 TASK_TYPES = (TASK_ZABBIX, TASK_SERVICES)
@@ -111,7 +113,13 @@ def current_task_binding(settings: dict, task_type: str) -> dict:
 
 def has_current_task(settings: dict, task_type: str) -> bool:
     binding = current_task_binding(settings, task_type)
-    return bool(binding.get("url") or binding.get("id") or binding.get("number"))
+    if str(binding.get("system", "") or "").casefold() == "otrs" or binding.get("id"):
+        return bool(binding.get("number"))
+    return bool(binding.get("url") or binding.get("number"))
+
+
+def has_visible_task_binding(settings: dict, task_type: str) -> bool:
+    return visible_task_status(settings, task_type) != "не привязана"
 
 
 def save_task_binding(settings: dict, task_type: str, parsed: dict, status: str = "linked") -> dict:

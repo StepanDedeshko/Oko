@@ -50,6 +50,7 @@ from app.time_range import add_graph_cache_buster, apply_time_range_to_url
 from app.redmine_triggers import format_graph_links, special_redmine_graph_urls
 from app.webengine_lifecycle import register_web_view, run_javascript_if_alive, safe_delete_web_view
 from app.graph_window_utils import apply_resizable_graph_window, install_maximize_shortcut
+from app.duty_otrs_flow import open_otrs_task_flow, visible_task_status
 from app.duty_tasks import (
     TASK_LABELS,
     TASK_SERVICES,
@@ -3965,11 +3966,11 @@ class DutyTasksDialog(QDialog):
     def _format_success(self, task_type, action, parsed=None):
         label = TASK_LABELS[task_type]
         parsed = parsed or {}
-        number = parsed.get("number") or parsed.get("id") or ""
+        number = parsed.get("number") or parsed.get("ticket_number") or ""
         if action == "link":
-            prefix = f"#{number} " if number else ""
+            prefix = f"№{number} " if number else ""
             return f"✓ {prefix}«{label}» — привязана к смене"
-        return f"✓ Создан тикет «{label}» — привязан к смене"
+        return f"✓ Создан тикет «{label}» — {visible_task_status(ensure_duty_mode_defaults(self.config), task_type)}"
 
     def apply_tasks(self):
         if self._running:
@@ -3999,13 +4000,12 @@ class DutyTasksDialog(QDialog):
                         if field and not field.text().strip():
                             field.setText(binding.get("url") or binding.get("number") or "")
                         continue
-                    self.logger.info("Duty task create opened: task_type=%s", task_type)
-                    dialog = OtrsCreateTaskDialog(self.config, parent=self, task_type=task_type)
-                    dialog.exec()
-                    if has_current_task(settings, task_type):
-                        results.append(self._format_success(task_type, "create"))
+                    self.logger.info("Duty OTRS task flow opened: task_type=%s", task_type)
+                    binding = open_otrs_task_flow(self.config, parent=self, task_type=task_type)
+                    if binding.get("ticket_number"):
+                        results.append(self._format_success(task_type, "create", binding))
                     else:
-                        errors.append(f"✗ {TASK_LABELS[task_type]}: создание открыто, привязка ещё не сохранена. Создайте тикет вручную и привяжите номер/URL.")
+                        errors.append(f"✗ {TASK_LABELS[task_type]}: создание открыто, номер заявки ещё не прочитан. Видимая привязка появится только после чтения номера.")
             save_config(self.config)
             if self.on_changed:
                 self.on_changed()

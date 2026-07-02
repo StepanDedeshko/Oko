@@ -64,5 +64,67 @@ class DutyTasksHelpersTest(unittest.TestCase):
         self.assertEqual(current_task_binding(settings, TASK_ZABBIX)["id"], "70194")
 
 
+class DutyOtrsFlowTest(unittest.TestCase):
+    def test_otrs_number_formats_parse(self):
+        from app.duty_otrs_flow import parse_otrs_ticket_number
+
+        self.assertEqual(parse_otrs_ticket_number("Заявка#100070477"), "100070477")
+        self.assertEqual(parse_otrs_ticket_number("Добавить заметку к Заявка#100070477"), "100070477")
+        self.assertEqual(parse_otrs_ticket_number("Заявка №100070477"), "100070477")
+        self.assertEqual(parse_otrs_ticket_number("100070477 - Подробно - Заявки - Service Desk"), "100070477")
+
+    def test_v031_style_otrs_flow_binding_returns_id_number_url(self):
+        from app.duty_otrs_flow import OtrsTaskBinding
+
+        binding = OtrsTaskBinding(TASK_ZABBIX, "70400", "100070477", "https://otrs/index.pl?Action=AgentTicketZoom;TicketID=70400")
+        self.assertEqual(binding.as_dict()["task_type"], TASK_ZABBIX)
+        self.assertEqual(binding.as_dict()["ticket_id"], "70400")
+        self.assertEqual(binding.as_dict()["ticket_number"], "100070477")
+        self.assertEqual(binding.as_dict()["ticket_url"], "https://otrs/index.pl?Action=AgentTicketZoom;TicketID=70400")
+
+    def test_zabbix_otrs_binding_visible_only_when_number_exists(self):
+        from app.duty_otrs_flow import visible_task_status
+
+        settings = {"current_ticket_id": "70400", "duty_zabbix_task_id": "70400"}
+        self.assertFalse(has_current_task(settings, TASK_ZABBIX))
+        self.assertEqual(visible_task_status(settings, TASK_ZABBIX), "не привязана")
+        self.assertEqual(visible_task_status(settings, TASK_ZABBIX, reading_number=True), "ищу номер заявки...")
+        settings["current_ticket_number"] = "100070477"
+        self.assertTrue(has_current_task(settings, TASK_ZABBIX))
+        self.assertEqual(visible_task_status(settings, TASK_ZABBIX), "№100070477")
+
+    def test_service_otrs_binding_visible_only_when_number_exists(self):
+        from app.duty_otrs_flow import visible_task_status
+
+        settings = {"duty_service_checks_task_id": "70400"}
+        self.assertFalse(has_current_task(settings, TASK_SERVICES))
+        self.assertEqual(visible_task_status(settings, TASK_SERVICES), "не привязана")
+        settings["duty_service_checks_task_number"] = "100070477"
+        self.assertTrue(has_current_task(settings, TASK_SERVICES))
+        self.assertEqual(visible_task_status(settings, TASK_SERVICES), "№100070477")
+
+    def test_ticket_id_saved_but_not_shown_as_visible_binding(self):
+        from app.duty_otrs_flow import OtrsTaskBinding, save_otrs_task_binding, visible_task_status
+
+        settings = {}
+        save_otrs_task_binding(settings, OtrsTaskBinding(TASK_ZABBIX, "70400", "", "https://otrs/?TicketID=70400"))
+        self.assertEqual(settings["current_ticket_id"], "70400")
+        self.assertEqual(visible_task_status(settings, TASK_ZABBIX), "не привязана")
+        self.assertNotIn("TicketID=70400", visible_task_status(settings, TASK_ZABBIX))
+
+    def test_note_dialog_opens_note_by_ticket_id(self):
+        from app.duty_otrs_flow import make_note_url_by_ticket_id
+
+        config = {"duty_mode": {"otrs": {"note_url_base": "https://otrs/index.pl?Action=AgentTicketNote;TicketID="}}}
+        self.assertEqual(make_note_url_by_ticket_id(config, "70400"), "https://otrs/index.pl?Action=AgentTicketNote;TicketID=70400")
+
+    def test_duty_tasks_dialog_uses_duty_otrs_flow_for_creation(self):
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[1].joinpath("app", "duty_mode.py").read_text(encoding="utf-8")
+        self.assertIn("from app.duty_otrs_flow import open_otrs_task_flow", source)
+        self.assertIn("open_otrs_task_flow(self.config, parent=self, task_type=task_type)", source)
+
+
 if __name__ == "__main__":
     unittest.main()
