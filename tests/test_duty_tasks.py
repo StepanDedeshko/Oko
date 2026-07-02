@@ -157,3 +157,60 @@ class DutySessionSafetyTest(unittest.TestCase):
 
     def test_h1_zayavka_parses_as_number(self):
         self.assertEqual(parse_ticket_number_from_html("<h1>\n    Заявка#100070490 — Проверка Zabbix (Важных IT-сервисов)\n</h1>"), "100070490")
+
+class DutyNoteTicketIdSafetyTest(unittest.TestCase):
+    def test_zabbix_note_allowed_with_current_session_task_id_and_empty_number(self):
+        ok, message = duty_note_guard({
+            "enabled": True,
+            "duty_session_id": "s",
+            "duty_zabbix_task_session_id": "s",
+            "duty_zabbix_task_id": "70413",
+            "duty_zabbix_task_number": "",
+        }, TASK_ZABBIX)
+        self.assertTrue(ok)
+        self.assertEqual(message, "")
+
+    def test_service_checks_note_allowed_with_current_session_task_id_and_empty_number(self):
+        ok, message = duty_note_guard({
+            "enabled": True,
+            "duty_session_id": "s",
+            "duty_service_checks_task_session_id": "s",
+            "duty_service_checks_task_id": "70413",
+            "duty_service_checks_task_number": "",
+        }, TASK_SERVICES)
+        self.assertTrue(ok)
+        self.assertEqual(message, "")
+
+    def test_stale_session_blocks_even_with_task_id(self):
+        ok, message = duty_note_guard({
+            "enabled": True,
+            "duty_session_id": "new",
+            "duty_zabbix_task_session_id": "old",
+            "duty_zabbix_task_id": "70413",
+        }, TASK_ZABBIX)
+        self.assertFalse(ok)
+        self.assertEqual(message, DUTY_NOTE_UNBOUND_MESSAGE)
+
+    def test_disabled_duty_blocks_even_with_task_id(self):
+        ok, message = duty_note_guard({
+            "enabled": False,
+            "duty_session_id": "s",
+            "duty_service_checks_task_session_id": "s",
+            "duty_service_checks_task_id": "70413",
+        }, TASK_SERVICES)
+        self.assertFalse(ok)
+        self.assertEqual(message, DUTY_NOTE_DISABLED_MESSAGE)
+
+    def test_number_save_later_does_not_clear_task_id_url_session_status(self):
+        settings = {"duty_session_id": "s"}
+        save_task_binding(settings, TASK_ZABBIX, {
+            "id": "70413",
+            "url": "https://otrs/index.pl?Action=AgentTicketZoom;TicketID=70413",
+            "system": "otrs",
+        }, status="linked")
+        save_task_binding(settings, TASK_ZABBIX, {"number": "100070490"}, status="linked")
+        self.assertEqual(settings["duty_zabbix_task_id"], "70413")
+        self.assertEqual(settings["duty_zabbix_task_url"], "https://otrs/index.pl?Action=AgentTicketZoom;TicketID=70413")
+        self.assertEqual(settings["duty_zabbix_task_session_id"], "s")
+        self.assertEqual(settings["duty_zabbix_task_status"], "linked")
+        self.assertEqual(settings["duty_zabbix_task_number"], "100070490")

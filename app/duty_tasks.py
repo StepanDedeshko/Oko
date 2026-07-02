@@ -82,6 +82,13 @@ def finish_duty_session(settings: dict) -> None:
     settings["duty_finished_at"] = _utc_now_iso()
 
 
+def extract_ticket_id_from_url(url: str) -> str:
+    match = re.search(r"[?;]TicketID=([^;&?#]+)", str(url or ""))
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
 def duty_note_guard(settings: dict, task_type: str) -> tuple[bool, str]:
     settings = settings or {}
     if not bool(settings.get("enabled", False)):
@@ -91,10 +98,13 @@ def duty_note_guard(settings: dict, task_type: str) -> tuple[bool, str]:
         return False, DUTY_NOTE_UNBOUND_MESSAGE
     if task_type == TASK_SERVICES:
         task_session_id = str(settings.get("duty_service_checks_task_session_id", "") or "").strip()
-        has_task = bool(str(settings.get("duty_service_checks_task_id", "") or "").strip() or str(settings.get("duty_service_checks_task_url", "") or "").strip())
+        task_id = str(settings.get("duty_service_checks_task_id", "") or "").strip()
+        task_url = str(settings.get("duty_service_checks_task_url", "") or "").strip()
     else:
         task_session_id = str(settings.get("duty_zabbix_task_session_id", "") or "").strip()
-        has_task = bool(str(settings.get("duty_zabbix_task_id", "") or settings.get("current_ticket_id", "") or "").strip() or str(settings.get("duty_zabbix_task_url", "") or settings.get("current_ticket_url", "") or "").strip())
+        task_id = str(settings.get("duty_zabbix_task_id", "") or settings.get("current_ticket_id", "") or "").strip()
+        task_url = str(settings.get("duty_zabbix_task_url", "") or settings.get("current_ticket_url", "") or "").strip()
+    has_task = bool(task_id or extract_ticket_id_from_url(task_url))
     if task_session_id != session_id or not has_task:
         return False, DUTY_NOTE_UNBOUND_MESSAGE
     return True, ""
