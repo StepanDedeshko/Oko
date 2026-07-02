@@ -178,12 +178,29 @@ def parse_otrs_task_number(text: str) -> str:
     if not value:
         return ""
     patterns = (
-        r"Заявка\s*[#№]\s*(\d{6,})",
+        r"(?:Заявка|Задача)\s*[#№]\s*(\d{6,})",
         r"Ticket\s*#\s*(\d{6,})",
         r"^\s*(\d{6,})\s*[-–—]",
     )
     for pattern in patterns:
         match = re.search(pattern, value, re.IGNORECASE | re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def parse_otrs_ticket_id(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    patterns = (
+        r"[?;]TicketID=([0-9]+)",
+        r"\bTicketID=([0-9]+)",
+        r'"TicketID"\s*:\s*"([0-9]+)"',
+        r"'TicketID'\s*:\s*'([0-9]+)'",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, value, re.IGNORECASE)
         if match:
             return match.group(1).strip()
     return ""
@@ -208,7 +225,7 @@ def parse_ticket_url(value: str) -> dict:
                 return str(values[0]).strip()
         return ""
 
-    ticket_id = first("TicketID", "ticket_id")
+    ticket_id = first("TicketID", "ticket_id") or parse_otrs_ticket_id(raw)
     if ticket_id:
         return {"system": "otrs", "id": ticket_id, "url": raw, "number": ""}
 

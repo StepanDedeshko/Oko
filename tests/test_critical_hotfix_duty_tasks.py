@@ -7,6 +7,7 @@ from app.duty_tasks import (
     get_active_duty_task,
     is_valid_duty_task_binding,
     parse_otrs_task_number,
+    parse_otrs_ticket_id,
     parse_ticket_url,
     save_task_binding,
     start_new_duty_session,
@@ -120,12 +121,13 @@ def test_disabled_duty_and_stale_without_session_are_not_active():
 
 def test_ui_summary_source_shows_ticketid_when_number_empty():
     source = __import__("pathlib").Path("app/duty_mode.py").read_text(encoding="utf-8")
-    assert "Привязана по TicketID=" in source
+    assert "привязана по TicketID=" in source
 
 
 def test_parse_otrs_task_number_from_title_and_headers():
     assert parse_otrs_task_number("100070490 - Подробно - Заявки - Service Desk") == "100070490"
     assert parse_otrs_task_number("Заявка#100070490 — Проверка Zabbix (Важных IT-сервисов)") == "100070490"
+    assert parse_otrs_task_number("Задача#100070490 — Проверка сервисов") == "100070490"
     assert parse_otrs_task_number("Заявка #100070490") == "100070490"
     assert parse_otrs_task_number("Заявка №100070490") == "100070490"
     assert parse_otrs_task_number("Ticket#100070490") == "100070490"
@@ -162,4 +164,39 @@ def test_ui_summary_source_prefers_number_over_ticketid():
     source = __import__("pathlib").Path("app/duty_mode.py").read_text(encoding="utf-8")
     assert 'if number:' in source
     assert 'return f"№{number}"' in source
-    assert 'Привязана по TicketID=' in source
+    assert 'привязана по TicketID=' in source
+
+
+def test_parse_otrs_ticket_id_from_url_and_html():
+    assert parse_otrs_ticket_id("https://otrs/index.pl?Action=AgentTicketZoom;TicketID=70413") == "70413"
+    assert parse_otrs_ticket_id("Action=AgentTicketNote;TicketID=70413") == "70413"
+    assert parse_otrs_ticket_id('Core.Config.Set({"TicketID":"70413"});') == "70413"
+
+
+def test_zabbix_binding_stores_zabbix_fields_only():
+    settings = {"enabled": True, "duty_session_id": "s", "duty_service_checks_task_number": "svc", "duty_service_checks_task_id": "svc-id"}
+    bind_duty_task(settings, TASK_ZABBIX, {"number": "100070490", "id": "70413", "url": "u"})
+    assert settings["duty_zabbix_task_number"] == "100070490"
+    assert settings["duty_zabbix_task_id"] == "70413"
+    assert settings["duty_zabbix_task_status"] == "linked"
+    assert settings["duty_zabbix_task_session_id"] == "s"
+    assert settings["duty_service_checks_task_number"] == "svc"
+    assert settings["duty_service_checks_task_id"] == "svc-id"
+    assert can_send_duty_note(settings, TASK_ZABBIX) == (True, "")
+
+
+def test_service_checks_binding_stores_service_fields_only():
+    settings = {"enabled": True, "duty_session_id": "s", "duty_zabbix_task_number": "zbx", "duty_zabbix_task_id": "zbx-id"}
+    bind_duty_task(settings, TASK_SERVICES, {"number": "100070490", "id": "70413", "url": "u"})
+    assert settings["duty_service_checks_task_number"] == "100070490"
+    assert settings["duty_service_checks_task_id"] == "70413"
+    assert settings["duty_service_checks_task_status"] == "linked"
+    assert settings["duty_service_checks_task_session_id"] == "s"
+    assert settings["duty_zabbix_task_number"] == "zbx"
+    assert settings["duty_zabbix_task_id"] == "zbx-id"
+    assert can_send_duty_note(settings, TASK_SERVICES) == (True, "")
+
+
+def test_task_type_specific_button_state_source_uses_can_send():
+    source = __import__("pathlib").Path("app/duty_mode.py").read_text(encoding="utf-8")
+    assert "can_send_duty_note(duty_widget.get_settings(), TASK_SERVICES if is_service else TASK_ZABBIX)" in source

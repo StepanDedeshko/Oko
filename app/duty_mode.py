@@ -62,6 +62,7 @@ from app.duty_tasks import (
     get_active_duty_task,
     has_current_task,
     parse_otrs_task_number,
+    parse_otrs_ticket_id,
     parse_ticket_url,
     planned_actions,
     save_task_binding as save_duty_task_binding,
@@ -1158,10 +1159,7 @@ class AttachExistingTaskDialog(QDialog):
         run_javascript_if_alive(self.view, js)
 
     def extract_ticket_id_from_url(self, url):
-        match = re.search(r"[?;]TicketID=([^;&?#]+)", url or "")
-        if match:
-            return match.group(1).strip()
-        return ""
+        return parse_otrs_ticket_id(url)
 
     def open_task_url(self):
         self.bind_task_from_input()
@@ -1804,10 +1802,7 @@ class OtrsCreateTaskDialog(QDialog):
         return result
 
     def extract_ticket_id_from_url(self, url):
-        match = re.search(r"[?;]TicketID=([^;&?#]+)", url or "")
-        if match:
-            return match.group(1).strip()
-        return ""
+        return parse_otrs_ticket_id(url)
 
     def remember_current_ticket_url(self):
         url = self.view.url().toString()
@@ -1840,7 +1835,7 @@ class OtrsCreateTaskDialog(QDialog):
                 visibleText
             ];
             const patterns = [
-                /Заявка\s*[#№]\s*(\d{6,})/i,
+                /(?:Заявка|Задача)\s*[#№]\s*(\d{6,})/i,
                 /Ticket\s*#\s*(\d{6,})/i,
                 /^\s*(\d{6,})\s*[-–—]/
             ];
@@ -2083,10 +2078,7 @@ class OtrsNoteDialog(QDialog):
         return self.get_settings().get("current_ticket_id", "").strip()
 
     def extract_ticket_id_from_url(self, url):
-        match = re.search(r"[?;]TicketID=([^;&?#]+)", url or "")
-        if match:
-            return match.group(1).strip()
-        return ""
+        return parse_otrs_ticket_id(url)
 
     def make_note_url_by_ticket_id(self, ticket_id):
         otrs = self.get_otrs_settings()
@@ -4042,7 +4034,8 @@ class DutyNoteDialog(QDialog):
         root.addWidget(preview)
         row = QHBoxLayout()
         send = QPushButton("Отправить заметку в задачу проверки сервисов" if is_service else "Отправить заметку в задачу Zabbix / графиков")
-        send.setEnabled(bool(duty_widget._service_checks_task_number() if is_service else duty_widget._zabbix_task_number()))
+        can_send, _reason = can_send_duty_note(duty_widget.get_settings(), TASK_SERVICES if is_service else TASK_ZABBIX)
+        send.setEnabled(can_send)
         send.clicked.connect(self.send_note)
         copy = QPushButton("Скопировать заметку")
         copy.clicked.connect(lambda: QApplication.clipboard().setText(note))
@@ -5154,7 +5147,7 @@ class DutyModeWidget(QWidget):
             active = get_active_duty_task(self.get_settings(), task_type) or {}
             ticket_id = str(active.get("id") or "").strip()
             if ticket_id:
-                return f"Привязана по TicketID={ticket_id}"
+                return f"привязана по TicketID={ticket_id}"
         return "не привязана"
 
 
@@ -6656,13 +6649,10 @@ class DutyModeWidget(QWidget):
         self.logger.info("Duty graph check note requested")
         ticket_number, ticket_id, ticket_url = self._bound_task_details()
 
-        if not any([ticket_number, ticket_id, ticket_url]):
-            self.logger.info("Duty graph check note skipped: no bound task")
-            QMessageBox.warning(
-                self,
-                "Задача дежурства",
-                "Задача дежурства не привязана. Включите режим дежурства и создайте или привяжите задачу."
-            )
+        ok, reason = can_send_duty_note(self.get_settings(), TASK_ZABBIX)
+        if not ok:
+            self.logger.info("Duty graph check note skipped: no active zabbix task")
+            QMessageBox.warning(self, "Задача дежурства", reason)
             return
 
         if not ticket_id:
