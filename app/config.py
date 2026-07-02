@@ -92,8 +92,34 @@ def ensure_duty_triggers_defaults(config):
 
     return settings
 
+
+def _clear_broken_ticket_id_only_duty_bindings(settings):
+    """Remove v0.3.3 TicketID-only duty bindings while preserving user data."""
+    current_ticket_number = str(settings.get("current_ticket_number") or "")
+    duty_zabbix_task_number = str(settings.get("duty_zabbix_task_number") or "")
+    current_ticket_id = str(settings.get("current_ticket_id") or "")
+    duty_zabbix_task_id = str(settings.get("duty_zabbix_task_id") or "")
+
+    if (
+        not current_ticket_number
+        and not duty_zabbix_task_number
+        and (current_ticket_id or duty_zabbix_task_id)
+    ):
+        settings["current_ticket_id"] = ""
+        settings["current_ticket_url"] = ""
+        settings["duty_zabbix_task_id"] = ""
+        settings["duty_zabbix_task_url"] = ""
+
+    duty_service_checks_task_number = str(settings.get("duty_service_checks_task_number") or "")
+    duty_service_checks_task_id = str(settings.get("duty_service_checks_task_id") or "")
+    if not duty_service_checks_task_number and duty_service_checks_task_id:
+        settings["duty_service_checks_task_id"] = ""
+        settings["duty_service_checks_task_url"] = ""
+
+
 def ensure_duty_mode_defaults(config):
     settings = config.setdefault("duty_mode", {})
+    _clear_broken_ticket_id_only_duty_bindings(settings)
     legacy_task_number = (
         settings.get("duty_zabbix_task_number")
         or settings.get("current_ticket_number")
