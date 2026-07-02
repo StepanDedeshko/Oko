@@ -800,7 +800,10 @@ class DutyModeSettingsWidget(QWidget):
         settings["duty_service_checks_enabled"] = self.duty_service_checks_enabled_checkbox.isChecked()
         settings["duty_zabbix_task_number"] = self.duty_zabbix_task_number_input.text().strip()
         settings["duty_service_checks_task_number"] = self.duty_service_checks_task_number_input.text().strip()
-        settings["current_ticket_number"] = settings["duty_zabbix_task_number"]
+        for prefix in ("duty_zabbix_task", "duty_service_checks_task"):
+            if not settings.get(f"{prefix}_number", ""):
+                for key in ("id", "url", "system", "status", "linked_at", "session_id"):
+                    settings[f"{prefix}_{key}"] = ""
         settings["otrs_auto_submit_login"] = self.otrs_auto_submit_checkbox.isChecked()
         settings["graph_ids"] = self.selected_graph_ids()
 

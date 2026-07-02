@@ -9,7 +9,7 @@ from app.service_checks import default_service_checks_config
 from app.redmine_triggers import default_special_redmine_triggers_config, ensure_special_redmine_triggers_defaults
 from app.trigger_model import default_trigger_catalog_config, ensure_trigger_catalog_defaults
 from app.live_zabbix import default_live_monitor_config, ensure_live_monitor_defaults
-from app.duty_tasks import DUTY_TASK_BINDING_FIELDS, clear_duty_task_bindings
+from app.duty_tasks import DUTY_TASK_BINDING_FIELDS, TASK_SERVICES, TASK_ZABBIX, clear_duty_task_bindings, is_valid_duty_task_binding
 from app.permissions import ensure_duty_links, build_user_settings_export, import_user_settings_payload, normalize_user_permissions
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
@@ -263,21 +263,49 @@ def merge_missing_defaults(user_config, default_config=None):
 
 
 
-def _has_stale_disabled_duty_tasks(duty: dict) -> bool:
-    if not isinstance(duty, dict) or duty.get("enabled") is not False:
+def _task_prefix(task_type: str) -> str:
+    return "duty_service_checks_task" if task_type == TASK_SERVICES else "duty_zabbix_task"
+
+
+def _task_fields(prefix: str) -> list[str]:
+    return [f"{prefix}_number", f"{prefix}_id", f"{prefix}_url", f"{prefix}_system", f"{prefix}_status", f"{prefix}_linked_at", f"{prefix}_session_id"]
+
+
+def _linked_binding_is_invalid(duty: dict, task_type: str) -> bool:
+    prefix = _task_prefix(task_type)
+    if duty.get(f"{prefix}_status") != "linked":
         return False
-    status_linked = duty.get("duty_zabbix_task_status") == "linked" or duty.get("duty_service_checks_task_status") == "linked"
-    filled = any(str(duty.get(key, "") or "").strip() for key in DUTY_TASK_BINDING_FIELDS)
-    return status_linked or filled
+    return not is_valid_duty_task_binding(duty, task_type)
+
+
+def _has_stale_disabled_duty_tasks(duty: dict) -> bool:
+    if not isinstance(duty, dict):
+        return False
+    if duty.get("enabled") is False and any(str(duty.get(key, "") or "").strip() for key in DUTY_TASK_BINDING_FIELDS):
+        return True
+    return _linked_binding_is_invalid(duty, TASK_ZABBIX) or _linked_binding_is_invalid(duty, TASK_SERVICES)
 
 
 def migrate_stale_disabled_duty_tasks(config: dict) -> bool:
     duty = (config or {}).setdefault("duty_mode", {})
-    if duty.get("duty_legacy_tasks_migrated") or not _has_stale_disabled_duty_tasks(duty):
+    if duty.get("duty_legacy_tasks_migrated") and not (_linked_binding_is_invalid(duty, TASK_ZABBIX) or _linked_binding_is_invalid(duty, TASK_SERVICES)):
         return False
-    old = {key: duty.get(key, "") for key in DUTY_TASK_BINDING_FIELDS}
-    clear_duty_task_bindings(duty)
-    duty["enabled"] = False
+    if not _has_stale_disabled_duty_tasks(duty):
+        return False
+
+    old = deepcopy(duty.get("duty_legacy_tasks_backup") or {})
+    for key in DUTY_TASK_BINDING_FIELDS:
+        old.setdefault(key, duty.get(key, ""))
+
+    if duty.get("enabled") is False:
+        clear_duty_task_bindings(duty)
+        duty["enabled"] = False
+    else:
+        for task_type in (TASK_ZABBIX, TASK_SERVICES):
+            if _linked_binding_is_invalid(duty, task_type):
+                for key in _task_fields(_task_prefix(task_type)):
+                    duty[key] = ""
+
     duty["duty_legacy_tasks_migrated"] = True
     duty["duty_legacy_tasks_detected_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     duty["duty_legacy_tasks_backup"] = old

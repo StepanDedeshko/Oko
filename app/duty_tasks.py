@@ -66,11 +66,10 @@ def _prefix(task_type: str) -> str:
     return "duty_service_checks_task" if task_type == TASK_SERVICES else "duty_zabbix_task"
 
 
-def get_active_duty_task(settings: dict, task_type: str) -> dict:
+def _task_binding_from_settings(settings: dict, task_type: str) -> dict:
     settings = {} if settings is None else settings
-    session_id = str(settings.get("duty_session_id", "") or "").strip()
     prefix = _prefix(task_type)
-    binding = {
+    return {
         "url": str(settings.get(f"{prefix}_url", "") or "").strip(),
         "id": str(settings.get(f"{prefix}_id", "") or "").strip(),
         "number": str(settings.get(f"{prefix}_number", "") or "").strip(),
@@ -78,12 +77,27 @@ def get_active_duty_task(settings: dict, task_type: str) -> dict:
         "session_id": str(settings.get(f"{prefix}_session_id", "") or "").strip(),
         "status": str(settings.get(f"{prefix}_status", "") or "").strip(),
     }
-    binding["active"] = bool(
+
+
+def is_valid_duty_task_binding(settings: dict, task_type: str) -> bool:
+    settings = {} if settings is None else settings
+    session_id = str(settings.get("duty_session_id", "") or "").strip()
+    binding = _task_binding_from_settings(settings, task_type)
+    return bool(
         settings.get("enabled") is True
         and session_id
         and binding["session_id"] == session_id
+        and binding["number"]
         and (binding["id"] or binding["url"])
+        and binding["status"] == "linked"
     )
+
+
+def get_active_duty_task(settings: dict, task_type: str) -> dict | None:
+    if not is_valid_duty_task_binding(settings, task_type):
+        return None
+    binding = _task_binding_from_settings(settings, task_type)
+    binding["active"] = True
     return binding
 
 
@@ -91,7 +105,7 @@ def can_send_duty_note(settings: dict, task_type: str) -> tuple[bool, str]:
     settings = {} if settings is None else settings
     if not settings.get("enabled"):
         return False, "Дежурство не включено. Начните новое дежурство и привяжите задачу."
-    if not get_active_duty_task(settings, task_type).get("active"):
+    if get_active_duty_task(settings, task_type) is None:
         return False, "Задача текущего дежурства не привязана. Сначала создайте или выберите задачу для текущего дежурства."
     return True, ""
 
@@ -100,15 +114,30 @@ def bind_duty_task(settings: dict, task_type: str, parsed: dict, status: str = "
     settings = {} if settings is None else settings
     parsed = parsed or {}
     prefix = _prefix(task_type)
-    settings[f"{prefix}_number"] = str(parsed.get("number", "") or "").strip()
-    settings[f"{prefix}_id"] = str(parsed.get("id", "") or "").strip()
-    settings[f"{prefix}_url"] = str(parsed.get("url", "") or "").strip()
-    settings[f"{prefix}_system"] = str(parsed.get("system", "") or "").strip()
-    settings[f"{prefix}_status"] = status
-    settings[f"{prefix}_linked_at"] = utc_now_iso()
-    settings[f"{prefix}_session_id"] = str(settings.get("duty_session_id", "") or "").strip()
+    number = str(parsed.get("number", "") or "").strip()
+    ticket_id = str(parsed.get("id", "") or "").strip()
+    url = str(parsed.get("url", "") or "").strip()
+    system = str(parsed.get("system", "") or "").strip()
+    session_id = str(settings.get("duty_session_id", "") or "").strip()
+    valid = bool(settings.get("enabled") is True and session_id and number and (ticket_id or url))
+
+    settings[f"{prefix}_number"] = number
+    settings[f"{prefix}_id"] = ticket_id
+    settings[f"{prefix}_url"] = url
+    settings[f"{prefix}_system"] = system
     settings.pop(f"{prefix}_error", None)
-    return settings
+
+    if valid:
+        settings[f"{prefix}_status"] = "linked" if status == "linked" else status
+        settings[f"{prefix}_linked_at"] = utc_now_iso()
+        settings[f"{prefix}_session_id"] = session_id
+        return {"valid": True, "status": settings[f"{prefix}_status"], "reason": ""}
+
+    settings[f"{prefix}_status"] = "incomplete"
+    settings[f"{prefix}_linked_at"] = ""
+    settings[f"{prefix}_session_id"] = ""
+    reason = "Не удалось определить номер задачи. Укажите номер задачи вручную." if not number else "Дежурство не включено. Начните новое дежурство и привяжите задачу."
+    return {"valid": False, "status": "incomplete", "reason": reason}
 
 
 def selected_task_types(settings: dict) -> list[str]:

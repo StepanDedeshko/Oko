@@ -55,7 +55,6 @@ from app.duty_tasks import (
     TASK_SERVICES,
     TASK_SHORT_LABELS,
     TASK_ZABBIX,
-    bind_duty_task,
     can_send_duty_note,
     current_task_binding,
     duty_tasks_button_enabled,
@@ -1093,27 +1092,18 @@ class AttachExistingTaskDialog(QDialog):
 
     def _save_task_binding(self, number="", ticket_id="", ticket_url=""):
         settings = self.get_settings()
-        if self.task_type == "service_checks":
-            if number:
-                settings["duty_service_checks_task_number"] = number
-            if ticket_id:
-                settings["duty_service_checks_task_id"] = ticket_id
-            if ticket_url:
-                settings["duty_service_checks_task_url"] = ticket_url
-            settings["duty_service_checks_task_status"] = "linked"
-            settings["duty_service_checks_task_session_id"] = str(settings.get("duty_session_id", "") or "")
+        result = save_duty_task_binding(
+            settings,
+            TASK_SERVICES if self.task_type == "service_checks" else TASK_ZABBIX,
+            {"number": number, "id": ticket_id, "url": ticket_url, "system": "otrs"},
+        )
+        save_config(self.config)
+        if not result.get("valid"):
+            self.status_label.setText(result.get("reason") or "Не удалось определить номер задачи. Укажите номер задачи вручную.")
+        elif self.task_type == "service_checks":
             self.logger.info("Duty service checks task attached: ticket_id=%s", ticket_id or "not_set")
         else:
-            if number:
-                settings["duty_zabbix_task_number"] = number
-            if ticket_id:
-                settings["duty_zabbix_task_id"] = ticket_id
-            if ticket_url:
-                settings["duty_zabbix_task_url"] = ticket_url
-            settings["duty_zabbix_task_status"] = "linked"
-            settings["duty_zabbix_task_session_id"] = str(settings.get("duty_session_id", "") or "")
             self.logger.info("Duty Zabbix task attached: ticket_id=%s", ticket_id or "not_set")
-        save_config(self.config)
 
     def get_settings(self):
         return ensure_duty_mode_defaults(self.config)
@@ -1625,7 +1615,7 @@ class OtrsCreateTaskDialog(QDialog):
         ticket_id_row = QHBoxLayout()
 
         self.ticket_id_input = QLineEdit()
-        self.ticket_id_input.setText(self.get_settings().get("current_ticket_id", ""))
+        self.ticket_id_input.setText(current_task_binding(self.get_settings(), self.task_type).get("id", ""))
         self.ticket_id_input.setPlaceholderText("TicketID из ссылки задачи")
 
         remember_open_button = QPushButton("Запомнить открытую задачу")
@@ -1766,12 +1756,13 @@ class OtrsCreateTaskDialog(QDialog):
 
         if ticket_id and ticket_id != self.auto_captured_ticket_id:
             self.auto_captured_ticket_id = ticket_id
-            self.save_ticket_binding(ticket_id=ticket_id, ticket_url=url, show_message=False)
+            result = self.save_ticket_binding(ticket_id=ticket_id, ticket_url=url, show_message=False)
 
             self.ticket_id_input.setText(ticket_id)
-            self.status_label.setText(
-                f"TicketID найден автоматически: {ticket_id}. Задача дежурства привязана."
-            )
+            if result.get("valid"):
+                self.status_label.setText(f"TicketID найден автоматически: {ticket_id}. Задача дежурства привязана.")
+            else:
+                self.status_label.setText("TicketID найден, но номер задачи не найден. Не удалось определить номер задачи. Укажите номер задачи вручную.")
 
             # После перехода в задачу пробуем достать номер из текста страницы,
             # но не мешаем работе, если номер не найдётся.
@@ -1779,42 +1770,37 @@ class OtrsCreateTaskDialog(QDialog):
 
     def save_ticket_binding(self, ticket_id="", ticket_url="", ticket_number="", show_message=True):
         settings = self.get_settings()
+        current_url = self.view.url().toString() if getattr(self, "view", None) is not None else ""
+        ticket_id = str(ticket_id or self.ticket_id_input.text().strip() or self.extract_ticket_id_from_url(current_url)).strip()
+        ticket_url = str(ticket_url or (current_url if ticket_id else "")).strip()
+        ticket_number = str(ticket_number or self.ticket_number_input.text().strip()).strip()
 
-        if self.task_type == "service_checks":
-            if ticket_id:
-                settings["duty_service_checks_task_id"] = ticket_id
-            if ticket_url:
-                settings["duty_service_checks_task_url"] = ticket_url
-            if ticket_number:
-                settings["duty_service_checks_task_number"] = ticket_number
-            settings["duty_service_checks_task_status"] = "linked"
-            settings["duty_service_checks_task_session_id"] = str(settings.get("duty_session_id", "") or "")
-            self.logger.info("Duty service checks task attached: ticket_id=%s", ticket_id or "not_set")
-        else:
-            if ticket_id:
-                settings["duty_zabbix_task_id"] = ticket_id
-            if ticket_url:
-                settings["duty_zabbix_task_url"] = ticket_url
-            if ticket_number:
-                settings["duty_zabbix_task_number"] = ticket_number
-            settings["duty_zabbix_task_status"] = "linked"
-            settings["duty_zabbix_task_session_id"] = str(settings.get("duty_session_id", "") or "")
-            self.logger.info("Duty Zabbix task attached: ticket_id=%s", ticket_id or "not_set")
-
+        result = save_duty_task_binding(
+            settings,
+            TASK_SERVICES if self.task_type == "service_checks" else TASK_ZABBIX,
+            {"number": ticket_number, "id": ticket_id, "url": ticket_url, "system": "otrs"},
+        )
         save_config(self.config)
 
-        if show_message:
-            parts = []
-            if ticket_number:
-                parts.append(f"№{ticket_number}")
-            if ticket_id:
-                parts.append(f"TicketID={ticket_id}")
-
-            QMessageBox.information(
-                self,
-                self._task_create_title(),
-                self._task_create_title() + " привязана к задаче: " + ", ".join(parts)
-            )
+        if result.get("valid"):
+            self.logger.info("Duty %s task attached: ticket_id=%s", self.task_type, ticket_id or "not_set")
+            if show_message:
+                parts = []
+                if ticket_number:
+                    parts.append(f"№{ticket_number}")
+                if ticket_id:
+                    parts.append(f"TicketID={ticket_id}")
+                QMessageBox.information(
+                    self,
+                    self._task_create_title(),
+                    self._task_create_title() + " привязана к задаче: " + ", ".join(parts)
+                )
+        else:
+            message = result.get("reason") or "Не удалось определить номер задачи. Укажите номер задачи вручную."
+            self.status_label.setText(message)
+            if show_message:
+                QMessageBox.warning(self, self._task_create_title(), message)
+        return result
 
     def extract_ticket_id_from_url(self, url):
         match = re.search(r"[?;]TicketID=([^;&?#]+)", url or "")
@@ -1837,9 +1823,9 @@ class OtrsCreateTaskDialog(QDialog):
             return
 
         self.ticket_id_input.setText(ticket_id)
-        self.save_ticket_binding(ticket_id=ticket_id, ticket_url=url, show_message=True)
+        result = self.save_ticket_binding(ticket_id=ticket_id, ticket_url=url, show_message=True)
 
-        if not self.ticket_number_input.text().strip():
+        if not result.get("valid") and not self.ticket_number_input.text().strip():
             self.try_detect_ticket_number()
 
     def try_detect_ticket_number(self):
@@ -1878,8 +1864,8 @@ class OtrsCreateTaskDialog(QDialog):
             return
 
         self.ticket_number_input.setText(number)
-        self.save_ticket_binding(ticket_number=number, show_message=False)
-        self.status_label.setText(f"Найден номер задачи: {number}")
+        result = self.save_ticket_binding(ticket_number=number, show_message=False)
+        self.status_label.setText(f"Найден номер задачи: {number}" if result.get("valid") else result.get("reason", "Не удалось определить номер задачи. Укажите номер задачи вручную."))
 
     def save_ticket_number(self):
         number = self.ticket_number_input.text().strip()
@@ -2112,8 +2098,6 @@ class OtrsNoteDialog(QDialog):
             return False
 
         settings = self.get_settings()
-        settings["current_ticket_id"] = ticket_id
-        settings["current_ticket_url"] = url
 
         note_url = self.make_note_url_by_ticket_id(ticket_id)
         self.url_input.setText(note_url)
@@ -2242,8 +2226,6 @@ class OtrsNoteDialog(QDialog):
         settings = self.get_settings()
 
         if number:
-            settings["current_ticket_number"] = number
-            settings["duty_zabbix_task_number"] = number
             changed = True
 
         if changed:
@@ -5126,7 +5108,7 @@ class DutyModeWidget(QWidget):
         if not ok:
             QMessageBox.warning(self, "Проверка сервисов", reason)
             return
-        task_url = get_active_duty_task(self.get_settings(), TASK_SERVICES).get("url", "")
+        task_url = (get_active_duty_task(self.get_settings(), TASK_SERVICES) or {}).get("url", "")
         if not task_url:
             task_url = self._duty_task_url(TASK_SERVICES)
         note_text = build_service_check_note_text(self.config, self.service_check_results)
@@ -5166,7 +5148,7 @@ class DutyModeWidget(QWidget):
             url = str(settings.get("duty_service_checks_task_url", "") or "").strip()
             ticket_id = str(settings.get("duty_service_checks_task_id", "") or "").strip()
         else:
-            active = get_active_duty_task(settings, TASK_ZABBIX)
+            active = get_active_duty_task(settings, TASK_ZABBIX) or {}
             url = str(active.get("url") or "").strip()
             ticket_id = str(active.get("id") or "").strip()
         if url:
@@ -6646,8 +6628,6 @@ class DutyModeWidget(QWidget):
             match = re.search(r"[?;]TicketID=([^;&?#]+)", ticket_url)
             if match:
                 ticket_id = match.group(1).strip()
-                settings["duty_zabbix_task_id"] = ticket_id
-                save_config(self.config)
 
         return ticket_number, ticket_id, ticket_url
 
