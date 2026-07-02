@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import uuid4
 from urllib.parse import parse_qs, urlparse
 import re
 
@@ -20,8 +21,98 @@ TASK_SHORT_LABELS = {
 }
 
 
+DUTY_TASK_BINDING_FIELDS = [
+    "current_ticket_number", "current_ticket_id", "current_ticket_url",
+    "duty_zabbix_task_number", "duty_zabbix_task_id", "duty_zabbix_task_url",
+    "duty_zabbix_task_system", "duty_zabbix_task_status", "duty_zabbix_task_linked_at",
+    "duty_zabbix_task_session_id",
+    "duty_service_checks_task_number", "duty_service_checks_task_id", "duty_service_checks_task_url",
+    "duty_service_checks_task_system", "duty_service_checks_task_status", "duty_service_checks_task_linked_at",
+    "duty_service_checks_task_session_id",
+    "last_zabbix_check_note", "last_zabbix_check_time",
+    "last_service_check_note", "last_service_check_time",
+]
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def clear_duty_task_bindings(settings: dict) -> dict:
+    settings = {} if settings is None else settings
+    for key in DUTY_TASK_BINDING_FIELDS:
+        settings[key] = ""
+    return settings
+
+
+def start_new_duty_session(settings: dict) -> dict:
+    settings = {} if settings is None else settings
+    clear_duty_task_bindings(settings)
+    settings["enabled"] = True
+    settings["duty_session_id"] = uuid4().hex
+    settings["duty_started_at"] = utc_now_iso()
+    settings["duty_finished_at"] = ""
+    return settings
+
+
+def finish_duty_session(settings: dict) -> dict:
+    settings = {} if settings is None else settings
+    settings["enabled"] = False
+    settings["duty_finished_at"] = utc_now_iso()
+    return settings
+
+
+def _prefix(task_type: str) -> str:
+    return "duty_service_checks_task" if task_type == TASK_SERVICES else "duty_zabbix_task"
+
+
+def get_active_duty_task(settings: dict, task_type: str) -> dict:
+    settings = {} if settings is None else settings
+    session_id = str(settings.get("duty_session_id", "") or "").strip()
+    prefix = _prefix(task_type)
+    binding = {
+        "url": str(settings.get(f"{prefix}_url", "") or "").strip(),
+        "id": str(settings.get(f"{prefix}_id", "") or "").strip(),
+        "number": str(settings.get(f"{prefix}_number", "") or "").strip(),
+        "system": str(settings.get(f"{prefix}_system", "") or "").strip(),
+        "session_id": str(settings.get(f"{prefix}_session_id", "") or "").strip(),
+        "status": str(settings.get(f"{prefix}_status", "") or "").strip(),
+    }
+    binding["active"] = bool(
+        settings.get("enabled") is True
+        and session_id
+        and binding["session_id"] == session_id
+        and (binding["id"] or binding["url"])
+    )
+    return binding
+
+
+def can_send_duty_note(settings: dict, task_type: str) -> tuple[bool, str]:
+    settings = {} if settings is None else settings
+    if not settings.get("enabled"):
+        return False, "Дежурство не включено. Начните новое дежурство и привяжите задачу."
+    if not get_active_duty_task(settings, task_type).get("active"):
+        return False, "Задача текущего дежурства не привязана. Сначала создайте или выберите задачу для текущего дежурства."
+    return True, ""
+
+
+def bind_duty_task(settings: dict, task_type: str, parsed: dict, status: str = "linked") -> dict:
+    settings = {} if settings is None else settings
+    parsed = parsed or {}
+    prefix = _prefix(task_type)
+    settings[f"{prefix}_number"] = str(parsed.get("number", "") or "").strip()
+    settings[f"{prefix}_id"] = str(parsed.get("id", "") or "").strip()
+    settings[f"{prefix}_url"] = str(parsed.get("url", "") or "").strip()
+    settings[f"{prefix}_system"] = str(parsed.get("system", "") or "").strip()
+    settings[f"{prefix}_status"] = status
+    settings[f"{prefix}_linked_at"] = utc_now_iso()
+    settings[f"{prefix}_session_id"] = str(settings.get("duty_session_id", "") or "").strip()
+    settings.pop(f"{prefix}_error", None)
+    return settings
+
+
 def selected_task_types(settings: dict) -> list[str]:
-    settings = settings or {}
+    settings = {} if settings is None else settings
     result = []
     if bool(settings.get("check_zabbix_enabled", True)):
         result.append(TASK_ZABBIX)
@@ -93,7 +184,7 @@ def parse_ticket_url(value: str) -> dict:
 
 
 def current_task_binding(settings: dict, task_type: str) -> dict:
-    settings = settings or {}
+    settings = {} if settings is None else settings
     if task_type == TASK_SERVICES:
         return {
             "url": str(settings.get("duty_service_checks_task_url", "") or "").strip(),
@@ -102,9 +193,9 @@ def current_task_binding(settings: dict, task_type: str) -> dict:
             "system": str(settings.get("duty_service_checks_task_system", "") or "").strip(),
         }
     return {
-        "url": str(settings.get("duty_zabbix_task_url") or settings.get("current_ticket_url") or "").strip(),
-        "id": str(settings.get("duty_zabbix_task_id") or settings.get("current_ticket_id") or "").strip(),
-        "number": str(settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number") or "").strip(),
+        "url": str(settings.get("duty_zabbix_task_url", "") or "").strip(),
+        "id": str(settings.get("duty_zabbix_task_id", "") or "").strip(),
+        "number": str(settings.get("duty_zabbix_task_number", "") or "").strip(),
         "system": str(settings.get("duty_zabbix_task_system", "") or "").strip(),
     }
 
@@ -115,29 +206,4 @@ def has_current_task(settings: dict, task_type: str) -> bool:
 
 
 def save_task_binding(settings: dict, task_type: str, parsed: dict, status: str = "linked") -> dict:
-    parsed = parsed or {}
-    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    system = str(parsed.get("system", "") or "").strip()
-    ticket_id = str(parsed.get("id", "") or "").strip()
-    number = str(parsed.get("number", "") or "").strip()
-    url = str(parsed.get("url", "") or "").strip()
-    prefix = "duty_service_checks_task" if task_type == TASK_SERVICES else "duty_zabbix_task"
-    if system:
-        settings[f"{prefix}_system"] = system
-    if ticket_id:
-        settings[f"{prefix}_id"] = ticket_id
-    if number:
-        settings[f"{prefix}_number"] = number
-    if url:
-        settings[f"{prefix}_url"] = url
-    settings[f"{prefix}_status"] = status
-    settings[f"{prefix}_linked_at"] = now
-    settings.pop(f"{prefix}_error", None)
-    if task_type == TASK_ZABBIX:
-        if ticket_id:
-            settings["current_ticket_id"] = ticket_id
-        if number:
-            settings["current_ticket_number"] = number
-        if url:
-            settings["current_ticket_url"] = url
-    return settings
+    return bind_duty_task(settings, task_type, parsed, status=status)

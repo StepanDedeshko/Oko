@@ -55,12 +55,17 @@ from app.duty_tasks import (
     TASK_SERVICES,
     TASK_SHORT_LABELS,
     TASK_ZABBIX,
+    bind_duty_task,
+    can_send_duty_note,
     current_task_binding,
     duty_tasks_button_enabled,
+    finish_duty_session,
+    get_active_duty_task,
     has_current_task,
     parse_ticket_url,
     planned_actions,
     save_task_binding as save_duty_task_binding,
+    start_new_duty_session,
     selected_task_types,
     smart_action_text,
 )
@@ -1095,17 +1100,18 @@ class AttachExistingTaskDialog(QDialog):
                 settings["duty_service_checks_task_id"] = ticket_id
             if ticket_url:
                 settings["duty_service_checks_task_url"] = ticket_url
+            settings["duty_service_checks_task_status"] = "linked"
+            settings["duty_service_checks_task_session_id"] = str(settings.get("duty_session_id", "") or "")
             self.logger.info("Duty service checks task attached: ticket_id=%s", ticket_id or "not_set")
         else:
             if number:
-                settings["current_ticket_number"] = number
                 settings["duty_zabbix_task_number"] = number
             if ticket_id:
-                settings["current_ticket_id"] = ticket_id
                 settings["duty_zabbix_task_id"] = ticket_id
             if ticket_url:
-                settings["current_ticket_url"] = ticket_url
                 settings["duty_zabbix_task_url"] = ticket_url
+            settings["duty_zabbix_task_status"] = "linked"
+            settings["duty_zabbix_task_session_id"] = str(settings.get("duty_session_id", "") or "")
             self.logger.info("Duty Zabbix task attached: ticket_id=%s", ticket_id or "not_set")
         save_config(self.config)
 
@@ -1669,7 +1675,7 @@ class OtrsCreateTaskDialog(QDialog):
         settings = self.get_settings()
         if self.task_type == "service_checks":
             return settings.get("duty_service_checks_task_number", "")
-        return settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number", "")
+        return settings.get("duty_zabbix_task_number", "")
 
     def get_settings(self):
         return ensure_duty_mode_defaults(self.config)
@@ -1781,17 +1787,18 @@ class OtrsCreateTaskDialog(QDialog):
                 settings["duty_service_checks_task_url"] = ticket_url
             if ticket_number:
                 settings["duty_service_checks_task_number"] = ticket_number
+            settings["duty_service_checks_task_status"] = "linked"
+            settings["duty_service_checks_task_session_id"] = str(settings.get("duty_session_id", "") or "")
             self.logger.info("Duty service checks task attached: ticket_id=%s", ticket_id or "not_set")
         else:
             if ticket_id:
-                settings["current_ticket_id"] = ticket_id
                 settings["duty_zabbix_task_id"] = ticket_id
             if ticket_url:
-                settings["current_ticket_url"] = ticket_url
                 settings["duty_zabbix_task_url"] = ticket_url
             if ticket_number:
-                settings["current_ticket_number"] = ticket_number
                 settings["duty_zabbix_task_number"] = ticket_number
+            settings["duty_zabbix_task_status"] = "linked"
+            settings["duty_zabbix_task_session_id"] = str(settings.get("duty_session_id", "") or "")
             self.logger.info("Duty Zabbix task attached: ticket_id=%s", ticket_id or "not_set")
 
         save_config(self.config)
@@ -2535,7 +2542,7 @@ class ProblemTemplateDialog(QDialog):
             return
 
         duty_settings = self.config.get("duty_mode", {})
-        task_number = (duty_settings.get("duty_zabbix_task_number") or duty_settings.get("current_ticket_number", "")).strip()
+        task_number = (duty_settings.get("duty_zabbix_task_number") or "").strip()
 
         if len(titles) == 1:
             text = (
@@ -5115,14 +5122,13 @@ class DutyModeWidget(QWidget):
             self._show_duty_note_dialog("services")
 
     def open_service_check_note(self):
-        task_url = (self.get_settings().get("duty_service_checks_task_url") or self.service_settings().get("otrs_task_url", "")).strip()
-        if not task_url:
-            QMessageBox.warning(
-                self,
-                "Проверка сервисов",
-                "Задача ОТРС для проверки сервисов не указана.\nУкажите задачу в настройках проверки сервисов.",
-            )
+        ok, reason = can_send_duty_note(self.get_settings(), TASK_SERVICES)
+        if not ok:
+            QMessageBox.warning(self, "Проверка сервисов", reason)
             return
+        task_url = get_active_duty_task(self.get_settings(), TASK_SERVICES).get("url", "")
+        if not task_url:
+            task_url = self._duty_task_url(TASK_SERVICES)
         note_text = build_service_check_note_text(self.config, self.service_check_results)
         dialog = OtrsNoteDialog(
             config=self.config,
@@ -5145,7 +5151,7 @@ class DutyModeWidget(QWidget):
 
     def _zabbix_task_number(self):
         settings = self.get_settings()
-        return (settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number") or "").strip()
+        return (settings.get("duty_zabbix_task_number") or "").strip()
 
     def _service_checks_task_number(self):
         return self.get_settings().get("duty_service_checks_task_number", "").strip()
@@ -5160,8 +5166,9 @@ class DutyModeWidget(QWidget):
             url = str(settings.get("duty_service_checks_task_url", "") or "").strip()
             ticket_id = str(settings.get("duty_service_checks_task_id", "") or "").strip()
         else:
-            url = str(settings.get("duty_zabbix_task_url") or settings.get("current_ticket_url") or "").strip()
-            ticket_id = str(settings.get("duty_zabbix_task_id") or settings.get("current_ticket_id") or "").strip()
+            active = get_active_duty_task(settings, TASK_ZABBIX)
+            url = str(active.get("url") or "").strip()
+            ticket_id = str(active.get("id") or "").strip()
         if url:
             return url
         if ticket_id:
@@ -5249,7 +5256,10 @@ class DutyModeWidget(QWidget):
         if not was_enabled and not self._selected_duty_checks():
             if not self._ask_duty_check_selection():
                 return
-        settings["enabled"] = not was_enabled
+        if was_enabled:
+            finish_duty_session(settings)
+        else:
+            start_new_duty_session(settings)
         save_config(self.config)
         self.update_enable_button()
 
@@ -6628,15 +6638,15 @@ class DutyModeWidget(QWidget):
 
     def _bound_task_details(self):
         settings = self.get_settings()
-        ticket_number = (settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number", "")).strip()
-        ticket_id = settings.get("current_ticket_id", "").strip()
-        ticket_url = settings.get("current_ticket_url", "").strip()
+        ticket_number = (settings.get("duty_zabbix_task_number") or "").strip()
+        ticket_id = settings.get("duty_zabbix_task_id", "").strip()
+        ticket_url = settings.get("duty_zabbix_task_url", "").strip()
 
         if not ticket_id and ticket_url:
             match = re.search(r"[?;]TicketID=([^;&?#]+)", ticket_url)
             if match:
                 ticket_id = match.group(1).strip()
-                settings["current_ticket_id"] = ticket_id
+                settings["duty_zabbix_task_id"] = ticket_id
                 save_config(self.config)
 
         return ticket_number, ticket_id, ticket_url

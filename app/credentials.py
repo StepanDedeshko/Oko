@@ -2,6 +2,7 @@ import base64
 import json
 import os
 from datetime import datetime
+import shutil
 from pathlib import Path
 
 
@@ -116,12 +117,42 @@ def load_saved_credentials() -> dict:
     return result
 
 
-def save_credentials(credentials: dict):
+def backup_credentials_file(prefix="credentials.backup"):
+    if not CREDENTIALS_FILE.exists():
+        return None
     CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = CREDENTIALS_DIR / f"{prefix}_{timestamp}.json"
+    shutil.copy2(CREDENTIALS_FILE, backup)
+    return backup
+
+
+def merge_credentials_preserving_existing(existing: dict, incoming: dict) -> dict:
+    result = dict(existing or {})
+    for key, data in (incoming or {}).items():
+        old = result.get(key, {}) if isinstance(result.get(key, {}), dict) else {}
+        new = data if isinstance(data, dict) else {}
+        result[key] = {
+            "login": new.get("login") if str(new.get("login", "") or "") else old.get("login", ""),
+            "password": new.get("password") if str(new.get("password", "") or "") else old.get("password", ""),
+        }
+    return result
+
+
+def clear_credentials_key(key: str):
+    credentials = load_saved_credentials()
+    credentials.pop(str(key), None)
+    save_credentials(credentials, preserve_existing_empty=False)
+
+
+def save_credentials(credentials: dict, preserve_existing_empty: bool = True):
+    CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+    if preserve_existing_empty and credentials:
+        credentials = merge_credentials_preserving_existing(load_saved_credentials(), credentials or {})
 
     raw = {}
 
-    for zabbix_id, data in credentials.items():
+    for zabbix_id, data in (credentials or {}).items():
         raw[zabbix_id] = {
             "login": _encode(data.get("login", "")),
             "password": _encode(data.get("password", ""))
@@ -214,9 +245,9 @@ def export_profile_credentials_file(destination_path, credentials=None):
 
 
 def import_profile_credentials_file(source_path):
+    backup_credentials_file()
     imported_credentials = load_profile_credentials_export(source_path)
-    credentials = load_saved_credentials()
-    credentials.update(imported_credentials)
+    credentials = merge_credentials_preserving_existing(load_saved_credentials(), imported_credentials)
     save_credentials(credentials)
     return len(imported_credentials)
 
@@ -266,8 +297,8 @@ def import_profile_credentials_encrypted_file(source_path, password: str):
             "password": _decode(data.get("password", "")),
         }
 
-    credentials = load_saved_credentials()
-    credentials.update(imported_credentials)
+    backup_credentials_file()
+    credentials = merge_credentials_preserving_existing(load_saved_credentials(), imported_credentials)
     save_credentials(credentials)
     return len(imported_credentials)
 

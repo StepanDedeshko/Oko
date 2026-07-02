@@ -1,7 +1,7 @@
 import json
 import shutil
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.logger import get_logger
@@ -9,6 +9,7 @@ from app.service_checks import default_service_checks_config
 from app.redmine_triggers import default_special_redmine_triggers_config, ensure_special_redmine_triggers_defaults
 from app.trigger_model import default_trigger_catalog_config, ensure_trigger_catalog_defaults
 from app.live_zabbix import default_live_monitor_config, ensure_live_monitor_defaults
+from app.duty_tasks import DUTY_TASK_BINDING_FIELDS, clear_duty_task_bindings
 from app.permissions import ensure_duty_links, build_user_settings_export, import_user_settings_payload, normalize_user_permissions
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
@@ -105,15 +106,26 @@ def ensure_duty_mode_defaults(config):
     settings.setdefault("hourly_notification", True)
     settings.setdefault("skip_minutes", 5)
     settings.setdefault("sound_path", "")
-    settings.setdefault("current_ticket_number", str(legacy_task_number or ""))
+    settings.setdefault("duty_session_id", "")
+    settings.setdefault("duty_started_at", "")
+    settings.setdefault("duty_finished_at", "")
+    settings.setdefault("current_ticket_number", "")
     settings.setdefault("current_ticket_id", "")
     settings.setdefault("current_ticket_url", "")
     settings.setdefault("duty_zabbix_task_number", str(legacy_task_number or ""))
-    settings.setdefault("duty_zabbix_task_id", str(settings.get("current_ticket_id") or ""))
-    settings.setdefault("duty_zabbix_task_url", str(settings.get("current_ticket_url") or ""))
+    settings.setdefault("duty_zabbix_task_id", "")
+    settings.setdefault("duty_zabbix_task_url", "")
+    settings.setdefault("duty_zabbix_task_system", "")
+    settings.setdefault("duty_zabbix_task_status", "")
+    settings.setdefault("duty_zabbix_task_linked_at", "")
+    settings.setdefault("duty_zabbix_task_session_id", "")
     settings.setdefault("duty_service_checks_task_number", "")
     settings.setdefault("duty_service_checks_task_id", "")
     settings.setdefault("duty_service_checks_task_url", "")
+    settings.setdefault("duty_service_checks_task_system", "")
+    settings.setdefault("duty_service_checks_task_status", "")
+    settings.setdefault("duty_service_checks_task_linked_at", "")
+    settings.setdefault("duty_service_checks_task_session_id", "")
     settings.setdefault("duty_service_checks_enabled", False)
     settings.setdefault("check_services_enabled", bool(settings.get("duty_service_checks_enabled", False)))
     settings.setdefault("check_zabbix_enabled", True)
@@ -193,12 +205,23 @@ def _default_config():
             "manual_duty_note": "",
             "zabbix_problem_keywords": [],
             "zabbix_problem_exclude_keywords": [],
+            "duty_session_id": "",
+            "duty_started_at": "",
+            "duty_finished_at": "",
             "duty_zabbix_task_number": "",
             "duty_zabbix_task_id": "",
             "duty_zabbix_task_url": "",
+            "duty_zabbix_task_system": "",
+            "duty_zabbix_task_status": "",
+            "duty_zabbix_task_linked_at": "",
+            "duty_zabbix_task_session_id": "",
             "duty_service_checks_task_number": "",
             "duty_service_checks_task_id": "",
             "duty_service_checks_task_url": "",
+            "duty_service_checks_task_system": "",
+            "duty_service_checks_task_status": "",
+            "duty_service_checks_task_linked_at": "",
+            "duty_service_checks_task_session_id": "",
             "expected_service_checks_ticket_subject": "Дежурная проверка сервисов",
         },
         "duty_triggers": default_duty_triggers_config(),
@@ -239,6 +262,39 @@ def merge_missing_defaults(user_config, default_config=None):
     return merged
 
 
+
+def _has_stale_disabled_duty_tasks(duty: dict) -> bool:
+    if not isinstance(duty, dict) or duty.get("enabled") is not False:
+        return False
+    status_linked = duty.get("duty_zabbix_task_status") == "linked" or duty.get("duty_service_checks_task_status") == "linked"
+    filled = any(str(duty.get(key, "") or "").strip() for key in DUTY_TASK_BINDING_FIELDS)
+    return status_linked or filled
+
+
+def migrate_stale_disabled_duty_tasks(config: dict) -> bool:
+    duty = (config or {}).setdefault("duty_mode", {})
+    if duty.get("duty_legacy_tasks_migrated") or not _has_stale_disabled_duty_tasks(duty):
+        return False
+    old = {key: duty.get(key, "") for key in DUTY_TASK_BINDING_FIELDS}
+    clear_duty_task_bindings(duty)
+    duty["enabled"] = False
+    duty["duty_legacy_tasks_migrated"] = True
+    duty["duty_legacy_tasks_detected_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    duty["duty_legacy_tasks_backup"] = old
+    return True
+
+
+def migrate_live_zabbix_url(config: dict) -> None:
+    config = config or {}
+    live = config.setdefault("live_zabbix_monitor", {})
+    settings = config.setdefault("settings", {})
+    legacy = str(settings.get("live_zabbix_url", "") or "").strip()
+    current = str(live.get("problems_url", "") or "").strip()
+    if legacy and not current:
+        live["problems_url"] = legacy
+    elif legacy and current and legacy != current:
+        live["settings_live_zabbix_url_conflict"] = True
+
 def migrate_config(config):
     config = merge_missing_defaults(config, get_default_config())
     if "zabbix_triggers" not in config or not isinstance(config.get("zabbix_triggers"), dict):
@@ -256,6 +312,8 @@ def migrate_config(config):
             config["zabbix_triggers"]["problems"] = catalog_triggers
         config["zabbix_triggers"].setdefault("filters", [])
     ensure_duty_mode_defaults(config)
+    migrate_live_zabbix_url(config)
+    migrate_stale_disabled_duty_tasks(config)
     return config
 
 
@@ -521,7 +579,17 @@ def ensure_config_exists():
 def load_config():
     ensure_config_exists()
     with CONFIG_PATH.open("r", encoding="utf-8") as file:
-        return json.load(file)
+        raw = json.load(file)
+    migrated = migrate_config(raw)
+    if migrated != raw:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = CONFIG_PATH.with_name(f"config.backup_before_duty_migration_{timestamp}.json")
+        try:
+            shutil.copy2(CONFIG_PATH, backup_path)
+        except Exception:
+            get_logger().exception("Не удалось создать backup config.json перед миграцией duty tasks")
+        save_config(migrated)
+    return migrated
 
 
 def save_config(config):
