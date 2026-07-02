@@ -141,3 +141,37 @@ def save_task_binding(settings: dict, task_type: str, parsed: dict, status: str 
         if url:
             settings["current_ticket_url"] = url
     return settings
+
+
+def extract_otrs_ticket_number_from_text(*texts):
+    """Return external OTRS ticket number from common AgentTicketZoom texts."""
+    source = "\n".join(str(text or "") for text in texts)
+    patterns = [
+        r"(?:Заявка|Задача)#\s*(\d{5,})",
+        r"(?:Заявка|Задача)\s*№\s*(\d{5,})",
+        r"(?:Ticket|TicketNumber|Ticket Number|Номер заявки|Номер задачи)[^\d]{0,30}(\d{5,})",
+        r"(?:^|\b)(\d{5,})\s*-\s*Подробно\s*-\s*Заявки\s*-\s*Service Desk",
+        r"№\s*(\d{5,})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, source, re.IGNORECASE | re.MULTILINE)
+        if match and match.group(1):
+            return match.group(1).strip()
+    fallback = re.search(r"\b(\d{10,})\b", source)
+    return fallback.group(1).strip() if fallback else ""
+
+
+def reset_duty_task_bindings_for_new_session(settings):
+    """Clear stale duty task bindings when a new duty session starts."""
+    import uuid
+    settings["current_ticket_number"] = ""
+    settings["current_ticket_id"] = ""
+    settings["current_ticket_url"] = ""
+    for prefix in ("duty_zabbix_task", "duty_service_checks_task"):
+        for suffix in ("number", "id", "url", "system", "status", "linked_at", "error"):
+            settings.pop(f"{prefix}_{suffix}", None)
+        settings[f"{prefix}_number"] = ""
+        settings[f"{prefix}_id"] = ""
+        settings[f"{prefix}_url"] = ""
+    settings["duty_session_id"] = uuid.uuid4().hex
+    return settings
