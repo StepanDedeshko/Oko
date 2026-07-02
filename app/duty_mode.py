@@ -56,9 +56,12 @@ from app.duty_tasks import (
     TASK_SHORT_LABELS,
     TASK_ZABBIX,
     current_task_binding,
+    duty_note_guard,
     duty_tasks_button_enabled,
+    finish_duty_session,
     has_current_task,
     parse_ticket_url,
+    start_duty_session,
     planned_actions,
     save_task_binding as save_duty_task_binding,
     selected_task_types,
@@ -1781,6 +1784,7 @@ class OtrsCreateTaskDialog(QDialog):
                 settings["duty_service_checks_task_url"] = ticket_url
             if ticket_number:
                 settings["duty_service_checks_task_number"] = ticket_number
+            settings["duty_service_checks_task_session_id"] = str(settings.get("duty_session_id", "") or "").strip()
             self.logger.info("Duty service checks task attached: ticket_id=%s", ticket_id or "not_set")
         else:
             if ticket_id:
@@ -1792,6 +1796,7 @@ class OtrsCreateTaskDialog(QDialog):
             if ticket_number:
                 settings["current_ticket_number"] = ticket_number
                 settings["duty_zabbix_task_number"] = ticket_number
+            settings["duty_zabbix_task_session_id"] = str(settings.get("duty_session_id", "") or "").strip()
             self.logger.info("Duty Zabbix task attached: ticket_id=%s", ticket_id or "not_set")
 
         save_config(self.config)
@@ -1839,6 +1844,16 @@ class OtrsCreateTaskDialog(QDialog):
         js = r"""
         (function() {
             const text = (document.body.innerText || document.body.textContent || '').trim();
+
+            const h1 = Array.from(document.querySelectorAll('h1')).map(el => el.innerText || el.textContent || '').join(' ');
+            const h1Match = h1.match(/(?:Заявка|Задача)\s*#\s*(\d{5,})/i);
+            if (h1Match && h1Match[1]) {
+                return h1Match[1];
+            }
+            const titleMatch = (document.title || '').match(/^\s*(\d{5,})\s*-\s*Подробно\s*-\s*Заявки\s*-\s*Service Desk/i);
+            if (titleMatch && titleMatch[1]) {
+                return titleMatch[1];
+            }
 
             // Частые варианты: "Заявка №...", "Ticket#...", "Ticket Number ..."
             const patterns = [
@@ -5115,6 +5130,10 @@ class DutyModeWidget(QWidget):
             self._show_duty_note_dialog("services")
 
     def open_service_check_note(self):
+        ok, message = duty_note_guard(self.get_settings(), TASK_SERVICES)
+        if not ok:
+            QMessageBox.warning(self, "Задача дежурства", message)
+            return
         task_url = (self.get_settings().get("duty_service_checks_task_url") or self.service_settings().get("otrs_task_url", "")).strip()
         if not task_url:
             QMessageBox.warning(
@@ -5249,7 +5268,10 @@ class DutyModeWidget(QWidget):
         if not was_enabled and not self._selected_duty_checks():
             if not self._ask_duty_check_selection():
                 return
-        settings["enabled"] = not was_enabled
+        if was_enabled:
+            finish_duty_session(settings)
+        else:
+            start_duty_session(settings)
         save_config(self.config)
         self.update_enable_button()
 
@@ -5262,7 +5284,7 @@ class DutyModeWidget(QWidget):
         if not settings.get("enabled", False):
             return
 
-        settings["enabled"] = False
+        finish_duty_session(settings)
         save_config(self.config)
         self.update_enable_button()
 
@@ -6652,6 +6674,10 @@ class DutyModeWidget(QWidget):
 
     def open_graph_check_note(self):
         self.logger.info("Duty graph check note requested")
+        ok, message = duty_note_guard(self.get_settings(), TASK_ZABBIX)
+        if not ok:
+            QMessageBox.warning(self, "Задача дежурства", message)
+            return
         ticket_number, ticket_id, ticket_url = self._bound_task_details()
 
         if not any([ticket_number, ticket_id, ticket_url]):

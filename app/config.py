@@ -102,6 +102,9 @@ def ensure_duty_mode_defaults(config):
         or ""
     )
     settings.setdefault("enabled", False)
+    settings.setdefault("duty_session_id", "")
+    settings.setdefault("duty_started_at", "")
+    settings.setdefault("duty_finished_at", "")
     settings.setdefault("hourly_notification", True)
     settings.setdefault("skip_minutes", 5)
     settings.setdefault("sound_path", "")
@@ -111,9 +114,11 @@ def ensure_duty_mode_defaults(config):
     settings.setdefault("duty_zabbix_task_number", str(legacy_task_number or ""))
     settings.setdefault("duty_zabbix_task_id", str(settings.get("current_ticket_id") or ""))
     settings.setdefault("duty_zabbix_task_url", str(settings.get("current_ticket_url") or ""))
+    settings.setdefault("duty_zabbix_task_session_id", "")
     settings.setdefault("duty_service_checks_task_number", "")
     settings.setdefault("duty_service_checks_task_id", "")
     settings.setdefault("duty_service_checks_task_url", "")
+    settings.setdefault("duty_service_checks_task_session_id", "")
     settings.setdefault("duty_service_checks_enabled", False)
     settings.setdefault("check_services_enabled", bool(settings.get("duty_service_checks_enabled", False)))
     settings.setdefault("check_zabbix_enabled", True)
@@ -180,6 +185,9 @@ def _default_config():
             "otrs_login": "",
             "otrs_password": "",
             "otrs_auto_submit_login": False,
+            "duty_session_id": "",
+            "duty_started_at": "",
+            "duty_finished_at": "",
             "expected_ticket_subject": "Дежурная проверка Zabbix / графиков",
             "duty_zabbix_expected_task_title": "Дежурная проверка Zabbix / графиков",
             "duty_service_checks_expected_task_title": "Дежурная проверка сервисов",
@@ -196,9 +204,11 @@ def _default_config():
             "duty_zabbix_task_number": "",
             "duty_zabbix_task_id": "",
             "duty_zabbix_task_url": "",
+            "duty_zabbix_task_session_id": "",
             "duty_service_checks_task_number": "",
             "duty_service_checks_task_id": "",
             "duty_service_checks_task_url": "",
+            "duty_service_checks_task_session_id": "",
             "expected_service_checks_ticket_subject": "Дежурная проверка сервисов",
         },
         "duty_triggers": default_duty_triggers_config(),

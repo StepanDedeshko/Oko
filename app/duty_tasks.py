@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from html import unescape
 from urllib.parse import parse_qs, urlparse
 import re
+import uuid
 
 TASK_ZABBIX = "zabbix"
 TASK_SERVICES = "service_checks"
@@ -18,6 +20,98 @@ TASK_SHORT_LABELS = {
     TASK_ZABBIX: "ZABBIX / ГРАФИКИ",
     TASK_SERVICES: "СЕРВИСЫ",
 }
+
+
+DUTY_SESSION_FIELDS = (
+    "duty_session_id",
+    "duty_started_at",
+    "duty_finished_at",
+    "duty_zabbix_task_session_id",
+    "duty_service_checks_task_session_id",
+)
+
+DUTY_ACTIVE_BINDING_FIELDS = (
+    "current_ticket_number",
+    "current_ticket_id",
+    "current_ticket_url",
+    "duty_zabbix_task_number",
+    "duty_zabbix_task_id",
+    "duty_zabbix_task_url",
+    "duty_zabbix_task_system",
+    "duty_zabbix_task_status",
+    "duty_zabbix_task_linked_at",
+    "duty_zabbix_task_session_id",
+    "duty_service_checks_task_number",
+    "duty_service_checks_task_id",
+    "duty_service_checks_task_url",
+    "duty_service_checks_task_system",
+    "duty_service_checks_task_status",
+    "duty_service_checks_task_linked_at",
+    "duty_service_checks_task_session_id",
+    "last_zabbix_check_note",
+    "last_zabbix_check_time",
+    "last_service_check_note",
+    "last_service_check_time",
+)
+
+DUTY_NOTE_DISABLED_MESSAGE = "Дежурство не включено. Начните новое дежурство и привяжите задачу."
+DUTY_NOTE_UNBOUND_MESSAGE = "Задача текущего дежурства не привязана. Начните новое дежурство и привяжите задачу."
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def start_duty_session(settings: dict) -> str:
+    if settings is None:
+        settings = {}
+    session_id = uuid.uuid4().hex
+    for field in DUTY_ACTIVE_BINDING_FIELDS:
+        settings[field] = ""
+    settings["enabled"] = True
+    settings["duty_session_id"] = session_id
+    settings["duty_started_at"] = _utc_now_iso()
+    settings["duty_finished_at"] = ""
+    return session_id
+
+
+def finish_duty_session(settings: dict) -> None:
+    if settings is None:
+        settings = {}
+    settings["enabled"] = False
+    settings["duty_finished_at"] = _utc_now_iso()
+
+
+def duty_note_guard(settings: dict, task_type: str) -> tuple[bool, str]:
+    settings = settings or {}
+    if not bool(settings.get("enabled", False)):
+        return False, DUTY_NOTE_DISABLED_MESSAGE
+    session_id = str(settings.get("duty_session_id", "") or "").strip()
+    if not session_id:
+        return False, DUTY_NOTE_UNBOUND_MESSAGE
+    if task_type == TASK_SERVICES:
+        task_session_id = str(settings.get("duty_service_checks_task_session_id", "") or "").strip()
+        has_task = bool(str(settings.get("duty_service_checks_task_id", "") or "").strip() or str(settings.get("duty_service_checks_task_url", "") or "").strip())
+    else:
+        task_session_id = str(settings.get("duty_zabbix_task_session_id", "") or "").strip()
+        has_task = bool(str(settings.get("duty_zabbix_task_id", "") or settings.get("current_ticket_id", "") or "").strip() or str(settings.get("duty_zabbix_task_url", "") or settings.get("current_ticket_url", "") or "").strip())
+    if task_session_id != session_id or not has_task:
+        return False, DUTY_NOTE_UNBOUND_MESSAGE
+    return True, ""
+
+
+def parse_ticket_number_from_html(html_text: str) -> str:
+    text = unescape(re.sub(r"<[^>]+>", " ", str(html_text or "")))
+    h1_matches = re.findall(r"<h1[^>]*>(.*?)</h1>", str(html_text or ""), flags=re.IGNORECASE | re.DOTALL)
+    for source in h1_matches + [text]:
+        plain = unescape(re.sub(r"<[^>]+>", " ", source))
+        match = re.search(r"(?:Заявка|Задача)\s*#\s*(\d{5,})", plain, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    title_match = re.search(r"<title[^>]*>\s*(\d{5,})\s*-\s*Подробно\s*-\s*Заявки\s*-\s*Service Desk", str(html_text or ""), flags=re.IGNORECASE | re.DOTALL)
+    if title_match:
+        return title_match.group(1)
+    return ""
 
 
 def selected_task_types(settings: dict) -> list[str]:
@@ -132,6 +226,7 @@ def save_task_binding(settings: dict, task_type: str, parsed: dict, status: str 
         settings[f"{prefix}_url"] = url
     settings[f"{prefix}_status"] = status
     settings[f"{prefix}_linked_at"] = now
+    settings[f"{prefix}_session_id"] = str(settings.get("duty_session_id", "") or "").strip()
     settings.pop(f"{prefix}_error", None)
     if task_type == TASK_ZABBIX:
         if ticket_id:

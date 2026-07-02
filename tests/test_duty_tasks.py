@@ -3,12 +3,17 @@ import unittest
 from app.duty_tasks import (
     TASK_SERVICES,
     TASK_ZABBIX,
+    DUTY_NOTE_DISABLED_MESSAGE,
+    DUTY_NOTE_UNBOUND_MESSAGE,
     current_task_binding,
+    duty_note_guard,
     duty_tasks_button_enabled,
     has_current_task,
+    parse_ticket_number_from_html,
     parse_ticket_url,
     planned_actions,
     save_task_binding,
+    start_duty_session,
     selected_task_types,
     smart_action_text,
 )
@@ -66,3 +71,89 @@ class DutyTasksHelpersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class DutySessionSafetyTest(unittest.TestCase):
+    def test_start_duty_creates_duty_session_id(self):
+        settings = {}
+        session_id = start_duty_session(settings)
+        self.assertTrue(session_id)
+        self.assertEqual(settings["duty_session_id"], session_id)
+        self.assertTrue(settings["enabled"])
+        self.assertTrue(settings["duty_started_at"])
+        self.assertEqual(settings["duty_finished_at"], "")
+
+    def test_start_duty_clears_old_current_and_task_fields(self):
+        settings = {
+            "current_ticket_number": "old",
+            "current_ticket_id": "old-id",
+            "current_ticket_url": "old-url",
+            "duty_zabbix_task_number": "old-z",
+            "duty_zabbix_task_id": "old-z-id",
+            "duty_zabbix_task_url": "old-z-url",
+            "duty_zabbix_task_session_id": "old-session",
+            "duty_service_checks_task_number": "old-s",
+            "duty_service_checks_task_id": "old-s-id",
+            "duty_service_checks_task_url": "old-s-url",
+            "duty_service_checks_task_session_id": "old-session",
+            "last_zabbix_check_note": "old note",
+            "last_service_check_note": "old note",
+        }
+        start_duty_session(settings)
+        for key in (
+            "current_ticket_number", "current_ticket_id", "current_ticket_url",
+            "duty_zabbix_task_number", "duty_zabbix_task_id", "duty_zabbix_task_url", "duty_zabbix_task_session_id",
+            "duty_service_checks_task_number", "duty_service_checks_task_id", "duty_service_checks_task_url", "duty_service_checks_task_session_id",
+            "last_zabbix_check_note", "last_service_check_note",
+        ):
+            self.assertEqual(settings[key], "")
+
+    def test_disabled_duty_blocks_zabbix_note(self):
+        ok, message = duty_note_guard({"enabled": False}, TASK_ZABBIX)
+        self.assertFalse(ok)
+        self.assertEqual(message, DUTY_NOTE_DISABLED_MESSAGE)
+
+    def test_disabled_duty_blocks_service_checks_note(self):
+        ok, message = duty_note_guard({"enabled": False}, TASK_SERVICES)
+        self.assertFalse(ok)
+        self.assertEqual(message, DUTY_NOTE_DISABLED_MESSAGE)
+
+    def test_stale_zabbix_task_from_old_session_blocks_note(self):
+        ok, message = duty_note_guard({"enabled": True, "duty_session_id": "new", "duty_zabbix_task_session_id": "old", "duty_zabbix_task_id": "70413"}, TASK_ZABBIX)
+        self.assertFalse(ok)
+        self.assertEqual(message, DUTY_NOTE_UNBOUND_MESSAGE)
+
+    def test_stale_service_checks_task_from_old_session_blocks_note(self):
+        ok, message = duty_note_guard({"enabled": True, "duty_session_id": "new", "duty_service_checks_task_session_id": "old", "duty_service_checks_task_id": "70413"}, TASK_SERVICES)
+        self.assertFalse(ok)
+        self.assertEqual(message, DUTY_NOTE_UNBOUND_MESSAGE)
+
+    def test_zabbix_task_with_current_session_allows_note(self):
+        ok, message = duty_note_guard({"enabled": True, "duty_session_id": "s", "duty_zabbix_task_session_id": "s", "duty_zabbix_task_id": "70413"}, TASK_ZABBIX)
+        self.assertTrue(ok)
+        self.assertEqual(message, "")
+
+    def test_service_checks_task_with_current_session_allows_note(self):
+        ok, message = duty_note_guard({"enabled": True, "duty_session_id": "s", "duty_service_checks_task_session_id": "s", "duty_service_checks_task_url": "https://otrs/?TicketID=70413"}, TASK_SERVICES)
+        self.assertTrue(ok)
+        self.assertEqual(message, "")
+
+    def test_zabbix_binding_does_not_overwrite_service_checks_binding(self):
+        settings = {"duty_session_id": "s", "duty_service_checks_task_id": "svc", "duty_service_checks_task_number": "100"}
+        save_task_binding(settings, TASK_ZABBIX, {"id": "70413", "number": "100070490", "url": "u", "system": "otrs"})
+        self.assertEqual(settings["duty_service_checks_task_id"], "svc")
+        self.assertEqual(settings["duty_service_checks_task_number"], "100")
+        self.assertEqual(settings["duty_zabbix_task_session_id"], "s")
+
+    def test_service_checks_binding_does_not_overwrite_zabbix_binding(self):
+        settings = {"duty_session_id": "s", "duty_zabbix_task_id": "zbx", "duty_zabbix_task_number": "200"}
+        save_task_binding(settings, TASK_SERVICES, {"id": "70414", "number": "100070491", "url": "u", "system": "otrs"})
+        self.assertEqual(settings["duty_zabbix_task_id"], "zbx")
+        self.assertEqual(settings["duty_zabbix_task_number"], "200")
+        self.assertEqual(settings["duty_service_checks_task_session_id"], "s")
+
+    def test_ticket_id_is_not_used_as_visible_task_number_when_h1_exists(self):
+        html = """<html><head><title>OTRS</title></head><body><h1>Заявка#100070490 — Проверка Zabbix</h1><a href='index.pl?Action=AgentTicketNote;TicketID=70413'>Note</a></body></html>"""
+        self.assertEqual(parse_ticket_number_from_html(html), "100070490")
+
+    def test_h1_zayavka_parses_as_number(self):
+        self.assertEqual(parse_ticket_number_from_html("<h1>\n    Заявка#100070490 — Проверка Zabbix (Важных IT-сервисов)\n</h1>"), "100070490")
