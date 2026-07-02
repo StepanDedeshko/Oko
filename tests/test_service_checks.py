@@ -797,6 +797,83 @@ class ServiceChecksLogicTest(unittest.TestCase):
             widget.deleteLater()
             app.processEvents()
 
+    def test_otrs_note_target_accepts_ticket_id_only_bindings(self):
+        from app.duty_tasks import TASK_SERVICES, TASK_ZABBIX, has_otrs_note_target
+        self.assertTrue(has_otrs_note_target({"current_ticket_id": "70413"}, TASK_ZABBIX))
+        self.assertTrue(has_otrs_note_target({"duty_zabbix_task_id": "70413"}, TASK_ZABBIX))
+        self.assertTrue(has_otrs_note_target({"current_ticket_url": "https://itsm/std?Action=AgentTicketZoom;TicketID=70413"}, TASK_ZABBIX))
+        self.assertTrue(has_otrs_note_target({"duty_service_checks_task_id": "70413"}, TASK_SERVICES))
+
+    def test_duty_task_summary_supports_number_and_ticket_id_only(self):
+        try:
+            from app.duty_mode import DutyModeWidget
+        except ImportError as exc:
+            self.skipTest(f"PySide6 GUI dependencies unavailable: {exc}")
+        widget = DutyModeWidget.__new__(DutyModeWidget)
+        widget.config = {"duty_mode": {"current_ticket_id": "70413"}}
+        self.assertEqual(widget._task_summary("100070490"), "№100070490")
+        self.assertIn("привязана, TicketID=70413", widget._task_summary(""))
+        widget.config = {"duty_mode": {}}
+        self.assertEqual(widget._task_summary(""), "не привязана")
+
+    def test_open_graph_check_note_uses_ticket_id_without_number(self):
+        from unittest.mock import patch
+        try:
+            from app.duty_mode import DutyModeWidget
+        except ImportError as exc:
+            self.skipTest(f"PySide6 GUI dependencies unavailable: {exc}")
+        captured = {}
+
+        class FakeDialog:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+            def exec(self):
+                captured["exec"] = True
+
+        widget = DutyModeWidget.__new__(DutyModeWidget)
+        widget.config = {"duty_mode": {"current_ticket_id": "70413", "current_ticket_number": ""}}
+        widget.logger = type("Logger", (), {"info": lambda *args, **kwargs: None})()
+        widget.selected_zabbix_problems_for_note = []
+        widget._build_template_context = lambda: {}
+        widget._after_graph_check_note_saved = lambda: None
+        with patch("app.duty_mode.OtrsNoteDialog", FakeDialog):
+            widget.open_graph_check_note()
+        self.assertEqual(captured["initial_note_url"], "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=70413")
+        self.assertTrue(captured["exec"])
+
+    def test_open_service_check_note_uses_ticket_id_without_number(self):
+        from unittest.mock import patch
+        try:
+            from app.duty_mode import DutyModeWidget
+        except ImportError as exc:
+            self.skipTest(f"PySide6 GUI dependencies unavailable: {exc}")
+        captured = {}
+
+        class FakeDialog:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+            def exec(self):
+                captured["exec"] = True
+
+        widget = DutyModeWidget.__new__(DutyModeWidget)
+        widget.config = {"duty_mode": {"duty_service_checks_task_id": "70413"}, "service_checks": {"items": []}}
+        widget.service_check_results = []
+        with patch("app.duty_mode.OtrsNoteDialog", FakeDialog):
+            widget.open_service_check_note()
+        self.assertEqual(captured["initial_note_url"], "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=70413")
+        self.assertTrue(captured["exec"])
+
+    def test_current_ticket_backward_compatibility_for_note_target(self):
+        from app.duty_tasks import TASK_ZABBIX, current_task_binding, has_otrs_note_target
+        settings = {"current_ticket_id": "70413", "current_ticket_url": "https://itsm/std?TicketID=70413"}
+        self.assertEqual(current_task_binding(settings, TASK_ZABBIX)["id"], "70413")
+        self.assertTrue(has_otrs_note_target(settings, TASK_ZABBIX))
+
+    def test_redmine_and_live_zabbix_not_touched_by_otrs_binding_pr(self):
+        changed = os.popen("git diff --name-only").read().splitlines()
+        forbidden = [path for path in changed if "redmine" in path.lower() or "live_zabbix" in path.lower()]
+        self.assertEqual(forbidden, [])
+
 
 if __name__ == "__main__":
     unittest.main()

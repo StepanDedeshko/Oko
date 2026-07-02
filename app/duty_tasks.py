@@ -109,6 +109,40 @@ def current_task_binding(settings: dict, task_type: str) -> dict:
     }
 
 
+def extract_otrs_ticket_id_from_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    query = parsed.query or ""
+    if parsed.params:
+        query = f"{query}&{parsed.params}" if query else parsed.params
+    params = parse_qs(query.replace(";", "&"), keep_blank_values=True)
+    lowered = {key.casefold(): values for key, values in params.items()}
+    values = lowered.get("ticketid") or lowered.get("ticket_id")
+    if values:
+        return str(values[0] or "").strip()
+    match = re.search(r"[?;]TicketID=([^;&?#]+)", raw, re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def has_otrs_note_target(settings: dict, task_type: str) -> bool:
+    settings = settings or {}
+    if task_type == TASK_SERVICES:
+        numbers = (settings.get("duty_service_checks_task_number"),)
+        ticket_ids = (settings.get("duty_service_checks_task_id"),)
+        urls = (settings.get("duty_service_checks_task_url"),)
+    else:
+        numbers = (settings.get("duty_zabbix_task_number"), settings.get("current_ticket_number"))
+        ticket_ids = (settings.get("duty_zabbix_task_id"), settings.get("current_ticket_id"))
+        urls = (settings.get("duty_zabbix_task_url"), settings.get("current_ticket_url"))
+    if any(str(number or "").strip() for number in numbers):
+        return True
+    if any(str(ticket_id or "").strip() for ticket_id in ticket_ids):
+        return True
+    return any(extract_otrs_ticket_id_from_url(url) for url in urls)
+
+
 def has_current_task(settings: dict, task_type: str) -> bool:
     binding = current_task_binding(settings, task_type)
     return bool(binding.get("url") or binding.get("id") or binding.get("number"))
