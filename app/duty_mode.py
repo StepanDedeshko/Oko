@@ -57,6 +57,7 @@ from app.duty_tasks import (
     TASK_ZABBIX,
     current_task_binding,
     extract_otrs_ticket_id_from_url,
+    extract_otrs_ticket_number_from_text,
     duty_tasks_button_enabled,
     has_current_task,
     has_otrs_note_target,
@@ -1798,6 +1799,11 @@ class OtrsCreateTaskDialog(QDialog):
 
         save_config(self.config)
 
+        if ticket_id and not ticket_number:
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "start_otrs_ticket_number_resolver"):
+                parent.start_otrs_ticket_number_resolver(self.task_type)
+
         if show_message:
             parts = []
             if ticket_number:
@@ -1839,29 +1845,31 @@ class OtrsCreateTaskDialog(QDialog):
 
     def try_detect_ticket_number(self):
         js = r"""
-        (function() {
-            const text = (document.body.innerText || document.body.textContent || '').trim();
-
-            // Частые варианты: "Заявка №...", "Ticket#...", "Ticket Number ..."
-            const patterns = [
-                /(?:Заявка|Задача|Ticket|TicketNumber|Ticket Number|Номер заявки|Номер задачи)[^\d]{0,30}(\d{5,})/i,
-                /№\s*(\d{5,})/i,
-                /\b(\d{10,})\b/
-            ];
-
-            for (const pattern of patterns) {
-                const match = text.match(pattern);
-                if (match && match[1]) {
-                    return match[1];
-                }
-            }
-
-            return "";
+        (() => {
+          function text(selector) {
+            const el = document.querySelector(selector);
+            return el ? (el.innerText || el.textContent || '').trim() : '';
+          }
+          return {
+            title: document.title || '',
+            h1: text('h1'),
+            headerH1: text('.Header h1'),
+            headlineH1: text('.Headline h1'),
+            body: document.body ? (document.body.innerText || document.body.textContent || '').slice(0, 5000) : ''
+          };
         })();
         """
         run_javascript_if_alive(self.view, js, self.after_detect_ticket_number)
 
     def after_detect_ticket_number(self, number):
+        if isinstance(number, dict):
+            number = extract_otrs_ticket_number_from_text(
+                number.get("headerH1", ""),
+                number.get("headlineH1", ""),
+                number.get("h1", ""),
+                number.get("title", ""),
+                number.get("body", ""),
+            )
         number = str(number or "").strip()
 
         if not number:
@@ -1927,7 +1935,7 @@ class OtrsNoteDialog(QDialog):
     - вставить текст в CKEditor/contenteditable body.
     """
 
-    def __init__(self, config, note_text, parent=None, on_saved_callback=None, saved_log_message=None, initial_note_url=None):
+    def __init__(self, config, note_text, parent=None, on_saved_callback=None, saved_log_message=None, initial_note_url=None, task_type="zabbix"):
         super().__init__(parent)
 
         self.config = config
@@ -1935,6 +1943,7 @@ class OtrsNoteDialog(QDialog):
         self.on_saved_callback = on_saved_callback
         self.saved_log_message = saved_log_message
         self.initial_note_url = str(initial_note_url or "").strip()
+        self.task_type = "service_checks" if task_type == "service_checks" else "zabbix"
         self.note_saved = False
         self._is_closing = False
         self._observers_stopped = False
@@ -2080,7 +2089,12 @@ class OtrsNoteDialog(QDialog):
         return self.get_settings().get("current_ticket_number", "").strip()
 
     def get_ticket_id(self):
-        return self.get_settings().get("current_ticket_id", "").strip()
+        settings = self.get_settings()
+        if self.task_type == "service_checks":
+            ticket_id = str(settings.get("duty_service_checks_task_id", "") or "").strip()
+            return ticket_id or extract_otrs_ticket_id_from_url(self.initial_note_url or self.url_input.text())
+        ticket_id = str(settings.get("duty_zabbix_task_id") or settings.get("current_ticket_id", "") or "").strip()
+        return ticket_id or extract_otrs_ticket_id_from_url(self.initial_note_url or self.url_input.text())
 
     def extract_ticket_id_from_url(self, url):
         match = re.search(r"[?;]TicketID=([^;&?#]+)", url or "")
@@ -2207,18 +2221,24 @@ class OtrsNoteDialog(QDialog):
 
     def detect_ticket_title(self):
         js = r"""
-        (function() {
-            const h1 = document.querySelector('h1');
-            const text = h1 ? h1.innerText.trim() : '';
+        (() => {
+          function text(selector) {
+            const el = document.querySelector(selector);
+            return el ? (el.innerText || el.textContent || '').trim() : '';
+          }
 
-            const result = { title: text, ticketNumber: '' };
+          const inputs = Array.from(document.querySelectorAll('input[name="TicketID"], input#TicketID'))
+            .map(el => el.value || '');
 
-            const match = text.match(/Заявка#(\d+)/i);
-            if (match && match[1]) {
-                result.ticketNumber = match[1];
-            }
-
-            return result;
+          return {
+            url: window.location.href,
+            title: document.title || '',
+            h1: text('h1'),
+            headerH1: text('.Header h1'),
+            headlineH1: text('.Headline h1'),
+            body: document.body ? (document.body.innerText || document.body.textContent || '').slice(0, 5000) : '',
+            ticketIds: inputs
+          };
         })();
         """
         page = self._web_page_or_none("ticket title detection")
@@ -2231,22 +2251,37 @@ class OtrsNoteDialog(QDialog):
             return
 
         title = str(result.get("title", "") or "").strip()
-        number = str(result.get("ticketNumber", "") or "").strip()
-
-        changed = False
-        settings = self.get_settings()
+        h1 = str(result.get("h1", "") or "").strip()
+        header_h1 = str(result.get("headerH1", "") or "").strip()
+        headline_h1 = str(result.get("headlineH1", "") or "").strip()
+        body = str(result.get("body", "") or "")
+        number = extract_otrs_ticket_number_from_text(header_h1, headline_h1, h1, title, body)
 
         if number:
-            settings["current_ticket_number"] = number
-            settings["duty_zabbix_task_number"] = number
-            changed = True
-
-        if changed:
+            settings = self.get_settings()
+            if self.task_type == "service_checks":
+                settings["duty_service_checks_task_number"] = number
+            else:
+                settings["current_ticket_number"] = number
+                settings["duty_zabbix_task_number"] = number
             save_config(self.config)
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "update_dashboard_summary"):
+                parent.update_dashboard_summary()
+            if parent is not None and hasattr(parent, "update_task_label"):
+                parent.update_task_label()
+            ticket_id = self.get_ticket_id()
+            self.logger.info(
+                "OTRS note page ticket number resolved: task_type=%s ticket_id=%s number=%s",
+                self.task_type,
+                ticket_id or "",
+                number,
+            )
 
-        if title:
+        page_title = header_h1 or headline_h1 or h1 or title
+        if page_title:
             self.info_label.setText(
-                self.info_label.text() + f"\nСтраница ОТРС: {title}"
+                self.info_label.text() + f"\nСтраница ОТРС: {page_title}"
             )
 
     def _web_page_or_none(self, context="observer"):
@@ -4095,6 +4130,9 @@ class DutyModeWidget(QWidget):
         self.source_view_finder = source_view_finder
         self.active_product_getter = active_product_getter
         self.logger = get_logger()
+        self._otrs_number_resolve_inflight = set()
+        self._otrs_number_resolve_done = set()
+        self._hidden_otrs_number_views = []
         self.hidden_trigger_views = []
         self._hidden_trigger_contexts = []
         self.duty_trigger_queue = []
@@ -5143,7 +5181,10 @@ class DutyModeWidget(QWidget):
             parent=self,
             saved_log_message="Service check OTRS note saved",
             initial_note_url=task_url,
+            task_type="service_checks",
         )
+        if task_id:
+            self.start_otrs_ticket_number_resolver("service_checks")
         dialog.exec()
 
     def get_settings(self):
@@ -5187,12 +5228,167 @@ class DutyModeWidget(QWidget):
                 return ticket_id
         return ""
 
+
+    def _otrs_zoom_url(self, ticket_id):
+        return f"https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketZoom;TicketID={ticket_id}"
+
+    def _otrs_resolver_target(self, task_type):
+        settings = self.get_settings()
+        if task_type == "service_checks":
+            number = str(settings.get("duty_service_checks_task_number", "") or "").strip()
+            urls = [str(settings.get("duty_service_checks_task_url", "") or "").strip()]
+            ticket_ids = [str(settings.get("duty_service_checks_task_id", "") or "").strip()]
+        else:
+            number = str(settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number") or "").strip()
+            urls = [
+                str(settings.get("duty_zabbix_task_url", "") or "").strip(),
+                str(settings.get("current_ticket_url", "") or "").strip(),
+            ]
+            ticket_ids = [
+                str(settings.get("duty_zabbix_task_id", "") or "").strip(),
+                str(settings.get("current_ticket_id", "") or "").strip(),
+            ]
+        if number:
+            return "", ""
+        ticket_id = next((item for item in ticket_ids if item), "")
+        if not ticket_id:
+            for url in urls:
+                ticket_id = extract_otrs_ticket_id_from_url(url)
+                if ticket_id:
+                    break
+        if not ticket_id:
+            return "", ""
+        zoom_url = next((url for url in urls if url and "AgentTicketZoom" in url and extract_otrs_ticket_id_from_url(url) == ticket_id), "")
+        return ticket_id, zoom_url or self._otrs_zoom_url(ticket_id)
+
+    def _otrs_resolver_key(self, task_type):
+        ticket_id, _ = self._otrs_resolver_target(task_type)
+        return (task_type, ticket_id) if ticket_id else None
+
+    def _otrs_number_loading(self, task_type):
+        key = self._otrs_resolver_key(task_type)
+        return bool(key and key in getattr(self, "_otrs_number_resolve_inflight", set()))
+
+    def start_otrs_ticket_number_resolver(self, task_type):
+        task_type = "service_checks" if task_type == "service_checks" else "zabbix"
+        ticket_id, url = self._otrs_resolver_target(task_type)
+        if not ticket_id:
+            return False
+        key = (task_type, ticket_id)
+        if not hasattr(self, "_otrs_number_resolve_inflight"):
+            self._otrs_number_resolve_inflight = set()
+        if not hasattr(self, "_otrs_number_resolve_done"):
+            self._otrs_number_resolve_done = set()
+        if not hasattr(self, "_hidden_otrs_number_views"):
+            self._hidden_otrs_number_views = []
+        if key in self._otrs_number_resolve_inflight or key in self._otrs_number_resolve_done:
+            return False
+        self._otrs_number_resolve_inflight.add(key)
+        self.logger.info("OTRS hidden ticket number resolver started: task_type=%s ticket_id=%s url=%s", task_type, ticket_id, url)
+
+        view = register_web_view(QWebEngineView(self))
+        page = QWebEnginePage(view)
+        view.setPage(page)
+        self._hidden_otrs_number_views.append(view)
+
+        def cleanup():
+            try:
+                view.loadFinished.disconnect(on_loaded)
+            except Exception:
+                pass
+            if view in self._hidden_otrs_number_views:
+                self._hidden_otrs_number_views.remove(view)
+            safe_delete_web_view(view, logger=self.logger, context="OTRS hidden ticket number resolver", load_handler=None)
+
+        def finish_not_found(payload=None):
+            payload = payload or {}
+            self.logger.info(
+                "OTRS hidden ticket number not found: task_type=%s ticket_id=%s h1=%s title=%s",
+                task_type,
+                ticket_id,
+                str(payload.get("h1") or payload.get("headerH1") or payload.get("headlineH1") or "")[:120],
+                str(payload.get("title") or "")[:120],
+            )
+            self._otrs_number_resolve_inflight.discard(key)
+            self._otrs_number_resolve_done.add(key)
+            self.update_dashboard_summary()
+            cleanup()
+
+        def after_js(result):
+            if not isinstance(result, dict):
+                finish_not_found({})
+                return
+            number = extract_otrs_ticket_number_from_text(
+                result.get("headerH1", ""),
+                result.get("headlineH1", ""),
+                result.get("h1", ""),
+                result.get("title", ""),
+                result.get("body", ""),
+            )
+            if not number:
+                finish_not_found(result)
+                return
+            self._save_resolved_otrs_ticket_number(task_type, ticket_id, number)
+            self.logger.info("OTRS hidden ticket number resolved: task_type=%s ticket_id=%s number=%s", task_type, ticket_id, number)
+            self._otrs_number_resolve_inflight.discard(key)
+            self._otrs_number_resolve_done.add(key)
+            self.update_dashboard_summary()
+            self.update_task_label()
+            cleanup()
+
+        def read_number():
+            js = r"""
+            (() => {
+              function text(selector) {
+                const el = document.querySelector(selector);
+                return el ? (el.innerText || el.textContent || '').trim() : '';
+              }
+
+              const inputs = Array.from(document.querySelectorAll('input[name="TicketID"], input#TicketID'))
+                .map(el => el.value || '');
+
+              return {
+                url: window.location.href,
+                title: document.title || '',
+                h1: text('h1'),
+                headerH1: text('.Header h1'),
+                headlineH1: text('.Headline h1'),
+                body: document.body ? (document.body.innerText || document.body.textContent || '').slice(0, 5000) : '',
+                ticketIds: inputs
+              };
+            })();
+            """
+            run_javascript_if_alive(page, js, after_js)
+
+        def on_loaded(ok):
+            final_url = view.url().toString()
+            self.logger.info("OTRS hidden ticket number resolver loaded: ok=%s final_url=%s", ok, final_url)
+            if not ok:
+                finish_not_found({"title": "load failed", "url": final_url})
+                return
+            QTimer.singleShot(1200, read_number)
+
+        view.loadFinished.connect(on_loaded)
+        view.load(QUrl(url))
+        return True
+
+    def _save_resolved_otrs_ticket_number(self, task_type, ticket_id, number):
+        settings = self.get_settings()
+        if task_type == "service_checks":
+            settings["duty_service_checks_task_number"] = number
+        else:
+            settings["current_ticket_number"] = number
+            settings["duty_zabbix_task_number"] = number
+        save_config(self.config)
+
     def _task_summary(self, number, task_type="zabbix"):
         if number:
             return f"№{number}"
         ticket_id = self._duty_task_ticket_id(task_type)
         if ticket_id:
-            return f"привязана, TicketID={ticket_id}; номер загрузится после открытия страницы"
+            if self._otrs_number_loading(task_type):
+                return f"привязана, TicketID={ticket_id}; номер загружается..."
+            return f"привязана, TicketID={ticket_id}"
         return "не привязана"
 
 
@@ -5234,6 +5430,9 @@ class DutyModeWidget(QWidget):
         service_enabled = bool(settings.get("check_services_enabled", settings.get("duty_service_checks_enabled", False)))
         if not service_enabled and self.duty_service_checks_status not in {"выполняется", "выполнено", "ошибка", "требуется внимание"}:
             self.duty_service_checks_status = "отключено"
+
+        self.start_otrs_ticket_number_resolver("zabbix")
+        self.start_otrs_ticket_number_resolver("service_checks")
 
         self.duty_state_value.setText("включено" if enabled else "выключено")
         self.zabbix_task_state_value.setText(self._task_summary(self._zabbix_task_number(), "zabbix"))
@@ -6726,12 +6925,14 @@ class DutyModeWidget(QWidget):
             on_saved_callback=self._after_graph_check_note_saved,
             saved_log_message="Duty graph check note saved",
             initial_note_url=self._make_otrs_note_url(ticket_id),
+            task_type="zabbix",
         )
         self.logger.info(
             "Duty graph check note opened: ticket_number=%s ticket_id=%s",
             ticket_number or "",
             ticket_id or "",
         )
+        self.start_otrs_ticket_number_resolver("zabbix")
         dialog.exec()
 
     def _after_graph_check_note_saved(self):

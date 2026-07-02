@@ -869,6 +869,75 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertEqual(current_task_binding(settings, TASK_ZABBIX)["id"], "70413")
         self.assertTrue(has_otrs_note_target(settings, TASK_ZABBIX))
 
+
+    def test_extract_otrs_ticket_number_from_note_header(self):
+        from app.duty_tasks import extract_otrs_ticket_number_from_text
+        self.assertEqual(
+            extract_otrs_ticket_number_from_text("Добавить заметку к Заявка#100070477 — Проверка Zabbix"),
+            "100070477",
+        )
+        self.assertEqual(extract_otrs_ticket_number_from_text("Заявка №100070477"), "100070477")
+        self.assertEqual(extract_otrs_ticket_number_from_text("Ticket#100070477"), "100070477")
+        self.assertEqual(
+            extract_otrs_ticket_number_from_text("100070477 - Подробно - Заявки - Service Desk"),
+            "100070477",
+        )
+
+    def test_hidden_resolver_save_for_zabbix_preserves_ticket_id_and_url(self):
+        try:
+            from app.duty_mode import DutyModeWidget
+        except ImportError as exc:
+            self.skipTest(f"PySide6 GUI dependencies unavailable: {exc}")
+        widget = DutyModeWidget.__new__(DutyModeWidget)
+        widget.config = {
+            "duty_mode": {
+                "current_ticket_id": "70400",
+                "current_ticket_url": "https://itsm/std?Action=AgentTicketZoom;TicketID=70400",
+                "duty_zabbix_task_id": "70400",
+                "duty_zabbix_task_url": "https://itsm/std?Action=AgentTicketZoom;TicketID=70400",
+            }
+        }
+        widget._save_resolved_otrs_ticket_number("zabbix", "70400", "100070477")
+        settings = widget.config["duty_mode"]
+        self.assertEqual(settings["current_ticket_id"], "70400")
+        self.assertEqual(settings["duty_zabbix_task_id"], "70400")
+        self.assertIn("TicketID=70400", settings["current_ticket_url"])
+        self.assertIn("TicketID=70400", settings["duty_zabbix_task_url"])
+        self.assertEqual(settings["current_ticket_number"], "100070477")
+        self.assertEqual(settings["duty_zabbix_task_number"], "100070477")
+
+    def test_hidden_resolver_save_for_service_preserves_ticket_id_and_url(self):
+        try:
+            from app.duty_mode import DutyModeWidget
+        except ImportError as exc:
+            self.skipTest(f"PySide6 GUI dependencies unavailable: {exc}")
+        widget = DutyModeWidget.__new__(DutyModeWidget)
+        widget.config = {
+            "duty_mode": {
+                "duty_service_checks_task_id": "70400",
+                "duty_service_checks_task_url": "https://itsm/std?Action=AgentTicketZoom;TicketID=70400",
+            }
+        }
+        widget._save_resolved_otrs_ticket_number("service_checks", "70400", "100070477")
+        settings = widget.config["duty_mode"]
+        self.assertEqual(settings["duty_service_checks_task_id"], "70400")
+        self.assertIn("TicketID=70400", settings["duty_service_checks_task_url"])
+        self.assertEqual(settings["duty_service_checks_task_number"], "100070477")
+
+    def test_otrs_note_dialog_parser_reads_header_h1_text(self):
+        from app.duty_tasks import extract_otrs_ticket_number_from_text
+        result = {"headerH1": "Добавить заметку к Заявка#100070477 — Проверка Zabbix"}
+        self.assertEqual(extract_otrs_ticket_number_from_text(result.get("headerH1", "")), "100070477")
+
+    def test_ticket_id_only_remains_valid_if_resolver_fails(self):
+        from app.duty_tasks import TASK_ZABBIX, has_otrs_note_target
+        settings = {
+            "current_ticket_id": "70400",
+            "current_ticket_number": "",
+            "duty_zabbix_task_number": "",
+        }
+        self.assertTrue(has_otrs_note_target(settings, TASK_ZABBIX))
+
     def test_redmine_and_live_zabbix_not_touched_by_otrs_binding_pr(self):
         changed = os.popen("git diff --name-only").read().splitlines()
         forbidden = [path for path in changed if "redmine" in path.lower() or "live_zabbix" in path.lower()]

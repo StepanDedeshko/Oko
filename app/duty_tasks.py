@@ -126,6 +126,21 @@ def extract_otrs_ticket_id_from_url(value: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def extract_otrs_ticket_number_from_text(*texts: str) -> str:
+    haystack = "\n".join(str(text or "") for text in texts)
+    patterns = (
+        r"Заявка#\s*(\d{5,})",
+        r"Заявка\s*№\s*(\d{5,})",
+        r"Ticket#\s*(\d{5,})",
+        r"(?:^|\b)(\d{8,})\s*-\s*Подробно\s*-\s*Заявки",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, haystack, re.IGNORECASE | re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
 def has_otrs_note_target(settings: dict, task_type: str) -> bool:
     settings = settings or {}
     if task_type == TASK_SERVICES:
