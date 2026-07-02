@@ -836,6 +836,7 @@ class ServiceChecksLogicTest(unittest.TestCase):
         widget.selected_zabbix_problems_for_note = []
         widget._build_template_context = lambda: {}
         widget._after_graph_check_note_saved = lambda: None
+        widget.start_otrs_ticket_number_resolver = lambda *args, **kwargs: False
         with patch("app.duty_mode.OtrsNoteDialog", FakeDialog):
             widget.open_graph_check_note()
         self.assertEqual(captured["initial_note_url"], "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=70413")
@@ -858,6 +859,8 @@ class ServiceChecksLogicTest(unittest.TestCase):
         widget = DutyModeWidget.__new__(DutyModeWidget)
         widget.config = {"duty_mode": {"duty_service_checks_task_id": "70413"}, "service_checks": {"items": []}}
         widget.service_check_results = []
+        widget.logger = type("Logger", (), {"info": lambda *args, **kwargs: None})()
+        widget.start_otrs_ticket_number_resolver = lambda *args, **kwargs: False
         with patch("app.duty_mode.OtrsNoteDialog", FakeDialog):
             widget.open_service_check_note()
         self.assertEqual(captured["initial_note_url"], "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=70413")

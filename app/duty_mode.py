@@ -4375,6 +4375,8 @@ class DutyModeWidget(QWidget):
         self.clock_timer.timeout.connect(self.tick)
         self.clock_timer.start(1000)
 
+        self._duty_widget_initialized = True
+
         self.update_enable_button()
         self.update_task_label()
         self.tick()
@@ -5270,6 +5272,9 @@ class DutyModeWidget(QWidget):
         return bool(key and key in getattr(self, "_otrs_number_resolve_inflight", set()))
 
     def start_otrs_ticket_number_resolver(self, task_type):
+        if not getattr(self, "_duty_widget_initialized", False):
+            return False
+        logger = getattr(self, "logger", get_logger())
         task_type = "service_checks" if task_type == "service_checks" else "zabbix"
         ticket_id, url = self._otrs_resolver_target(task_type)
         if not ticket_id:
@@ -5284,7 +5289,7 @@ class DutyModeWidget(QWidget):
         if key in self._otrs_number_resolve_inflight or key in self._otrs_number_resolve_done:
             return False
         self._otrs_number_resolve_inflight.add(key)
-        self.logger.info("OTRS hidden ticket number resolver started: task_type=%s ticket_id=%s url=%s", task_type, ticket_id, url)
+        logger.info("OTRS hidden ticket number resolver started: task_type=%s ticket_id=%s url=%s", task_type, ticket_id, url)
 
         view = register_web_view(QWebEngineView(self))
         page = QWebEnginePage(view)
@@ -5298,11 +5303,11 @@ class DutyModeWidget(QWidget):
                 pass
             if view in self._hidden_otrs_number_views:
                 self._hidden_otrs_number_views.remove(view)
-            safe_delete_web_view(view, logger=self.logger, context="OTRS hidden ticket number resolver", load_handler=None)
+            safe_delete_web_view(view, logger=logger, context="OTRS hidden ticket number resolver", load_handler=None)
 
         def finish_not_found(payload=None):
             payload = payload or {}
-            self.logger.info(
+            logger.info(
                 "OTRS hidden ticket number not found: task_type=%s ticket_id=%s h1=%s title=%s",
                 task_type,
                 ticket_id,
@@ -5329,7 +5334,7 @@ class DutyModeWidget(QWidget):
                 finish_not_found(result)
                 return
             self._save_resolved_otrs_ticket_number(task_type, ticket_id, number)
-            self.logger.info("OTRS hidden ticket number resolved: task_type=%s ticket_id=%s number=%s", task_type, ticket_id, number)
+            logger.info("OTRS hidden ticket number resolved: task_type=%s ticket_id=%s number=%s", task_type, ticket_id, number)
             self._otrs_number_resolve_inflight.discard(key)
             self._otrs_number_resolve_done.add(key)
             self.update_dashboard_summary()
@@ -5362,7 +5367,7 @@ class DutyModeWidget(QWidget):
 
         def on_loaded(ok):
             final_url = view.url().toString()
-            self.logger.info("OTRS hidden ticket number resolver loaded: ok=%s final_url=%s", ok, final_url)
+            logger.info("OTRS hidden ticket number resolver loaded: ok=%s final_url=%s", ok, final_url)
             if not ok:
                 finish_not_found({"title": "load failed", "url": final_url})
                 return
