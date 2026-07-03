@@ -525,6 +525,57 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn('progress_prefix="Подтверждаю Zabbix после создания Redmine"', redmine_block)
         self.assertIn('summary_prefix="Подтверждение Zabbix после Redmine"', redmine_block)
 
+
+    def test_mm_otrs_customer_autocomplete_uses_native_customer_info_path(self):
+        customer_block = self.widget_source.split("def _fill_mm_otrs_customer", 1)[1].split("def _fill_mm_otrs_form", 1)[0]
+
+        self.assertIn('CUSTOMER_EMAIL = "stp@stdpr.ru"', customer_block)
+        self.assertIn('document.querySelector("#FromCustomer")', customer_block)
+        self.assertIn('document.querySelector(\'input[name="FromCustomer"]\')', customer_block)
+        self.assertIn('".ui-autocomplete li"', customer_block)
+        self.assertIn('"li.ui-menu-item"', customer_block)
+        self.assertIn('".ui-menu-item"', customer_block)
+        self.assertIn('document.querySelector("#CustomerInfo")', customer_block)
+        self.assertIn('CUSTOMER_CLICKED_MARKER = "okoCustomerAutocompleteClicked"', customer_block)
+        self.assertIn('document.documentElement.dataset[CUSTOMER_CLICKED_MARKER] = "1"', customer_block)
+        self.assertIn('input.dataset[CUSTOMER_CLICKED_MARKER] = "1"', customer_block)
+        self.assertIn('if (selectionAttempted(input))', customer_block)
+        self.assertIn('reason: "customer_info_not_ready"', customer_block)
+        self.assertIn('"selection_clicked_wait_customer_info"', customer_block)
+        self.assertIn('reason: "duplicate_customer_popup_dismissed"', customer_block)
+        self.assertIn('Дублирующаяся запись|Такой адрес уже существует', customer_block)
+        self.assertIn('proper_customer_selected', customer_block)
+        self.assertIn('raw_customer_row_cleanup_pending', customer_block)
+        self.assertIn('function isRawCustomerRowText', customer_block)
+        self.assertIn('^<?\s*stp@stdpr\.ru\s*>?$', customer_block)
+        self.assertIn('function isProperCustomerRowText', customer_block)
+        self.assertIn('proper.radio.checked = true', customer_block)
+        self.assertIn('deleteButtonForCustomerField', customer_block)
+        self.assertIn('ОТРС сообщил о дубле клиента, закрываю предупреждение и жду карточку клиента', customer_block)
+        self.assertIn('Жду обновления карточки клиента #CustomerInfo', customer_block)
+        self.assertIn('Выбран клиент из autocomplete, очищаю лишнюю строку stp@stdpr.ru', customer_block)
+        self.assertIn('Клиент ОТРС ММ выбран корректно. Заполняю очередь/сервис/SLA', customer_block)
+        self.assertIn('reason: "already_selected"', customer_block)
+        self.assertIn('jq.autocomplete("search", CUSTOMER_EMAIL)', customer_block)
+        for marker in (r"stp@stdpr.ru", r"СтандартПроект", r"1-я\s+Линия\s+СТП", r"Служба\s+Поддержки"):
+            self.assertIn(marker, customer_block)
+        wait_block = customer_block.split('if (selectionAttempted(input))', 1)[1].split('try { input.focus(); }', 1)[0]
+        self.assertNotIn('input.value = CUSTOMER_EMAIL', wait_block)
+        self.assertNotIn('clickElement(candidate.element)', wait_block)
+        self.assertNotIn('jq.autocomplete("search", CUSTOMER_EMAIL)', wait_block)
+        before_click_block = customer_block.split('const candidate = findAutocompleteItem()', 1)[0]
+        self.assertNotIn('fire(input, "change")', before_click_block)
+        self.assertNotIn('jq.trigger("change")', before_click_block)
+        self.assertNotIn('"Enter"', before_click_block)
+        self.assertNotIn('style.display = "none"', customer_block)
+        self.assertNotIn('CustomerTicketCounterFromCustomer', customer_block)
+        self.assertNotIn('input.value = "stp"', customer_block)
+        self.assertNotIn('autocomplete("search", "stp")', customer_block)
+        self.assertNotIn('document.querySelector("#CustomerInfo").innerHTML', customer_block)
+        self.assertNotIn('document.querySelector("#CustomerInfo").innerText', customer_block)
+        self.assertNotIn('document.querySelector("#CustomerInfo").textContent =', customer_block)
+        self.assertNotIn('Playwright', self.widget_source)
+
     def test_mm_otrs_auto_ack_uses_saved_items_after_ticket_detection(self):
         self.assertIn("task_items = list(items or [])", self.widget_source)
         self.assertIn("created_task_ack_done", self.widget_source)
