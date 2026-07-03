@@ -3803,6 +3803,10 @@ class LiveZabbixMonitorWidget(QWidget):
         redmine_action.triggered.connect(self.open_redmine_for_selected_row)
         mm_otrs_action = menu.addAction("Создать задачу на ММ")
         mm_otrs_action.triggered.connect(self.open_mm_otrs_for_selected_row)
+        observed_action = menu.addAction("Наблюдаю")
+        observed_action.triggered.connect(self.mark_selected_as_observed)
+        no_action_required_action = menu.addAction("Не требует обработки")
+        no_action_required_action.triggered.connect(self.mark_selected_as_no_action_required)
         copy_task_comment_action = menu.addAction("Скопировать комментарий задачи на выбранные")
         copy_task_comment_action.triggered.connect(self.copy_task_comment_to_selected)
 
@@ -4248,6 +4252,57 @@ class LiveZabbixMonitorWidget(QWidget):
 
         self.poll_status_label.setText(self._zbx_progress_text())
         QTimer.singleShot(0, self._start_more_zbx_workers)
+
+    def _selected_items_for_zabbix_comment_action(self, title):
+        items = self._selected_live_problem_items()
+        if not items:
+            QMessageBox.information(self, title, "Выберите минимум одну строку.")
+            return []
+        if any(not (getattr(item, "ack_url", "") or getattr(item, "problem_url", "")) for item in items):
+            QMessageBox.warning(self, title, "У выбранной проблемы нет ack_url/problem_url.")
+            return []
+        return items
+
+    def mark_selected_as_observed(self):
+        items = self._selected_items_for_zabbix_comment_action("Наблюдаю")
+        if not items:
+            return
+        self._process_zabbix_comments(
+            items,
+            "Наблюдаем",
+            acknowledge_missing=False,
+            progress_prefix="Добавляю комментарий наблюдения",
+            summary_prefix="Комментарий наблюдения Zabbix",
+        )
+
+    def mark_selected_as_no_action_required(self):
+        items = self._selected_items_for_zabbix_comment_action("Не требует обработки")
+        if not items:
+            return
+        reason_templates = [
+            "Сам напишу причину",
+            "Узел не развернут согласно КР",
+            "Наблюдаются проходы, ошибка не влияет на работу сервиса",
+            "Не реагируем на информационные сообщения",
+        ]
+        reason, ok = QInputDialog.getItem(self, "Не требует обработки", "Почему?", reason_templates, 0, False)
+        if not ok:
+            return
+        if reason == "Сам напишу причину":
+            reason, ok = QInputDialog.getMultiLineText(self, "Не требует обработки", "Почему?")
+            if not ok:
+                return
+        reason = str(reason or "").strip()
+        if not reason:
+            return
+        comment = f"Не требует обработки: {reason}"
+        self._process_zabbix_comments(
+            items,
+            comment,
+            acknowledge_missing=True,
+            progress_prefix="Отмечаю как не требующее обработки",
+            summary_prefix="Не требует обработки Zabbix",
+        )
 
     def copy_task_comment_to_selected(self):
         items = self._selected_live_problem_items()

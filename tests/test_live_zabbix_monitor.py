@@ -479,6 +479,32 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("Скопировать комментарий задачи на выбранные", self.widget_source)
         self.assertIn("if len(items) < 2", self.widget_source)
 
+    def test_quick_observed_context_action_comments_without_acknowledging(self):
+        self.assertIn("Наблюдаю", self.widget_source)
+        self.assertIn("def mark_selected_as_observed", self.widget_source)
+        self.assertIn('"Наблюдаем",', self.widget_source)
+        self.assertIn("acknowledge_missing=False", self.widget_source)
+        self.assertIn('progress_prefix="Добавляю комментарий наблюдения"', self.widget_source)
+        self.assertIn('summary_prefix="Комментарий наблюдения Zabbix"', self.widget_source)
+
+    def test_quick_no_action_required_context_action_acknowledges_with_templates(self):
+        self.assertIn("Не требует обработки", self.widget_source)
+        self.assertIn("def mark_selected_as_no_action_required", self.widget_source)
+        self.assertIn("Сам напишу причину", self.widget_source)
+        self.assertIn("Узел не развернут согласно КР", self.widget_source)
+        self.assertIn("Наблюдаются проходы, ошибка не влияет на работу сервиса", self.widget_source)
+        self.assertIn("Не реагируем на информационные сообщения", self.widget_source)
+        self.assertIn('comment = f"Не требует обработки: {reason}"', self.widget_source)
+        self.assertIn("acknowledge_missing=True", self.widget_source)
+        self.assertIn('progress_prefix="Отмечаю как не требующее обработки"', self.widget_source)
+        self.assertIn('summary_prefix="Не требует обработки Zabbix"', self.widget_source)
+
+    def test_quick_zabbix_comment_actions_validate_current_selection_once(self):
+        self.assertIn("def _selected_items_for_zabbix_comment_action", self.widget_source)
+        self.assertIn("items = self._selected_live_problem_items()", self.widget_source)
+        self.assertIn("Выберите минимум одну строку", self.widget_source)
+        self.assertIn("У выбранной проблемы нет ack_url/problem_url.", self.widget_source)
+
     def test_strict_redmine_mm_comment_regex(self):
         self.assertIn('Задача Redmine #\\d+: https?://\\S+|Задача на ММ #\\d+(?:: https?://\\S+)?', self.widget_source)
         self.assertIn('Задача на ММ: \\d{6,}', self.widget_source)
