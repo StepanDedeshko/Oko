@@ -169,6 +169,13 @@ def open_external_url(url):
     QDesktopServices.openUrl(QUrl(str(url or "")))
 
 
+def configure_text_browser_external_links(browser, opener=open_external_url):
+    browser.setOpenExternalLinks(False)
+    browser.setOpenLinks(False)
+    browser.anchorClicked.connect(lambda url: opener(url.toString()))
+    return browser
+
+
 MSK = timezone(timedelta(hours=3))
 
 
@@ -4123,8 +4130,7 @@ class DutyNoteDialog(QDialog):
         root.addWidget(summary)
         root.addWidget(QLabel("Предпросмотр заметки"))
         preview = QTextBrowser()
-        preview.setOpenExternalLinks(False)
-        preview.anchorClicked.connect(lambda url: open_external_url(url.toString()))
+        configure_text_browser_external_links(preview)
         preview.setHtml(plain_text_to_safe_html_with_links(note))
         preview.setMinimumHeight(300)
         root.addWidget(preview)
@@ -4360,8 +4366,7 @@ class DutyModeWidget(QWidget):
         manual_layout = QVBoxLayout(manual_group)
         self.manual_duty_note_text = str(self.get_settings().get("manual_duty_note", "") or "")
         self.manual_duty_note_view = QTextBrowser()
-        self.manual_duty_note_view.setOpenExternalLinks(False)
-        self.manual_duty_note_view.anchorClicked.connect(lambda url: open_external_url(url.toString()))
+        configure_text_browser_external_links(self.manual_duty_note_view)
         self.manual_duty_note_view.setFixedHeight(95)
         self.manual_duty_note_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         manual_group.setMaximumHeight(165)
@@ -4388,11 +4393,11 @@ class DutyModeWidget(QWidget):
         self.service_task_hint_label = QLabel("")
         self.service_summary_label = QLabel("Проверка сервисов ещё не выполнялась."); self.service_summary_label.hide()
         self.service_results_list = QListWidget(); self.service_results_list.hide()
-        self.service_status_panel = QTextBrowser(); self.service_status_panel.setOpenExternalLinks(False); self.service_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.service_status_panel.setMinimumHeight(360)
+        self.service_status_panel = QTextBrowser(); configure_text_browser_external_links(self.service_status_panel); self.service_status_panel.setMinimumHeight(360)
         services_layout.addWidget(self.service_status_panel, stretch=1)
         zabbix_group = QGroupBox("Zabbix / проблемы и графики")
         zabbix_layout = QVBoxLayout(zabbix_group)
-        self.zabbix_status_panel = QTextBrowser(); self.zabbix_status_panel.setOpenExternalLinks(False); self.zabbix_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.zabbix_status_panel.setMinimumHeight(360)
+        self.zabbix_status_panel = QTextBrowser(); configure_text_browser_external_links(self.zabbix_status_panel); self.zabbix_status_panel.setMinimumHeight(360)
         zabbix_layout.addWidget(self.zabbix_status_panel, stretch=1)
         panels.addWidget(services_group, 1); panels.addWidget(zabbix_group, 1)
         root.addLayout(panels, stretch=1)
