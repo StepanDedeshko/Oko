@@ -3295,6 +3295,7 @@ class LiveZabbixMonitorWidget(QWidget):
         js = r"""
 (function() {
   const CUSTOMER_EMAIL = "stp@stdpr.ru";
+  const CUSTOMER_CLICKED_MARKER = "okoCustomerAutocompleteClicked";
   const CUSTOMER_MARKERS = [
     /stp@stdpr\.ru/i,
     /СтандартПроект/i,
@@ -3368,6 +3369,40 @@ class LiveZabbixMonitorWidget(QWidget):
     return hasCustomerMarker(customerInfoText());
   }
 
+  function markSelectionAttempted(input) {
+    try { document.documentElement.dataset[CUSTOMER_CLICKED_MARKER] = "1"; } catch (e) {}
+    try { if (input) input.dataset[CUSTOMER_CLICKED_MARKER] = "1"; } catch (e) {}
+  }
+
+  function selectionAttempted(input) {
+    try {
+      return document.documentElement.dataset[CUSTOMER_CLICKED_MARKER] === "1" ||
+        !!(input && input.dataset && input.dataset[CUSTOMER_CLICKED_MARKER] === "1");
+    } catch (e) {}
+    return false;
+  }
+
+  function dismissDuplicateCustomerPopup(input) {
+    const bodyText = textOf(document.body);
+    if (!/Дублирующаяся запись|Такой адрес уже существует/i.test(bodyText)) {
+      return {found: false, clicked: false, button_text: ""};
+    }
+
+    markSelectionAttempted(input);
+
+    const buttons = Array.from(document.querySelectorAll(
+      'button, input[type="button"], input[type="submit"], .ui-dialog-buttonpane button, .cke_dialog_ui_button, a'
+    ));
+    for (const button of buttons) {
+      const buttonText = textOf(button);
+      if (visible(button) && /^(OK|ОК|О\.К\.|Ok)$/i.test(buttonText)) {
+        return {found: true, clicked: clickElement(button), button_text: buttonText};
+      }
+    }
+
+    return {found: true, clicked: false, button_text: ""};
+  }
+
   function autocompleteCandidateTextMatches(text) {
     const value = String(text || "");
     return /stp@stdpr\.ru/i.test(value) ||
@@ -3404,11 +3439,43 @@ class LiveZabbixMonitorWidget(QWidget):
     });
   }
 
+  let duplicate = dismissDuplicateCustomerPopup(null);
+  if (duplicate.found) {
+    return JSON.stringify({
+      ok: false,
+      reason: "duplicate_customer_popup_dismissed",
+      duplicate_clicked: duplicate.clicked,
+      duplicate_button_text: duplicate.button_text,
+      customer_info: customerInfoText()
+    });
+  }
+
   const input = document.querySelector("#FromCustomer") || document.querySelector('input[name="FromCustomer"]');
   if (!input) {
     return JSON.stringify({
       ok: false,
       reason: "FromCustomer_not_found",
+      customer_info: customerInfoText()
+    });
+  }
+
+  duplicate = dismissDuplicateCustomerPopup(input);
+  if (duplicate.found) {
+    return JSON.stringify({
+      ok: false,
+      reason: "duplicate_customer_popup_dismissed",
+      duplicate_clicked: duplicate.clicked,
+      duplicate_button_text: duplicate.button_text,
+      selection_attempted: selectionAttempted(input),
+      customer_info: customerInfoText()
+    });
+  }
+
+  if (selectionAttempted(input)) {
+    return JSON.stringify({
+      ok: false,
+      reason: "customer_info_not_ready",
+      selection_attempted: true,
       customer_info: customerInfoText()
     });
   }
@@ -3444,12 +3511,16 @@ class LiveZabbixMonitorWidget(QWidget):
 
   const candidate = findAutocompleteItem();
   const clicked = candidate.element ? clickElement(candidate.element) : false;
+  if (clicked) {
+    markSelectionAttempted(input);
+  }
 
   return JSON.stringify({
     ok: customerInfoReady(),
-    reason: customerInfoReady() ? "selected" : "customer_info_not_ready",
+    reason: customerInfoReady() ? "selected" : (clicked ? "selection_clicked_wait_customer_info" : "customer_info_not_ready"),
     clicked: clicked,
     clicked_text: candidate.text,
+    selection_attempted: selectionAttempted(input),
     autocomplete_search_called: autocompleteSearchCalled,
     customer_info: customerInfoText(),
     from_customer_value: input.value || ""
@@ -3481,8 +3552,16 @@ class LiveZabbixMonitorWidget(QWidget):
                 )
                 return
 
+            reason = str(parsed.get("reason", ""))
             if attempt < 12:
-                status_label.setText(f"Ищу и выбираю клиента stp@stdpr.ru из выпадающего списка... попытка {attempt}/12")
+                if reason == "selection_clicked_wait_customer_info":
+                    status_label.setText("Клиент выбран в autocomplete, жду обновления карточки клиента...")
+                elif reason == "duplicate_customer_popup_dismissed":
+                    status_label.setText("ОТРС сообщил о дубле клиента, закрываю предупреждение и жду карточку клиента...")
+                elif reason == "customer_info_not_ready":
+                    status_label.setText("Жду обновления карточки клиента #CustomerInfo...")
+                else:
+                    status_label.setText(f"Ищу и выбираю клиента stp@stdpr.ru из выпадающего списка... попытка {attempt}/12")
                 QTimer.singleShot(
                     900,
                     lambda: self._fill_mm_otrs_customer(view, status_label, subject, body, attempt + 1),
