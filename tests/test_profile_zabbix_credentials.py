@@ -106,6 +106,7 @@ class ProfileZabbixCredentialsTests(unittest.TestCase):
             save_zabbix_profile_credentials(
                 [],
                 {ZABBIX_COMMON_CREDENTIALS_KEY: {"login": "common-user", "password": "common-secret"}},
+                live_zabbix_url="http://zabbix.example/zabbix.php",
             )
             restored = load_saved_credentials()
 
@@ -114,14 +115,33 @@ class ProfileZabbixCredentialsTests(unittest.TestCase):
             {"login": "common-user", "password": "common-secret"},
         )
         self.assertEqual(
-            zabbix_profile_credential_targets([]),
-            [{"id": ZABBIX_COMMON_CREDENTIALS_KEY, "name": "Zabbix", "common": True}],
+            zabbix_profile_credential_targets([], live_zabbix_url="http://zabbix.example/zabbix.php"),
+            [{"id": ZABBIX_COMMON_CREDENTIALS_KEY, "name": "Live Zabbix / Дежурный Zabbix", "common": True}],
+        )
+
+
+    def test_empty_instances_with_duty_live_zabbix_url_uses_common_fallback_key(self):
+        with patch("app.credentials.CREDENTIALS_FILE", self.credentials_path):
+            save_zabbix_profile_credentials(
+                [],
+                {ZABBIX_COMMON_CREDENTIALS_KEY: {"login": "duty-user", "password": "duty-secret"}},
+                duty_live_zabbix_url="http://zabbix.example/zabbix.php",
+            )
+            restored = load_saved_credentials()
+
+        self.assertEqual(
+            restored[ZABBIX_COMMON_CREDENTIALS_KEY],
+            {"login": "duty-user", "password": "duty-secret"},
+        )
+        self.assertEqual(
+            zabbix_profile_credential_targets([], duty_live_zabbix_url="http://zabbix.example/zabbix.php"),
+            [{"id": ZABBIX_COMMON_CREDENTIALS_KEY, "name": "Live Zabbix / Дежурный Zabbix", "common": True}],
         )
 
     def test_no_zabbix_instances_reload_keeps_common_credentials(self):
         with patch("app.credentials.CREDENTIALS_FILE", self.credentials_path):
             save_credentials({ZABBIX_COMMON_CREDENTIALS_KEY: {"login": "common-user", "password": "common-secret"}})
-            reloaded_for_recreated_widget = load_zabbix_profile_credentials([])
+            reloaded_for_recreated_widget = load_zabbix_profile_credentials([], live_zabbix_url="http://zabbix.example/zabbix.php")
 
         self.assertEqual(
             reloaded_for_recreated_widget[ZABBIX_COMMON_CREDENTIALS_KEY],

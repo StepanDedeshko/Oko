@@ -25,7 +25,7 @@ def zabbix_credential_key_for_instance(instance: dict) -> str:
     return str(instance.get("id") or "").strip()
 
 
-def zabbix_profile_credential_targets(instances) -> list[dict]:
+def zabbix_profile_credential_targets(instances, live_zabbix_url="", duty_live_zabbix_url="") -> list[dict]:
     targets = []
     for instance in instances or []:
         key = zabbix_credential_key_for_instance(instance)
@@ -40,13 +40,16 @@ def zabbix_profile_credential_targets(instances) -> list[dict]:
     if targets:
         return targets
 
-    return [{"id": ZABBIX_COMMON_CREDENTIALS_KEY, "name": "Zabbix", "common": True}]
+    if str(live_zabbix_url or "").strip() or str(duty_live_zabbix_url or "").strip():
+        return [{"id": ZABBIX_COMMON_CREDENTIALS_KEY, "name": "Live Zabbix / Дежурный Zabbix", "common": True}]
+
+    return []
 
 
-def load_zabbix_profile_credentials(instances, credentials=None) -> dict:
+def load_zabbix_profile_credentials(instances, credentials=None, live_zabbix_url="", duty_live_zabbix_url="") -> dict:
     credentials = load_saved_credentials() if credentials is None else credentials
     result = {}
-    for target in zabbix_profile_credential_targets(instances):
+    for target in zabbix_profile_credential_targets(instances, live_zabbix_url, duty_live_zabbix_url):
         key = target["id"]
         saved = credentials.get(key, {}) if isinstance(credentials, dict) else {}
         result[key] = {
@@ -56,10 +59,10 @@ def load_zabbix_profile_credentials(instances, credentials=None) -> dict:
     return result
 
 
-def save_zabbix_profile_credentials(instances, values_by_key: dict, credentials=None) -> dict:
+def save_zabbix_profile_credentials(instances, values_by_key: dict, credentials=None, live_zabbix_url="", duty_live_zabbix_url="") -> dict:
     credentials = load_saved_credentials() if credentials is None else dict(credentials)
     values_by_key = values_by_key or {}
-    for target in zabbix_profile_credential_targets(instances):
+    for target in zabbix_profile_credential_targets(instances, live_zabbix_url, duty_live_zabbix_url):
         key = target["id"]
         if key not in values_by_key:
             continue

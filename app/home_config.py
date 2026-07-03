@@ -1233,9 +1233,18 @@ class ProfileWidget(QWidget):
             for instance in self.config.get("zabbix_instances", [])
             if instance.get("enabled", True)
         ]
-        saved_zabbix_by_key = load_zabbix_profile_credentials(self.enabled_zabbix_instances, self.saved_zabbix_credentials)
+        live_zabbix_monitor = self.config.get("live_zabbix_monitor", {})
+        duty_links = self.config.get("duty_links", {})
+        self.live_zabbix_url = str(live_zabbix_monitor.get("url") or "") if isinstance(live_zabbix_monitor, dict) else ""
+        self.duty_live_zabbix_url = str(duty_links.get("live_zabbix_url") or "") if isinstance(duty_links, dict) else ""
+        saved_zabbix_by_key = load_zabbix_profile_credentials(
+            self.enabled_zabbix_instances,
+            self.saved_zabbix_credentials,
+            self.live_zabbix_url,
+            self.duty_live_zabbix_url,
+        )
 
-        for target in zabbix_profile_credential_targets(self.enabled_zabbix_instances):
+        for target in zabbix_profile_credential_targets(self.enabled_zabbix_instances, self.live_zabbix_url, self.duty_live_zabbix_url):
             zabbix_key = target["id"]
             instance_name = target["name"]
             if not target.get("common"):
@@ -1354,6 +1363,8 @@ class ProfileWidget(QWidget):
                 }
                 for zabbix_id, widgets in self.zabbix_inputs.items()
             },
+            live_zabbix_url=self.live_zabbix_url,
+            duty_live_zabbix_url=self.duty_live_zabbix_url,
         )
 
         redmine_settings = ensure_live_monitor_defaults(self.config)
