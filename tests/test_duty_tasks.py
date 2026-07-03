@@ -8,9 +8,11 @@ from app.duty_tasks import (
     has_current_task,
     parse_ticket_url,
     planned_actions,
+    prepare_otrs_task_url_save,
     save_task_binding,
     selected_task_types,
     smart_action_text,
+    store_task_number_for_current_ticket,
 )
 
 
@@ -62,6 +64,57 @@ class DutyTasksHelpersTest(unittest.TestCase):
         save_task_binding(settings, TASK_ZABBIX, parse_ticket_url("https://redmine.example.org/issues/70194"))
         self.assertTrue(has_current_task(settings, TASK_ZABBIX))
         self.assertEqual(current_task_binding(settings, TASK_ZABBIX)["id"], "70194")
+
+    def test_new_zabbix_otrs_ticket_id_clears_old_numbers(self):
+        settings = {
+            "duty_zabbix_task_id": "100",
+            "current_ticket_id": "100",
+            "duty_zabbix_task_number": "202601010000001",
+            "current_ticket_number": "202601010000001",
+        }
+        info = prepare_otrs_task_url_save(settings, TASK_ZABBIX, "200", "https://otrs.local/?TicketID=200")
+        self.assertTrue(info["cleared_old_ticket_number"])
+        self.assertEqual(settings["duty_zabbix_task_number"], "")
+        self.assertEqual(settings["current_ticket_number"], "")
+        self.assertEqual(settings["duty_zabbix_task_id"], "200")
+        self.assertEqual(settings["current_ticket_id"], "200")
+
+    def test_new_service_otrs_ticket_id_clears_old_number(self):
+        settings = {
+            "duty_service_checks_task_id": "100",
+            "duty_service_checks_task_number": "202601010000001",
+        }
+        info = prepare_otrs_task_url_save(settings, TASK_SERVICES, "200", "https://otrs.local/?TicketID=200")
+        self.assertTrue(info["cleared_old_ticket_number"])
+        self.assertEqual(settings["duty_service_checks_task_number"], "")
+        self.assertEqual(settings["duty_service_checks_task_id"], "200")
+
+    def test_unresolved_new_otrs_ticket_does_not_reuse_old_number(self):
+        settings = {
+            "duty_zabbix_task_id": "100",
+            "current_ticket_id": "100",
+            "duty_zabbix_task_number": "202601010000001",
+            "current_ticket_number": "202601010000001",
+        }
+        prepare_otrs_task_url_save(settings, TASK_ZABBIX, "200", "https://otrs.local/?TicketID=200")
+        self.assertEqual(current_task_binding(settings, TASK_ZABBIX)["number"], "")
+
+    def test_resolved_number_is_stored_only_for_current_ticket_id(self):
+        settings = {"duty_zabbix_task_id": "200", "current_ticket_id": "200"}
+        self.assertFalse(store_task_number_for_current_ticket(settings, TASK_ZABBIX, "100", "202601010000001"))
+        self.assertEqual(current_task_binding(settings, TASK_ZABBIX)["number"], "")
+        self.assertTrue(store_task_number_for_current_ticket(settings, TASK_ZABBIX, "200", "202601010000002"))
+        self.assertEqual(settings["duty_zabbix_task_number"], "202601010000002")
+        self.assertEqual(settings["current_ticket_number"], "202601010000002")
+
+    def test_same_otrs_ticket_id_keeps_existing_number(self):
+        settings = {
+            "duty_service_checks_task_id": "100",
+            "duty_service_checks_task_number": "202601010000001",
+        }
+        info = prepare_otrs_task_url_save(settings, TASK_SERVICES, "100", "https://otrs.local/?TicketID=100")
+        self.assertFalse(info["cleared_old_ticket_number"])
+        self.assertEqual(settings["duty_service_checks_task_number"], "202601010000001")
 
 
 if __name__ == "__main__":
