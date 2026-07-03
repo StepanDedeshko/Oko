@@ -74,7 +74,7 @@ from app.credentials import (
     load_zabbix_profile_credentials,
     save_credentials,
     save_zabbix_profile_credentials,
-    zabbix_credential_key_for_instance,
+    zabbix_profile_credential_targets,
 )
 from app.theme import get_available_themes
 from app.app_info import APP_NAME, APP_VERSION, APP_DESCRIPTION
@@ -1235,13 +1235,11 @@ class ProfileWidget(QWidget):
         ]
         saved_zabbix_by_key = load_zabbix_profile_credentials(self.enabled_zabbix_instances, self.saved_zabbix_credentials)
 
-        for instance in self.enabled_zabbix_instances:
-            zabbix_key = zabbix_credential_key_for_instance(instance)
-            if not zabbix_key:
-                continue
-
-            instance_name = instance.get("name", zabbix_key)
-            add_caption(instance_name)
+        for target in zabbix_profile_credential_targets(self.enabled_zabbix_instances):
+            zabbix_key = target["id"]
+            instance_name = target["name"]
+            if not target.get("common"):
+                add_caption(instance_name)
             saved = saved_zabbix_by_key.get(zabbix_key, {})
             login_input, password_input = add_labeled_password_pair(
                 saved.get("login", ""),

@@ -13,6 +13,7 @@ OTRS_CREDENTIALS_KEY = "otrs"
 LEGACY_OTRS_CREDENTIALS_KEY = "__otrs__"
 SERVICE_CREDENTIALS_PREFIX = "service_check::"
 SERVICE_GROUP_CREDENTIALS_PREFIX = "service_group::"
+ZABBIX_COMMON_CREDENTIALS_KEY = "zabbix"
 PROFILE_EXPORT_TYPE = "oko_profile_credentials"
 PROFILE_EXPORT_VERSION = 1
 
@@ -24,13 +25,29 @@ def zabbix_credential_key_for_instance(instance: dict) -> str:
     return str(instance.get("id") or "").strip()
 
 
-def load_zabbix_profile_credentials(instances, credentials=None) -> dict:
-    credentials = load_saved_credentials() if credentials is None else credentials
-    result = {}
+def zabbix_profile_credential_targets(instances) -> list[dict]:
+    targets = []
     for instance in instances or []:
         key = zabbix_credential_key_for_instance(instance)
         if not key:
             continue
+        targets.append({
+            "id": key,
+            "name": str(instance.get("name") or key),
+            "common": False,
+        })
+
+    if targets:
+        return targets
+
+    return [{"id": ZABBIX_COMMON_CREDENTIALS_KEY, "name": "Zabbix", "common": True}]
+
+
+def load_zabbix_profile_credentials(instances, credentials=None) -> dict:
+    credentials = load_saved_credentials() if credentials is None else credentials
+    result = {}
+    for target in zabbix_profile_credential_targets(instances):
+        key = target["id"]
         saved = credentials.get(key, {}) if isinstance(credentials, dict) else {}
         result[key] = {
             "login": str(saved.get("login", "") or ""),
@@ -42,9 +59,9 @@ def load_zabbix_profile_credentials(instances, credentials=None) -> dict:
 def save_zabbix_profile_credentials(instances, values_by_key: dict, credentials=None) -> dict:
     credentials = load_saved_credentials() if credentials is None else dict(credentials)
     values_by_key = values_by_key or {}
-    for instance in instances or []:
-        key = zabbix_credential_key_for_instance(instance)
-        if not key or key not in values_by_key:
+    for target in zabbix_profile_credential_targets(instances):
+        key = target["id"]
+        if key not in values_by_key:
             continue
         values = values_by_key.get(key) or {}
         credentials[key] = {
@@ -57,6 +74,7 @@ def save_zabbix_profile_credentials(instances, values_by_key: dict, credentials=
 
 def clear_zabbix_profile_credentials(instances, credentials=None) -> dict:
     credentials = load_saved_credentials() if credentials is None else dict(credentials)
+    credentials.pop(ZABBIX_COMMON_CREDENTIALS_KEY, None)
     for instance in instances or []:
         key = zabbix_credential_key_for_instance(instance)
         if key:

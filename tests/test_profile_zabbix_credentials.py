@@ -7,12 +7,14 @@ from app.credentials import (
     OTRS_CREDENTIALS_KEY,
     SERVICE_CREDENTIALS_PREFIX,
     SERVICE_GROUP_CREDENTIALS_PREFIX,
+    ZABBIX_COMMON_CREDENTIALS_KEY,
     clear_zabbix_profile_credentials,
     load_saved_credentials,
     load_zabbix_profile_credentials,
     save_credentials,
     save_zabbix_profile_credentials,
     zabbix_credential_key_for_instance,
+    zabbix_profile_credential_targets,
 )
 
 
@@ -98,10 +100,39 @@ class ProfileZabbixCredentialsTests(unittest.TestCase):
             self.assertEqual(restored[key], value)
         self.assertEqual(restored["zbx_main"], {"login": "z-user", "password": "z-secret"})
 
+
+    def test_no_zabbix_instances_uses_common_fallback_key(self):
+        with patch("app.credentials.CREDENTIALS_FILE", self.credentials_path):
+            save_zabbix_profile_credentials(
+                [],
+                {ZABBIX_COMMON_CREDENTIALS_KEY: {"login": "common-user", "password": "common-secret"}},
+            )
+            restored = load_saved_credentials()
+
+        self.assertEqual(
+            restored[ZABBIX_COMMON_CREDENTIALS_KEY],
+            {"login": "common-user", "password": "common-secret"},
+        )
+        self.assertEqual(
+            zabbix_profile_credential_targets([]),
+            [{"id": ZABBIX_COMMON_CREDENTIALS_KEY, "name": "Zabbix", "common": True}],
+        )
+
+    def test_no_zabbix_instances_reload_keeps_common_credentials(self):
+        with patch("app.credentials.CREDENTIALS_FILE", self.credentials_path):
+            save_credentials({ZABBIX_COMMON_CREDENTIALS_KEY: {"login": "common-user", "password": "common-secret"}})
+            reloaded_for_recreated_widget = load_zabbix_profile_credentials([])
+
+        self.assertEqual(
+            reloaded_for_recreated_widget[ZABBIX_COMMON_CREDENTIALS_KEY],
+            {"login": "common-user", "password": "common-secret"},
+        )
+
     def test_explicit_clear_zabbix_credentials_clears_only_zabbix(self):
         original = {
             OTRS_CREDENTIALS_KEY: {"login": "otrs-user", "password": "otrs-secret"},
             "live_zabbix_monitor::redmine": {"login": "redmine-user", "password": "redmine-secret"},
+            ZABBIX_COMMON_CREDENTIALS_KEY: {"login": "common", "password": "common-secret"},
             "zbx_main": {"login": "main", "password": "main-secret"},
             "zbx_backup": {"login": "backup", "password": "backup-secret"},
             f"{SERVICE_CREDENTIALS_PREFIX}svc_1": {"login": "service-user", "password": "service-secret"},
@@ -112,6 +143,7 @@ class ProfileZabbixCredentialsTests(unittest.TestCase):
             clear_zabbix_profile_credentials(self.instances)
             restored = load_saved_credentials()
 
+        self.assertNotIn(ZABBIX_COMMON_CREDENTIALS_KEY, restored)
         self.assertNotIn("zbx_main", restored)
         self.assertNotIn("zbx_backup", restored)
         for key in (OTRS_CREDENTIALS_KEY, "live_zabbix_monitor::redmine", f"{SERVICE_CREDENTIALS_PREFIX}svc_1", f"{SERVICE_GROUP_CREDENTIALS_PREFIX}group_1"):
