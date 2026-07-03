@@ -107,6 +107,45 @@ def clear_zabbix_profile_credentials(instances, credentials=None) -> dict:
     return credentials
 
 
+
+def _js_string(value):
+    return str(value).replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+
+
+def build_otrs_login_injection_js(login, password, auto_submit=False):
+    login = str(login or "")
+    password = str(password or "")
+    if not login or not password:
+        return ""
+    return f"""
+    (function() {{
+        const user = document.querySelector('#User');
+        const password = document.querySelector('#Password');
+        const button = document.querySelector('#LoginButton');
+
+        if (!user || !password) {{
+            return 'no-login-form';
+        }}
+
+        user.focus();
+        user.value = '{_js_string(login)}';
+        user.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        user.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+        password.focus();
+        password.value = '{_js_string(password)}';
+        password.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        password.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+        if ({str(bool(auto_submit)).lower()} && button) {{
+            setTimeout(() => button.click(), 500);
+            return 'filled-and-submitted';
+        }}
+
+        return 'filled';
+    }})();
+    """
+
 def load_otrs_credentials(config=None) -> dict:
     """Load OTRS credentials from the shared credentials store.
 

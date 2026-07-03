@@ -1220,6 +1220,10 @@ class ProfileWidget(QWidget):
         self.enabled.setChecked(duty.get("otrs_login_enabled", False))
         root.addWidget(self.enabled)
 
+        self.otrs_auto_submit_login = QCheckBox("Автоматически нажимать кнопку входа ОТРС после подстановки")
+        self.otrs_auto_submit_login.setChecked(duty.get("otrs_auto_submit_login", False))
+        root.addWidget(self.otrs_auto_submit_login)
+
         self.login, self.password = add_labeled_password_pair(
             otrs_credentials.get("login", ""),
             otrs_credentials.get("password", ""),
@@ -1354,6 +1358,7 @@ class ProfileWidget(QWidget):
     def save(self):
         duty = self.config.setdefault("duty_mode", {})
         duty["otrs_login_enabled"] = self.enabled.isChecked()
+        duty["otrs_auto_submit_login"] = self.otrs_auto_submit_login.isChecked()
         for legacy_key in ("otrs_" + "login", "otrs_" + "password"):
             duty.pop(legacy_key, None)
 
