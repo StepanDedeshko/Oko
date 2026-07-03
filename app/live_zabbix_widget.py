@@ -3291,9 +3291,22 @@ class LiveZabbixMonitorWidget(QWidget):
 
 
     def _fill_mm_otrs_customer(self, view, status_label, subject, body, attempt=1):
-        """Select OTRS customer from autocomplete and hide extra empty/raw customer rows."""
+        """Select OTRS customer through the native ITSM jQuery UI autocomplete path."""
         js = r"""
 (function() {
+  const CUSTOMER_EMAIL = "stp@stdpr.ru";
+  const CUSTOMER_MARKERS = [
+    /stp@stdpr\.ru/i,
+    /СтандартПроект/i,
+    /1-я\s+Линия\s+СТП/i,
+    /Служба\s+Поддержки/i
+  ];
+  const AUTOCOMPLETE_SELECTORS = [
+    ".ui-autocomplete li",
+    "li.ui-menu-item",
+    ".ui-menu-item"
+  ];
+
   function fire(element, type) {
     if (!element) return;
     try {
@@ -3319,7 +3332,7 @@ class LiveZabbixMonitorWidget(QWidget):
   function clickElement(element) {
     if (!element) return false;
     try {
-      ["mouseover", "mousemove", "mousedown", "mouseup", "click"].forEach(function(type) {
+      ["mouseover", "mousedown", "mouseup", "click"].forEach(function(type) {
         element.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
       });
       return true;
@@ -3337,194 +3350,83 @@ class LiveZabbixMonitorWidget(QWidget):
       (!style || (style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"));
   }
 
-  function customerTextFields() {
-    return Array.from(document.querySelectorAll(
-      "input.CustomerTicketText, #CustomerTicketText, #CustomerTicketText_1, .MainCustomer"
-    ));
+  function textOf(element) {
+    return String(element && (element.innerText || element.textContent || element.value) || "").trim();
   }
 
-  function selectedCustomerText() {
-    return customerTextFields().map(function(element) {
-      return String(element.value || element.innerText || element.textContent || "").trim();
-    }).filter(Boolean).join(" | ");
+  function hasCustomerMarker(text) {
+    const value = String(text || "");
+    return CUSTOMER_MARKERS.some(function(marker) { return marker.test(value); });
   }
 
-  function isRealCustomerText(text) {
-    return /stp@stdpr\.ru|Служба Поддержки/i.test(String(text || ""));
+  function customerInfoText() {
+    const info = document.querySelector("#CustomerInfo");
+    return textOf(info);
   }
 
-  function isRawOrEmptyCustomerText(text) {
-    const value = String(text || "").trim();
-    return value === "" || /^stp$/i.test(value);
+  function customerInfoReady() {
+    return hasCustomerMarker(customerInfoText());
   }
 
-  function findCustomerRow(field) {
-    let current = field;
-    for (let i = 0; current && i < 8; i += 1) {
-      const textInputs = current.querySelectorAll ? current.querySelectorAll("input.CustomerTicketText").length : 0;
-      const radios = current.querySelectorAll ? current.querySelectorAll("input.CustomerTicketRadio").length : 0;
-
-      if (textInputs === 1 && radios <= 1) {
-        return current;
-      }
-
-      current = current.parentElement;
-    }
-
-    return field.parentElement;
+  function autocompleteCandidateTextMatches(text) {
+    const value = String(text || "");
+    return /stp@stdpr\.ru/i.test(value) ||
+      /Служба\s+Поддержки/i.test(value) ||
+      /СтандартПроект/i.test(value) ||
+      /1-я\s+Линия\s+СТП/i.test(value);
   }
 
-  function hideExtraCustomerRow(field) {
-    if (!field) return false;
-
-    try {
-      field.value = "";
-      fire(field, "input");
-      fire(field, "change");
-      fire(field, "blur");
-    } catch (e) {}
-
-    const suffix = field.id && field.id.startsWith("CustomerTicketText")
-      ? field.id.replace("CustomerTicketText", "")
-      : "";
-
-    const radio = document.querySelector("#CustomerSelected" + suffix);
-    if (radio) {
+  function findAutocompleteItem() {
+    const seen = [];
+    AUTOCOMPLETE_SELECTORS.forEach(function(selector) {
       try {
-        radio.checked = false;
-        fire(radio, "change");
+        Array.from(document.querySelectorAll(selector)).forEach(function(element) {
+          if (seen.indexOf(element) === -1) seen.push(element);
+        });
       } catch (e) {}
-    }
-
-    const row = findCustomerRow(field);
-    if (row) {
-      row.setAttribute("data-oko-hidden-extra-customer", "1");
-      row.style.display = "none";
-    }
-
-    return true;
-  }
-
-  function normalizeCustomerRows() {
-    let realField = null;
-
-    customerTextFields().forEach(function(field) {
-      const text = String(field.value || field.innerText || field.textContent || "").trim();
-      if (isRealCustomerText(text)) {
-        realField = field;
-      }
     });
 
-    if (!realField) {
-      return {
-        ok: false,
-        reason: "real_customer_row_not_found",
-        selected: selectedCustomerText()
-      };
-    }
-
-    const suffix = realField.id && realField.id.startsWith("CustomerTicketText")
-      ? realField.id.replace("CustomerTicketText", "")
-      : "_1";
-
-    const realRadio =
-      document.querySelector("#CustomerSelected" + suffix) ||
-      document.querySelector("#CustomerSelected_1");
-
-    if (realRadio) {
-      try {
-        realRadio.checked = true;
-        fire(realRadio, "click");
-        fire(realRadio, "change");
-      } catch (e) {}
-    }
-
-    let hidden_count = 0;
-
-    customerTextFields().forEach(function(field) {
-      if (field === realField) return;
-
-      const text = String(field.value || field.innerText || field.textContent || "").trim();
-      if (isRawOrEmptyCustomerText(text)) {
-        if (hideExtraCustomerRow(field)) {
-          hidden_count += 1;
-        }
+    for (const element of seen) {
+      const text = textOf(element);
+      if (visible(element) && autocompleteCandidateTextMatches(text)) {
+        return {element: element, text: text};
       }
-    });
-
-    const input = document.querySelector("#FromCustomer");
-    if (input) {
-      try {
-        input.value = "";
-        fire(input, "input");
-        fire(input, "change");
-        fire(input, "blur");
-      } catch (e) {}
     }
 
-    const counter = document.querySelector("#CustomerTicketCounterFromCustomer");
-    if (counter) {
-      try {
-        counter.value = "1";
-        fire(counter, "change");
-      } catch (e) {}
-    }
-
-    return {
-      ok: true,
-      reason: "normalized",
-      selected: selectedCustomerText(),
-      real_field_id: realField.id || "",
-      real_radio_id: realRadio ? realRadio.id : "",
-      hidden_count: hidden_count,
-      from_customer_value: input ? String(input.value || "") : "",
-      counter: counter ? String(counter.value || "") : ""
-    };
+    return {element: null, text: ""};
   }
 
-  function clickableParent(element) {
-    let current = element;
-    for (let i = 0; current && i < 5; i += 1) {
-      const tag = String(current.tagName || "").toLowerCase();
-      const text = String(current.innerText || current.textContent || "").trim();
-      if (["li", "a", "div", "span"].includes(tag) &&
-          /Служба Поддержки|stp@stdpr\.ru|stp\.stdpr\.ru/i.test(text)) {
-        return current;
-      }
-      current = current.parentElement;
-    }
-    return element;
-  }
-
-  const already = normalizeCustomerRows();
-  if (already.ok) {
+  if (customerInfoReady()) {
     return JSON.stringify({
       ok: true,
-      reason: "already_selected_normalized",
-      normalize: already
+      reason: "already_selected",
+      customer_info: customerInfoText()
     });
   }
 
-  const input = document.querySelector("#FromCustomer");
+  const input = document.querySelector("#FromCustomer") || document.querySelector('input[name="FromCustomer"]');
   if (!input) {
     return JSON.stringify({
       ok: false,
       reason: "FromCustomer_not_found",
-      selected: selectedCustomerText()
+      customer_info: customerInfoText()
     });
   }
 
-  input.focus();
-  input.value = "stp";
+  try { input.focus(); } catch (e) {}
+  try { input.click(); } catch (e) {}
+  try { input.select(); } catch (e) {}
+  try { input.setSelectionRange(0, String(input.value || "").length); } catch (e) {}
 
-  try {
-    input.setSelectionRange(0, input.value.length);
-  } catch (e) {}
+  input.value = "";
+  ["input", "change", "keydown", "keyup"].forEach(function(type) { fire(input, type); });
 
-  ["focus", "input", "keydown", "keyup", "change"].forEach(function(type) {
-    fire(input, type);
-  });
+  input.value = CUSTOMER_EMAIL;
+  ["input", "keydown", "keyup", "change"].forEach(function(type) { fire(input, type); });
+  key(input, "keydown", "ArrowDown", "ArrowDown");
+  key(input, "keyup", "ArrowDown", "ArrowDown");
 
+  let autocompleteSearchCalled = false;
   try {
     if (window.jQuery) {
       const jq = window.jQuery(input);
@@ -3534,61 +3436,22 @@ class LiveZabbixMonitorWidget(QWidget):
       jq.trigger("keyup");
       jq.trigger("change");
       if (jq.autocomplete) {
-        jq.autocomplete("search", "stp");
+        jq.autocomplete("search", CUSTOMER_EMAIL);
+        autocompleteSearchCalled = true;
       }
     }
   } catch (e) {}
 
-  let clicked = false;
-  let clickedText = "";
-  let method = "keyboard";
-
-  key(input, "keydown", "ArrowDown", "ArrowDown");
-  key(input, "keyup", "ArrowDown", "ArrowDown");
-  key(input, "keydown", "Enter", "Enter");
-  key(input, "keyup", "Enter", "Enter");
-
-  let normalizedAfterKeyboard = normalizeCustomerRows();
-
-  if (!normalizedAfterKeyboard.ok) {
-    const rect = input.getBoundingClientRect();
-    const points = [
-      [rect.left + 20, rect.bottom + 14],
-      [rect.left + 160, rect.bottom + 14],
-      [rect.left + 20, rect.bottom + 28],
-      [rect.left + 160, rect.bottom + 28]
-    ];
-
-    for (const point of points) {
-      const element = document.elementFromPoint(point[0], point[1]);
-      const parent = clickableParent(element);
-      const text = String(parent && (parent.innerText || parent.textContent) || "").trim();
-
-      if (parent && visible(parent) && /Служба Поддержки|stp@stdpr\.ru|stp\.stdpr\.ru/i.test(text)) {
-        clicked = clickElement(parent);
-        clickedText = text;
-        method = "elementFromPoint";
-        break;
-      }
-    }
-  }
-
-  try {
-    window.setTimeout(function() {
-      normalizeCustomerRows();
-    }, 350);
-  } catch (e) {}
-
-  const finalNormalize = normalizeCustomerRows();
+  const candidate = findAutocompleteItem();
+  const clicked = candidate.element ? clickElement(candidate.element) : false;
 
   return JSON.stringify({
-    ok: finalNormalize.ok,
-    reason: finalNormalize.ok ? "selected_normalized" : "selection_started",
-    method: method,
+    ok: customerInfoReady(),
+    reason: customerInfoReady() ? "selected" : "customer_info_not_ready",
     clicked: clicked,
-    clicked_text: clickedText,
-    normalize: finalNormalize,
-    selected: selectedCustomerText(),
+    clicked_text: candidate.text,
+    autocomplete_search_called: autocompleteSearchCalled,
+    customer_info: customerInfoText(),
     from_customer_value: input.value || ""
   });
 })();
@@ -3611,7 +3474,7 @@ class LiveZabbixMonitorWidget(QWidget):
                     parsed = {}
 
             if parsed.get("ok"):
-                status_label.setText("Клиент ОТРС ММ выбран, лишняя строка скрыта. Заполняю очередь/сервис/SLA...")
+                status_label.setText("Клиент ОТРС ММ выбран штатным autocomplete. Заполняю очередь/сервис/SLA...")
                 QTimer.singleShot(
                     1200,
                     lambda: self._fill_mm_otrs_direct_fields(view, status_label, subject, body, 1, 1),
@@ -3619,7 +3482,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 return
 
             if attempt < 12:
-                status_label.setText(f"Ищу и выбираю клиента stp из выпадающего списка... попытка {attempt}/12")
+                status_label.setText(f"Ищу и выбираю клиента stp@stdpr.ru из выпадающего списка... попытка {attempt}/12")
                 QTimer.singleShot(
                     900,
                     lambda: self._fill_mm_otrs_customer(view, status_label, subject, body, attempt + 1),
@@ -3627,7 +3490,7 @@ class LiveZabbixMonitorWidget(QWidget):
                 return
 
             status_label.setText(
-                "Не удалось выбрать клиента из выпадающего списка. "
+                "Не удалось дождаться выбора клиента через autocomplete. "
                 f"Результат: {text[:500]}. Продолжаю поля дальше."
             )
             QTimer.singleShot(

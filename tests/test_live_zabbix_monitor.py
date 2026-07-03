@@ -525,6 +525,29 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn('progress_prefix="Подтверждаю Zabbix после создания Redmine"', redmine_block)
         self.assertIn('summary_prefix="Подтверждение Zabbix после Redmine"', redmine_block)
 
+
+    def test_mm_otrs_customer_autocomplete_uses_native_customer_info_path(self):
+        customer_block = self.widget_source.split("def _fill_mm_otrs_customer", 1)[1].split("def _fill_mm_otrs_form", 1)[0]
+
+        self.assertIn('CUSTOMER_EMAIL = "stp@stdpr.ru"', customer_block)
+        self.assertIn('document.querySelector("#FromCustomer")', customer_block)
+        self.assertIn('document.querySelector(\'input[name="FromCustomer"]\')', customer_block)
+        self.assertIn('".ui-autocomplete li"', customer_block)
+        self.assertIn('"li.ui-menu-item"', customer_block)
+        self.assertIn('".ui-menu-item"', customer_block)
+        self.assertIn('document.querySelector("#CustomerInfo")', customer_block)
+        self.assertIn('"customer_info_not_ready"', customer_block)
+        self.assertIn('reason: "already_selected"', customer_block)
+        self.assertIn('jq.autocomplete("search", CUSTOMER_EMAIL)', customer_block)
+        for marker in (r"stp@stdpr.ru", r"СтандартПроект", r"1-я\s+Линия\s+СТП", r"Служба\s+Поддержки"):
+            self.assertIn(marker, customer_block)
+        self.assertNotIn('style.display = "none"', customer_block)
+        self.assertNotIn('CustomerTicketCounterFromCustomer', customer_block)
+        self.assertNotIn('CustomerSelected', customer_block)
+        self.assertNotIn('input.value = "stp"', customer_block)
+        self.assertNotIn('autocomplete("search", "stp")', customer_block)
+        self.assertNotIn('Playwright', self.widget_source)
+
     def test_mm_otrs_auto_ack_uses_saved_items_after_ticket_detection(self):
         self.assertIn("task_items = list(items or [])", self.widget_source)
         self.assertIn("created_task_ack_done", self.widget_source)
