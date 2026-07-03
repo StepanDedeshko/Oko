@@ -27,8 +27,9 @@ class LiveZabbixRedmineAuthTests(unittest.TestCase):
         self.assertIn("redmine_username_input", self.profile_source)
         self.assertIn("redmine_password_input", self.profile_source)
         self.assertIn('redmine_settings["redmine_login_url"]', self.profile_source)
-        self.assertIn('redmine_settings["redmine_username"]', self.profile_source)
-        self.assertIn('redmine_settings["redmine_password"]', self.profile_source)
+        self.assertIn("apply_redmine_credentials_save(", self.profile_source)
+        self.assertIn("redmine_username_input", self.profile_source)
+        self.assertIn("redmine_password_input", self.profile_source)
         self.assertNotIn("redmine_password_input", self.duty_settings_source)
 
     def test_redmine_login_form_selectors_are_present_in_js(self):
@@ -137,6 +138,132 @@ class LiveZabbixRedmineAuthTests(unittest.TestCase):
 
     def test_app_version_remains_unchanged(self):
         self.assertEqual(APP_VERSION, "0.3.3")
+
+
+class LiveZabbixRedmineCredentialPreservationTests(unittest.TestCase):
+    def test_existing_credentials_are_preserved_when_save_flag_is_missing(self):
+        from app.live_zabbix import ensure_live_monitor_defaults, redmine_credentials_should_be_saved
+
+        config = {
+            "live_zabbix_monitor": {
+                "redmine_login_url": DEFAULT_REDMINE_LOGIN_URL,
+                "redmine_username": "operator",
+                "redmine_password": "secret",
+            }
+        }
+
+        settings = ensure_live_monitor_defaults(config)
+
+        self.assertTrue(redmine_credentials_should_be_saved(settings))
+        self.assertTrue(settings["redmine_save_credentials"])
+        self.assertEqual(settings["redmine_username"], "operator")
+        self.assertEqual(settings["redmine_password"], "secret")
+
+    def test_existing_credentials_are_preserved_when_save_flag_is_false(self):
+        from app.live_zabbix import ensure_live_monitor_defaults, redmine_credentials_should_be_saved
+
+        config = {
+            "live_zabbix_monitor": {
+                "redmine_login_url": DEFAULT_REDMINE_LOGIN_URL,
+                "redmine_username": "operator",
+                "redmine_password": "secret",
+                "redmine_save_credentials": False,
+            }
+        }
+
+        settings = ensure_live_monitor_defaults(config)
+
+        self.assertTrue(redmine_credentials_should_be_saved(settings))
+        self.assertTrue(settings["redmine_save_credentials"])
+        self.assertEqual(settings["redmine_username"], "operator")
+        self.assertEqual(settings["redmine_password"], "secret")
+
+    def test_v033_redmine_login_credentials_are_preserved_when_save_flag_is_false(self):
+        from app.live_zabbix import (
+            apply_redmine_credentials_save,
+            ensure_live_monitor_defaults,
+            redmine_credentials_should_be_saved,
+        )
+
+        config = {
+            "live_zabbix_monitor": {
+                "redmine_login_url": DEFAULT_REDMINE_LOGIN_URL,
+                "redmine_login": "operator",
+                "redmine_password": "secret",
+                "redmine_save_credentials": False,
+            }
+        }
+
+        settings = ensure_live_monitor_defaults(config)
+        apply_redmine_credentials_save(
+            settings,
+            save_credentials=redmine_credentials_should_be_saved(settings),
+            username=settings.get("redmine_username") or settings.get("redmine_login") or "",
+            password=settings.get("redmine_password") or "",
+        )
+
+        self.assertTrue(redmine_credentials_should_be_saved(settings))
+        self.assertTrue(settings["redmine_save_credentials"])
+        self.assertEqual(settings["redmine_login"], "operator")
+        self.assertEqual(settings["redmine_username"], "operator")
+        self.assertEqual(settings["redmine_password"], "secret")
+
+    def test_defaults_do_not_clear_redmine_password(self):
+        from app.live_zabbix import ensure_live_monitor_defaults
+
+        config = {"live_zabbix_monitor": {"redmine_password": "secret"}}
+
+        settings = ensure_live_monitor_defaults(config)
+
+        self.assertEqual(settings["redmine_password"], "secret")
+        self.assertTrue(settings["redmine_save_credentials"])
+
+    def test_credentials_can_be_cleared_when_user_unchecks_save_credentials(self):
+        from app.live_zabbix import apply_redmine_credentials_save, ensure_live_monitor_defaults
+
+        config = {
+            "live_zabbix_monitor": {
+                "redmine_username": "operator",
+                "redmine_password": "secret",
+                "redmine_save_credentials": True,
+            }
+        }
+        settings = ensure_live_monitor_defaults(config)
+
+        apply_redmine_credentials_save(
+            settings,
+            save_credentials=False,
+            username="operator",
+            password="secret",
+        )
+
+        self.assertFalse(settings["redmine_save_credentials"])
+        self.assertEqual(settings["redmine_username"], "")
+        self.assertEqual(settings["redmine_password"], "")
+
+    def test_unrelated_live_zabbix_monitor_settings_are_preserved(self):
+        from app.live_zabbix import ensure_live_monitor_defaults
+
+        config = {
+            "live_zabbix_monitor": {
+                "enabled": True,
+                "zabbix_id": "main-zabbix",
+                "problems_url": "https://zabbix.example/problems",
+                "poll_interval_seconds": 120,
+                "redmine_username": "operator",
+                "redmine_password": "secret",
+                "redmine_save_credentials": False,
+            }
+        }
+
+        settings = ensure_live_monitor_defaults(config)
+
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["zabbix_id"], "main-zabbix")
+        self.assertEqual(settings["problems_url"], "https://zabbix.example/problems")
+        self.assertEqual(settings["poll_interval_seconds"], 120)
+        self.assertEqual(settings["redmine_username"], "operator")
+        self.assertEqual(settings["redmine_password"], "secret")
 
 
 if __name__ == "__main__":

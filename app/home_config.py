@@ -76,7 +76,12 @@ from app.credentials import load_service_group_credentials, save_service_group_c
 from app.credentials import default_encrypted_profile_export_filename, export_profile_credentials_encrypted_file, import_profile_credentials_encrypted_file
 from app.safe_widgets import NoWheelComboBox
 from app.service_checks import ensure_service_checks_defaults
-from app.live_zabbix import DEFAULT_REDMINE_LOGIN_URL, ensure_live_monitor_defaults
+from app.live_zabbix import (
+    DEFAULT_REDMINE_LOGIN_URL,
+    apply_redmine_credentials_save,
+    ensure_live_monitor_defaults,
+    redmine_credentials_should_be_saved,
+)
 
 
 def clone(value):
@@ -1265,11 +1270,11 @@ class ProfileWidget(QWidget):
         root.addLayout(redmine_url_row)
 
         self.redmine_save_credentials_checkbox = QCheckBox("Сохранять логин и пароль Redmine")
-        self.redmine_save_credentials_checkbox.setChecked(bool(redmine_settings.get("redmine_save_credentials", False)))
+        self.redmine_save_credentials_checkbox.setChecked(redmine_credentials_should_be_saved(redmine_settings))
         root.addWidget(self.redmine_save_credentials_checkbox)
 
         self.redmine_username_input, self.redmine_password_input = add_labeled_password_pair(
-            str(redmine_settings.get("redmine_username") or ""),
+            str(redmine_settings.get("redmine_username") or redmine_settings.get("redmine_login") or ""),
             str(redmine_settings.get("redmine_password") or ""),
             "Логин Redmine",
             "Пароль Redmine",
@@ -1343,13 +1348,12 @@ class ProfileWidget(QWidget):
 
         redmine_settings = ensure_live_monitor_defaults(self.config)
         redmine_settings["redmine_login_url"] = self.redmine_login_url_input.text().strip() or DEFAULT_REDMINE_LOGIN_URL
-        redmine_settings["redmine_save_credentials"] = self.redmine_save_credentials_checkbox.isChecked()
-        if redmine_settings["redmine_save_credentials"]:
-            redmine_settings["redmine_username"] = self.redmine_username_input.text().strip()
-            redmine_settings["redmine_password"] = self.redmine_password_input.text()
-        else:
-            redmine_settings["redmine_username"] = ""
-            redmine_settings["redmine_password"] = ""
+        apply_redmine_credentials_save(
+            redmine_settings,
+            save_credentials=self.redmine_save_credentials_checkbox.isChecked(),
+            username=self.redmine_username_input.text(),
+            password=self.redmine_password_input.text(),
+        )
 
         service_settings = ensure_service_checks_defaults(self.config)
         service_ids_by_group = {

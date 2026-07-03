@@ -111,11 +111,42 @@ def default_live_monitor_config() -> dict:
     }
 
 
+def redmine_credentials_should_be_saved(settings: dict) -> bool:
+    return bool(
+        settings.get("redmine_save_credentials", False)
+        or settings.get("redmine_username")
+        or settings.get("redmine_login")
+        or settings.get("redmine_password")
+    )
+
+
+def apply_redmine_credentials_save(
+    settings: dict,
+    *,
+    save_credentials: bool,
+    username: str,
+    password: str,
+) -> dict:
+    settings["redmine_save_credentials"] = bool(save_credentials)
+    if settings["redmine_save_credentials"]:
+        redmine_login = username.strip()
+        settings["redmine_username"] = redmine_login
+        settings["redmine_login"] = redmine_login
+        settings["redmine_password"] = password
+    else:
+        settings["redmine_username"] = ""
+        settings["redmine_login"] = ""
+        settings["redmine_password"] = ""
+    return settings
+
+
 def ensure_live_monitor_defaults(config: dict) -> dict:
     settings = config.setdefault(LIVE_MONITOR_CONFIG_KEY, {})
     defaults = default_live_monitor_config()
     for key, value in defaults.items():
         settings.setdefault(key, value)
+    if redmine_credentials_should_be_saved(settings):
+        settings["redmine_save_credentials"] = True
     try:
         settings["poll_interval_seconds"] = max(60, min(3600, int(settings.get("poll_interval_seconds", 60))))
     except (TypeError, ValueError):
