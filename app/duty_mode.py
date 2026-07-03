@@ -41,7 +41,7 @@ except Exception:
 
 from app.autologin import make_zabbix_login_js
 from app.config import ensure_duty_mode_defaults, ensure_duty_triggers_defaults, save_config
-from app.credentials import load_otrs_credentials, load_service_credentials
+from app.credentials import build_otrs_login_injection_js, load_otrs_credentials, load_service_credentials
 from app.duty_flow_guard import DutyFlowGuard
 from app.duty_settings import DutyModeSettingsWidget
 from app.duty_triggers import diagnose_metric_html, evaluate_stagnation_trigger
@@ -64,6 +64,45 @@ from app.duty_tasks import (
     selected_task_types,
     smart_action_text,
 )
+
+
+def inject_otrs_login_if_needed_for_view(view, config, logger=None):
+    logger = logger or get_logger()
+    settings = config.setdefault("duty_mode", {})
+
+    if not settings.get("otrs_login_enabled", False):
+        logger.info("OTRS login injection skipped: login_enabled=false")
+        return False
+
+    otrs_credentials = load_otrs_credentials(config)
+    login = str(otrs_credentials.get("login", "") or "")
+    password = str(otrs_credentials.get("password", "") or "")
+    auto_submit = bool(settings.get("otrs_auto_submit_login", False))
+    has_saved_credentials = bool(login and password)
+    logger.info(
+        "OTRS login page detected: has_saved_credentials=%s auto_submit=%s",
+        str(has_saved_credentials).lower(),
+        str(auto_submit).lower(),
+    )
+
+    if not has_saved_credentials:
+        return False
+
+    js = build_otrs_login_injection_js(login, password, auto_submit=auto_submit)
+    if not js:
+        return False
+
+    def after_injection(result):
+        if result == "no-login-form":
+            logger.info("OTRS login fields not found: has_saved_credentials=true")
+        elif result == "filled-and-submitted":
+            logger.info("OTRS autologin submitted: credential_source=profile")
+        elif result == "filled":
+            logger.info("OTRS login fields filled: credential_source=profile")
+
+    run_javascript_if_alive(view, js, after_injection)
+    return True
+
 from app.service_checks import (
     AUTH_HTML_FORM,
     AUTH_EXTERNAL_BROWSER_GROUP,
@@ -1113,52 +1152,7 @@ class AttachExistingTaskDialog(QDialog):
         return ensure_duty_mode_defaults(self.config)
 
     def inject_otrs_login_if_needed(self):
-        settings = self.config.setdefault("duty_mode", {})
-
-        if not settings.get("otrs_login_enabled", False):
-            return
-
-        otrs_credentials = load_otrs_credentials(self.config)
-        login = str(otrs_credentials.get("login", "") or "")
-        password = str(otrs_credentials.get("password", "") or "")
-        auto_submit = bool(settings.get("otrs_auto_submit_login", False))
-
-        if not login or not password:
-            return
-
-        def js_string(value):
-            return str(value).replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-
-        js = f"""
-        (function() {{
-            const user = document.querySelector('#User');
-            const password = document.querySelector('#Password');
-            const button = document.querySelector('#LoginButton');
-
-            if (!user || !password) {{
-                return 'no-login-form';
-            }}
-
-            user.focus();
-            user.value = '{js_string(login)}';
-            user.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            user.dispatchEvent(new Event('change', {{ bubbles: true }}));
-
-            password.focus();
-            password.value = '{js_string(password)}';
-            password.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            password.dispatchEvent(new Event('change', {{ bubbles: true }}));
-
-            if ({str(auto_submit).lower()} && button) {{
-                setTimeout(() => button.click(), 500);
-                return 'filled-and-submitted';
-            }}
-
-            return 'filled';
-        }})();
-        """
-
-        run_javascript_if_alive(self.view, js)
+        inject_otrs_login_if_needed_for_view(self.view, self.config, self.logger)
 
     def extract_ticket_id_from_url(self, url):
         match = re.search(r"[?;]TicketID=([^;&?#]+)", url or "")
@@ -1684,52 +1678,7 @@ class OtrsCreateTaskDialog(QDialog):
 
 
     def inject_otrs_login_if_needed(self):
-        settings = self.config.setdefault("duty_mode", {})
-
-        if not settings.get("otrs_login_enabled", False):
-            return
-
-        otrs_credentials = load_otrs_credentials(self.config)
-        login = str(otrs_credentials.get("login", "") or "")
-        password = str(otrs_credentials.get("password", "") or "")
-        auto_submit = bool(settings.get("otrs_auto_submit_login", False))
-
-        if not login or not password:
-            return
-
-        def js_string(value):
-            return str(value).replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-
-        js = f"""
-        (function() {{
-            const user = document.querySelector('#User');
-            const password = document.querySelector('#Password');
-            const button = document.querySelector('#LoginButton');
-
-            if (!user || !password) {{
-                return 'no-login-form';
-            }}
-
-            user.focus();
-            user.value = '{js_string(login)}';
-            user.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            user.dispatchEvent(new Event('change', {{ bubbles: true }}));
-
-            password.focus();
-            password.value = '{js_string(password)}';
-            password.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            password.dispatchEvent(new Event('change', {{ bubbles: true }}));
-
-            if ({str(auto_submit).lower()} && button) {{
-                setTimeout(() => button.click(), 500);
-                return 'filled-and-submitted';
-            }}
-
-            return 'filled';
-        }})();
-        """
-
-        run_javascript_if_alive(self.view, js)
+        inject_otrs_login_if_needed_for_view(self.view, self.config, self.logger)
 
     def load_create_page(self):
         url = self.url_input.text().strip()
@@ -2019,52 +1968,7 @@ class OtrsNoteDialog(QDialog):
 
 
     def inject_otrs_login_if_needed(self):
-        settings = self.config.setdefault("duty_mode", {})
-
-        if not settings.get("otrs_login_enabled", False):
-            return
-
-        otrs_credentials = load_otrs_credentials(self.config)
-        login = str(otrs_credentials.get("login", "") or "")
-        password = str(otrs_credentials.get("password", "") or "")
-        auto_submit = bool(settings.get("otrs_auto_submit_login", False))
-
-        if not login or not password:
-            return
-
-        def js_string(value):
-            return str(value).replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-
-        js = f"""
-        (function() {{
-            const user = document.querySelector('#User');
-            const password = document.querySelector('#Password');
-            const button = document.querySelector('#LoginButton');
-
-            if (!user || !password) {{
-                return 'no-login-form';
-            }}
-
-            user.focus();
-            user.value = '{js_string(login)}';
-            user.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            user.dispatchEvent(new Event('change', {{ bubbles: true }}));
-
-            password.focus();
-            password.value = '{js_string(password)}';
-            password.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            password.dispatchEvent(new Event('change', {{ bubbles: true }}));
-
-            if ({str(auto_submit).lower()} && button) {{
-                setTimeout(() => button.click(), 500);
-                return 'filled-and-submitted';
-            }}
-
-            return 'filled';
-        }})();
-        """
-
-        run_javascript_if_alive(self.view, js)
+        inject_otrs_login_if_needed_for_view(self.view, self.config, self.logger)
 
 
     def get_settings(self):

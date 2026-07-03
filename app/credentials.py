@@ -13,8 +13,98 @@ OTRS_CREDENTIALS_KEY = "otrs"
 LEGACY_OTRS_CREDENTIALS_KEY = "__otrs__"
 SERVICE_CREDENTIALS_PREFIX = "service_check::"
 SERVICE_GROUP_CREDENTIALS_PREFIX = "service_group::"
+ZABBIX_COMMON_CREDENTIALS_KEY = "zabbix"
 PROFILE_EXPORT_TYPE = "oko_profile_credentials"
 PROFILE_EXPORT_VERSION = 1
+
+
+def zabbix_credential_key_for_instance(instance: dict) -> str:
+    """Return the stable credentials key for a configured Zabbix instance."""
+    if not isinstance(instance, dict):
+        return ""
+    return str(instance.get("id") or "").strip()
+
+
+def zabbix_profile_credential_targets(instances, live_zabbix_url="", duty_live_zabbix_url="", zabbix_urls=None) -> list[dict]:
+    targets = []
+    for instance in instances or []:
+        key = zabbix_credential_key_for_instance(instance)
+        if not key:
+            continue
+        targets.append({
+            "id": key,
+            "name": str(instance.get("name") or key),
+            "common": False,
+        })
+
+    if targets:
+        return targets
+
+    if str(live_zabbix_url or "").strip() or str(duty_live_zabbix_url or "").strip():
+        name = "Live Zabbix / Дежурный Zabbix"
+    else:
+        name = "Zabbix"
+
+    return [{"id": ZABBIX_COMMON_CREDENTIALS_KEY, "name": name, "common": True}]
+
+
+def collect_zabbix_urls(value) -> list[str]:
+    urls = []
+
+    def visit(item):
+        if isinstance(item, dict):
+            for nested in item.values():
+                visit(nested)
+        elif isinstance(item, list):
+            for nested in item:
+                visit(nested)
+        elif isinstance(item, str):
+            text = item.strip()
+            if text.startswith(("http://", "https://")) and "zabbix" in text.lower():
+                urls.append(text)
+
+    visit(value)
+    return urls
+
+
+def load_zabbix_profile_credentials(instances, credentials=None, live_zabbix_url="", duty_live_zabbix_url="", zabbix_urls=None) -> dict:
+    credentials = load_saved_credentials() if credentials is None else credentials
+    result = {}
+    for target in zabbix_profile_credential_targets(instances, live_zabbix_url, duty_live_zabbix_url, zabbix_urls):
+        key = target["id"]
+        saved = credentials.get(key, {}) if isinstance(credentials, dict) else {}
+        result[key] = {
+            "login": str(saved.get("login", "") or ""),
+            "password": str(saved.get("password", "") or ""),
+        }
+    return result
+
+
+def save_zabbix_profile_credentials(instances, values_by_key: dict, credentials=None, live_zabbix_url="", duty_live_zabbix_url="", zabbix_urls=None) -> dict:
+    credentials = load_saved_credentials() if credentials is None else dict(credentials)
+    values_by_key = values_by_key or {}
+    for target in zabbix_profile_credential_targets(instances, live_zabbix_url, duty_live_zabbix_url, zabbix_urls):
+        key = target["id"]
+        if key not in values_by_key:
+            continue
+        values = values_by_key.get(key) or {}
+        credentials[key] = {
+            "login": str(values.get("login", "") or ""),
+            "password": str(values.get("password", "") or ""),
+        }
+    save_credentials(credentials)
+    return credentials
+
+
+def clear_zabbix_profile_credentials(instances, credentials=None) -> dict:
+    credentials = load_saved_credentials() if credentials is None else dict(credentials)
+    credentials.pop(ZABBIX_COMMON_CREDENTIALS_KEY, None)
+    for instance in instances or []:
+        key = zabbix_credential_key_for_instance(instance)
+        if key:
+            credentials.pop(key, None)
+    save_credentials(credentials)
+    return credentials
 
 
 def load_otrs_credentials(config=None) -> dict:
@@ -38,6 +128,45 @@ def load_otrs_credentials(config=None) -> dict:
         "login": str(duty.get("otrs_login", "") or ""),
         "password": str(duty.get("otrs_password", "") or ""),
     }
+
+
+def build_otrs_login_injection_js(login: str, password: str, auto_submit: bool = False) -> str:
+    login = str(login or "")
+    password = str(password or "")
+    if not login or not password:
+        return ""
+
+    def js_string(value):
+        return str(value).replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+
+    return f"""
+    (function() {{
+        const user = document.querySelector('#User');
+        const password = document.querySelector('#Password');
+        const button = document.querySelector('#LoginButton');
+
+        if (!user || !password) {{
+            return 'no-login-form';
+        }}
+
+        user.focus();
+        user.value = '{js_string(login)}';
+        user.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        user.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+        password.focus();
+        password.value = '{js_string(password)}';
+        password.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        password.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+        if ({str(bool(auto_submit)).lower()} && button) {{
+            setTimeout(() => button.click(), 500);
+            return 'filled-and-submitted';
+        }}
+
+        return 'filled';
+    }})();
+    """
 
 
 def save_otrs_credentials(login: str, password: str):
