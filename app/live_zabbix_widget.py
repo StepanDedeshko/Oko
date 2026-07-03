@@ -3315,21 +3315,6 @@ class LiveZabbixMonitorWidget(QWidget):
     } catch (e) {}
   }
 
-  function key(element, type, keyValue, codeValue) {
-    if (!element) return;
-    const keyCode = keyValue === "Enter" ? 13 : (keyValue === "ArrowDown" ? 40 : 0);
-    try {
-      element.dispatchEvent(new KeyboardEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        key: keyValue || "",
-        code: codeValue || keyValue || "",
-        which: keyCode,
-        keyCode: keyCode
-      }));
-    } catch (e) {}
-  }
-
   function clickElement(element) {
     if (!element) return false;
     try {
@@ -3382,6 +3367,130 @@ class LiveZabbixMonitorWidget(QWidget):
     return false;
   }
 
+  function customerTextFields() {
+    const seen = [];
+    ["input.CustomerTicketText", "#CustomerTicketText", "#CustomerTicketText_1", ".MainCustomer"].forEach(function(selector) {
+      try {
+        Array.from(document.querySelectorAll(selector)).forEach(function(element) {
+          if (seen.indexOf(element) === -1) seen.push(element);
+        });
+      } catch (e) {}
+    });
+    return seen;
+  }
+
+  function customerRowFor(field) {
+    let current = field;
+    for (let i = 0; current && i < 8; i += 1) {
+      const textInputCount = current.querySelectorAll ? current.querySelectorAll("input.CustomerTicketText, .MainCustomer").length : 0;
+      const radioCount = current.querySelectorAll ? current.querySelectorAll('input[type="radio"], input.CustomerTicketRadio').length : 0;
+      const deleteCount = current.querySelectorAll ? current.querySelectorAll('button, a, input[type="button"], input[type="submit"]').length : 0;
+      if (textInputCount > 0 && (radioCount > 0 || deleteCount > 0 || /Customer/i.test(String(current.className || "")))) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return field ? field.parentElement : null;
+  }
+
+  function radioForCustomerField(field) {
+    const id = String(field && field.id || "");
+    const suffix = id.indexOf("CustomerTicketText") === 0 ? id.replace("CustomerTicketText", "") : "";
+    const row = customerRowFor(field);
+    return document.querySelector("#CustomerSelected" + suffix) ||
+      (row ? row.querySelector('input.CustomerTicketRadio, input[type="radio"][id^="CustomerSelected"]') : null);
+  }
+
+  function deleteButtonForCustomerField(field) {
+    const row = customerRowFor(field);
+    if (!row) return null;
+    const buttons = Array.from(row.querySelectorAll('button, a, input[type="button"], input[type="submit"]'));
+    for (const button of buttons) {
+      const text = textOf(button);
+      const title = String(button.getAttribute("title") || button.getAttribute("aria-label") || button.className || "");
+      if (/удал|delete|remove|×|✖|minus|trash/i.test(text + " " + title)) {
+        return button;
+      }
+    }
+    return null;
+  }
+
+  function isProperCustomerRowText(text) {
+    const value = String(text || "").trim();
+    return /"?Служба\s+Поддержки"?\s*<\s*stp@stdpr\.ru\s*>/i.test(value) ||
+      /Служба\s+Поддержки/i.test(value) ||
+      /СтандартПроект/i.test(value) ||
+      /1-я\s+Линия\s+СТП/i.test(value);
+  }
+
+  function isRawCustomerRowText(text) {
+    const value = String(text || "").trim().replace(/^"|"$/g, "");
+    return /^<?\s*stp@stdpr\.ru\s*>?$/i.test(value);
+  }
+
+  function customerRows() {
+    return customerTextFields().map(function(field) {
+      const text = textOf(field);
+      return {
+        field: field,
+        row: customerRowFor(field),
+        radio: radioForCustomerField(field),
+        delete_button: deleteButtonForCustomerField(field),
+        text: text,
+        proper: isProperCustomerRowText(text),
+        raw: isRawCustomerRowText(text)
+      };
+    });
+  }
+
+  function normalizeCustomerRowsAfterAutocomplete() {
+    const rows = customerRows();
+    const properRows = rows.filter(function(row) { return row.proper; });
+    const rawRows = rows.filter(function(row) { return row.raw; });
+    if (!properRows.length) {
+      return {ok: false, reason: "proper_customer_row_not_ready", proper_count: 0, raw_count: rawRows.length};
+    }
+
+    const proper = properRows[0];
+    if (proper.radio && !proper.radio.checked) {
+      try {
+        proper.radio.checked = true;
+        clickElement(proper.radio);
+        fire(proper.radio, "change");
+      } catch (e) {}
+    }
+
+    let rawSelectedCount = 0;
+    let rawDeleteClicked = 0;
+    rawRows.forEach(function(row) {
+      if (row.radio && row.radio.checked) rawSelectedCount += 1;
+      if (row.delete_button && visible(row.delete_button)) {
+        if (clickElement(row.delete_button)) rawDeleteClicked += 1;
+      }
+    });
+
+    const properSelected = !proper.radio || proper.radio.checked;
+    if (rawRows.length) {
+      return {
+        ok: false,
+        reason: "raw_customer_row_cleanup_pending",
+        proper_selected: properSelected,
+        raw_count: rawRows.length,
+        raw_selected_count: rawSelectedCount,
+        raw_delete_clicked: rawDeleteClicked
+      };
+    }
+
+    return {
+      ok: properSelected,
+      reason: properSelected ? "proper_customer_selected" : "proper_customer_radio_not_selected",
+      proper_selected: properSelected,
+      raw_count: 0,
+      raw_selected_count: 0,
+      raw_delete_clicked: rawDeleteClicked
+    };
+  }
+
   function dismissDuplicateCustomerPopup(input) {
     const bodyText = textOf(document.body);
     if (!/Дублирующаяся запись|Такой адрес уже существует/i.test(bodyText)) {
@@ -3429,6 +3538,21 @@ class LiveZabbixMonitorWidget(QWidget):
     }
 
     return {element: null, text: ""};
+  }
+
+  const normalizedRows = normalizeCustomerRowsAfterAutocomplete();
+  if (normalizedRows.ok) {
+    return JSON.stringify(Object.assign({
+      ok: true,
+      customer_info: customerInfoText()
+    }, normalizedRows));
+  }
+  if (normalizedRows.reason === "raw_customer_row_cleanup_pending") {
+    markSelectionAttempted(null);
+    return JSON.stringify(Object.assign({
+      ok: false,
+      customer_info: customerInfoText()
+    }, normalizedRows));
   }
 
   if (customerInfoReady()) {
@@ -3486,12 +3610,10 @@ class LiveZabbixMonitorWidget(QWidget):
   try { input.setSelectionRange(0, String(input.value || "").length); } catch (e) {}
 
   input.value = "";
-  ["input", "change", "keydown", "keyup"].forEach(function(type) { fire(input, type); });
+  ["focus", "input", "keyup"].forEach(function(type) { fire(input, type); });
 
   input.value = CUSTOMER_EMAIL;
-  ["input", "keydown", "keyup", "change"].forEach(function(type) { fire(input, type); });
-  key(input, "keydown", "ArrowDown", "ArrowDown");
-  key(input, "keyup", "ArrowDown", "ArrowDown");
+  ["focus", "input", "keyup"].forEach(function(type) { fire(input, type); });
 
   let autocompleteSearchCalled = false;
   try {
@@ -3499,9 +3621,7 @@ class LiveZabbixMonitorWidget(QWidget):
       const jq = window.jQuery(input);
       jq.trigger("focus");
       jq.trigger("input");
-      jq.trigger("keydown");
       jq.trigger("keyup");
-      jq.trigger("change");
       if (jq.autocomplete) {
         jq.autocomplete("search", CUSTOMER_EMAIL);
         autocompleteSearchCalled = true;
@@ -3545,7 +3665,7 @@ class LiveZabbixMonitorWidget(QWidget):
                     parsed = {}
 
             if parsed.get("ok"):
-                status_label.setText("Клиент ОТРС ММ выбран штатным autocomplete. Заполняю очередь/сервис/SLA...")
+                status_label.setText("Клиент ОТРС ММ выбран корректно. Заполняю очередь/сервис/SLA...")
                 QTimer.singleShot(
                     1200,
                     lambda: self._fill_mm_otrs_direct_fields(view, status_label, subject, body, 1, 1),
@@ -3555,7 +3675,9 @@ class LiveZabbixMonitorWidget(QWidget):
             reason = str(parsed.get("reason", ""))
             if attempt < 12:
                 if reason == "selection_clicked_wait_customer_info":
-                    status_label.setText("Клиент выбран в autocomplete, жду обновления карточки клиента...")
+                    status_label.setText("Выбран клиент из autocomplete, очищаю лишнюю строку stp@stdpr.ru...")
+                elif reason == "raw_customer_row_cleanup_pending":
+                    status_label.setText("Выбран клиент из autocomplete, очищаю лишнюю строку stp@stdpr.ru...")
                 elif reason == "duplicate_customer_popup_dismissed":
                     status_label.setText("ОТРС сообщил о дубле клиента, закрываю предупреждение и жду карточку клиента...")
                 elif reason == "customer_info_not_ready":
