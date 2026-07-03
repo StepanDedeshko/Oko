@@ -73,6 +73,34 @@ EXCLUDE_PATTERNS=(
   "./updates/*"
   "update.zip"
   "./update.zip"
+
+  # Local/runtime caches and test artifacts
+  ".pytest_cache/"
+  ".pytest_cache/*"
+  "./.pytest_cache/"
+  "./.pytest_cache/*"
+  "web_profiles/"
+  "web_profiles/*"
+  "./web_profiles/"
+  "./web_profiles/*"
+  "dist/"
+  "dist/*"
+  "./dist/"
+  "./dist/*"
+
+  # Local backups and exported/private runtime data
+  "config.backup*.json"
+  "./config.backup*.json"
+  "*.backup*.json"
+  "./*.backup*.json"
+  "*.okoenc"
+  "./*.okoenc"
+  "data/live_zabbix_history.jsonl"
+  "./data/live_zabbix_history.jsonl"
+  "data/zabbix_problem_exports/"
+  "data/zabbix_problem_exports/*"
+  "./data/zabbix_problem_exports/"
+  "./data/zabbix_problem_exports/*"
 )
 
 zip -r "$OUT_ZIP" . -x "${EXCLUDE_PATTERNS[@]}"
