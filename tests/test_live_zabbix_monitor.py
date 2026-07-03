@@ -592,4 +592,4 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("safe_delete_web_view", self.widget_source)
 
     def test_app_version_unchanged(self):
-        self.assertIn('APP_VERSION = "0.3.3"', self.app_info)
+        self.assertIn('APP_VERSION = "0.3.4"', self.app_info)
