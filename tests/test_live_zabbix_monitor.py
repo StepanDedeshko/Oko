@@ -479,13 +479,14 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("Скопировать комментарий задачи на выбранные", self.widget_source)
         self.assertIn("if len(items) < 2", self.widget_source)
 
-    def test_quick_observed_context_action_comments_without_acknowledging(self):
+    def test_quick_observed_context_action_comments_and_acknowledges(self):
         self.assertIn("Наблюдаю", self.widget_source)
-        self.assertIn("def mark_selected_as_observed", self.widget_source)
-        self.assertIn('"Наблюдаем",', self.widget_source)
-        self.assertIn("acknowledge_missing=False", self.widget_source)
-        self.assertIn('progress_prefix="Добавляю комментарий наблюдения"', self.widget_source)
-        self.assertIn('summary_prefix="Комментарий наблюдения Zabbix"', self.widget_source)
+        observed_block = self.widget_source.split("def mark_selected_as_observed", 1)[1].split("def mark_selected_as_no_action_required", 1)[0]
+        self.assertIn('"Наблюдаем",', observed_block)
+        self.assertIn("acknowledge_missing=True", observed_block)
+        self.assertNotIn("acknowledge_missing=False", observed_block)
+        self.assertIn('progress_prefix="Добавляю комментарий наблюдения"', observed_block)
+        self.assertIn('summary_prefix="Комментарий наблюдения Zabbix"', observed_block)
 
     def test_quick_no_action_required_context_action_acknowledges_with_templates(self):
         self.assertIn("Не требует обработки", self.widget_source)
@@ -504,6 +505,16 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("items = self._selected_live_problem_items()", self.widget_source)
         self.assertIn("Выберите минимум одну строку", self.widget_source)
         self.assertIn("У выбранной проблемы нет ack_url/problem_url.", self.widget_source)
+
+    def test_quick_zabbix_comment_actions_do_not_create_tasks_or_touch_auto_ack(self):
+        quick_actions_block = self.widget_source.split("def mark_selected_as_observed", 1)[1].split("def copy_task_comment_to_selected", 1)[0]
+        self.assertNotIn("open_redmine_for_selected_row", quick_actions_block)
+        self.assertNotIn("open_mm_otrs_for_selected_row", quick_actions_block)
+        self.assertNotIn("_on_redmine_issue_created", quick_actions_block)
+        self.assertIn("Создать Redmine по выбранным строкам", self.widget_source)
+        self.assertIn("Создать задачу на ММ", self.widget_source)
+        self.assertIn("def _auto_ack_enabled", self.widget_source)
+        self.assertIn("auto_ack_after_mm_otrs_enabled", self.widget_source)
 
     def test_strict_redmine_mm_comment_regex(self):
         self.assertIn('Задача Redmine #\\d+: https?://\\S+|Задача на ММ #\\d+(?:: https?://\\S+)?', self.widget_source)

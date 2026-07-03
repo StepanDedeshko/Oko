@@ -4270,7 +4270,7 @@ class LiveZabbixMonitorWidget(QWidget):
         self._process_zabbix_comments(
             items,
             "Наблюдаем",
-            acknowledge_missing=False,
+            acknowledge_missing=True,
             progress_prefix="Добавляю комментарий наблюдения",
             summary_prefix="Комментарий наблюдения Zabbix",
         )
