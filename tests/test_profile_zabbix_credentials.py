@@ -9,6 +9,7 @@ from app.credentials import (
     SERVICE_GROUP_CREDENTIALS_PREFIX,
     ZABBIX_COMMON_CREDENTIALS_KEY,
     clear_zabbix_profile_credentials,
+    collect_zabbix_urls,
     load_saved_credentials,
     load_zabbix_profile_credentials,
     save_credentials,
@@ -141,12 +142,49 @@ class ProfileZabbixCredentialsTests(unittest.TestCase):
     def test_no_zabbix_instances_reload_keeps_common_credentials(self):
         with patch("app.credentials.CREDENTIALS_FILE", self.credentials_path):
             save_credentials({ZABBIX_COMMON_CREDENTIALS_KEY: {"login": "common-user", "password": "common-secret"}})
-            reloaded_for_recreated_widget = load_zabbix_profile_credentials([], live_zabbix_url="http://zabbix.example/zabbix.php")
+            reloaded_for_recreated_widget = load_zabbix_profile_credentials([])
 
         self.assertEqual(
             reloaded_for_recreated_widget[ZABBIX_COMMON_CREDENTIALS_KEY],
             {"login": "common-user", "password": "common-secret"},
         )
+
+    def test_products_pages_zabbix_urls_keep_common_field_available(self):
+        config_fragment = {
+            "products_pages": [
+                {
+                    "name": "Graphs",
+                    "graphs": ["http://zabbix.example/charts.php?graphid=1"],
+                    "problems": [{"url": "https://zabbix.example/zabbix.php?action=problem.view"}],
+                }
+            ]
+        }
+        zabbix_urls = collect_zabbix_urls(config_fragment)
+
+        with patch("app.credentials.CREDENTIALS_FILE", self.credentials_path):
+            save_zabbix_profile_credentials(
+                [],
+                {ZABBIX_COMMON_CREDENTIALS_KEY: {"login": "product-user", "password": "product-secret"}},
+                zabbix_urls=zabbix_urls,
+            )
+            reloaded = load_zabbix_profile_credentials([], zabbix_urls=zabbix_urls)
+
+        self.assertEqual(len(zabbix_urls), 2)
+        self.assertEqual(reloaded[ZABBIX_COMMON_CREDENTIALS_KEY], {"login": "product-user", "password": "product-secret"})
+
+    def test_all_zabbix_sources_empty_still_saves_common_fallback_without_deleting_old_credentials(self):
+        old_instance_credentials = {"login": "old-instance", "password": "old-secret"}
+        with patch("app.credentials.CREDENTIALS_FILE", self.credentials_path):
+            save_credentials({"zbx_old": old_instance_credentials})
+            save_zabbix_profile_credentials(
+                [],
+                {ZABBIX_COMMON_CREDENTIALS_KEY: {"login": "fallback-user", "password": "fallback-secret"}},
+            )
+            restored = load_saved_credentials()
+            reloaded = load_zabbix_profile_credentials([])
+
+        self.assertEqual(restored["zbx_old"], old_instance_credentials)
+        self.assertEqual(reloaded[ZABBIX_COMMON_CREDENTIALS_KEY], {"login": "fallback-user", "password": "fallback-secret"})
 
     def test_explicit_clear_zabbix_credentials_clears_only_zabbix(self):
         original = {

@@ -25,7 +25,7 @@ def zabbix_credential_key_for_instance(instance: dict) -> str:
     return str(instance.get("id") or "").strip()
 
 
-def zabbix_profile_credential_targets(instances, live_zabbix_url="", duty_live_zabbix_url="") -> list[dict]:
+def zabbix_profile_credential_targets(instances, live_zabbix_url="", duty_live_zabbix_url="", zabbix_urls=None) -> list[dict]:
     targets = []
     for instance in instances or []:
         key = zabbix_credential_key_for_instance(instance)
@@ -41,15 +41,36 @@ def zabbix_profile_credential_targets(instances, live_zabbix_url="", duty_live_z
         return targets
 
     if str(live_zabbix_url or "").strip() or str(duty_live_zabbix_url or "").strip():
-        return [{"id": ZABBIX_COMMON_CREDENTIALS_KEY, "name": "Live Zabbix / Дежурный Zabbix", "common": True}]
+        name = "Live Zabbix / Дежурный Zabbix"
+    else:
+        name = "Zabbix"
 
-    return []
+    return [{"id": ZABBIX_COMMON_CREDENTIALS_KEY, "name": name, "common": True}]
 
 
-def load_zabbix_profile_credentials(instances, credentials=None, live_zabbix_url="", duty_live_zabbix_url="") -> dict:
+def collect_zabbix_urls(value) -> list[str]:
+    urls = []
+
+    def visit(item):
+        if isinstance(item, dict):
+            for nested in item.values():
+                visit(nested)
+        elif isinstance(item, list):
+            for nested in item:
+                visit(nested)
+        elif isinstance(item, str):
+            text = item.strip()
+            if text.startswith(("http://", "https://")) and "zabbix" in text.lower():
+                urls.append(text)
+
+    visit(value)
+    return urls
+
+
+def load_zabbix_profile_credentials(instances, credentials=None, live_zabbix_url="", duty_live_zabbix_url="", zabbix_urls=None) -> dict:
     credentials = load_saved_credentials() if credentials is None else credentials
     result = {}
-    for target in zabbix_profile_credential_targets(instances, live_zabbix_url, duty_live_zabbix_url):
+    for target in zabbix_profile_credential_targets(instances, live_zabbix_url, duty_live_zabbix_url, zabbix_urls):
         key = target["id"]
         saved = credentials.get(key, {}) if isinstance(credentials, dict) else {}
         result[key] = {
@@ -59,10 +80,10 @@ def load_zabbix_profile_credentials(instances, credentials=None, live_zabbix_url
     return result
 
 
-def save_zabbix_profile_credentials(instances, values_by_key: dict, credentials=None, live_zabbix_url="", duty_live_zabbix_url="") -> dict:
+def save_zabbix_profile_credentials(instances, values_by_key: dict, credentials=None, live_zabbix_url="", duty_live_zabbix_url="", zabbix_urls=None) -> dict:
     credentials = load_saved_credentials() if credentials is None else dict(credentials)
     values_by_key = values_by_key or {}
-    for target in zabbix_profile_credential_targets(instances, live_zabbix_url, duty_live_zabbix_url):
+    for target in zabbix_profile_credential_targets(instances, live_zabbix_url, duty_live_zabbix_url, zabbix_urls):
         key = target["id"]
         if key not in values_by_key:
             continue

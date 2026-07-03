@@ -69,6 +69,7 @@ from app.credentials import (
     OTRS_CREDENTIALS_KEY,
     LEGACY_OTRS_CREDENTIALS_KEY,
     clear_zabbix_profile_credentials,
+    collect_zabbix_urls,
     load_otrs_credentials,
     load_saved_credentials,
     load_zabbix_profile_credentials,
@@ -1237,14 +1238,24 @@ class ProfileWidget(QWidget):
         duty_links = self.config.get("duty_links", {})
         self.live_zabbix_url = str(live_zabbix_monitor.get("url") or "") if isinstance(live_zabbix_monitor, dict) else ""
         self.duty_live_zabbix_url = str(duty_links.get("live_zabbix_url") or "") if isinstance(duty_links, dict) else ""
+        self.product_zabbix_urls = collect_zabbix_urls({
+            "products": self.config.get("products", []),
+            "products_pages": self.config.get("products_pages", []),
+        })
         saved_zabbix_by_key = load_zabbix_profile_credentials(
             self.enabled_zabbix_instances,
             self.saved_zabbix_credentials,
             self.live_zabbix_url,
             self.duty_live_zabbix_url,
+            self.product_zabbix_urls,
         )
 
-        for target in zabbix_profile_credential_targets(self.enabled_zabbix_instances, self.live_zabbix_url, self.duty_live_zabbix_url):
+        for target in zabbix_profile_credential_targets(
+            self.enabled_zabbix_instances,
+            self.live_zabbix_url,
+            self.duty_live_zabbix_url,
+            self.product_zabbix_urls,
+        ):
             zabbix_key = target["id"]
             instance_name = target["name"]
             if not target.get("common"):
@@ -1365,6 +1376,7 @@ class ProfileWidget(QWidget):
             },
             live_zabbix_url=self.live_zabbix_url,
             duty_live_zabbix_url=self.duty_live_zabbix_url,
+            zabbix_urls=self.product_zabbix_urls,
         )
 
         redmine_settings = ensure_live_monitor_defaults(self.config)
