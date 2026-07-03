@@ -109,6 +109,64 @@ def current_task_binding(settings: dict, task_type: str) -> dict:
     }
 
 
+def clear_task_number(settings: dict, task_type: str) -> None:
+    if task_type == TASK_SERVICES:
+        settings["duty_service_checks_task_number"] = ""
+        return
+    settings["duty_zabbix_task_number"] = ""
+    settings["current_ticket_number"] = ""
+
+
+def current_task_ticket_id(settings: dict, task_type: str) -> str:
+    return current_task_binding(settings, task_type).get("id", "")
+
+
+def prepare_otrs_task_url_save(settings: dict, task_type: str, ticket_id: str, ticket_url: str = "") -> dict:
+    ticket_id = str(ticket_id or "").strip()
+    ticket_url = str(ticket_url or "").strip()
+    old_ticket_id = current_task_ticket_id(settings, task_type)
+    ticket_id_changed = bool(ticket_id and old_ticket_id and ticket_id != old_ticket_id)
+    cleared = False
+
+    if ticket_id_changed:
+        clear_task_number(settings, task_type)
+        cleared = True
+
+    prefix = "duty_service_checks_task" if task_type == TASK_SERVICES else "duty_zabbix_task"
+    settings[f"{prefix}_system"] = "otrs"
+    if ticket_id:
+        settings[f"{prefix}_id"] = ticket_id
+    if ticket_url:
+        settings[f"{prefix}_url"] = ticket_url
+
+    if task_type == TASK_ZABBIX:
+        if ticket_id:
+            settings["current_ticket_id"] = ticket_id
+        if ticket_url:
+            settings["current_ticket_url"] = ticket_url
+
+    return {
+        "old_ticket_id": old_ticket_id,
+        "new_ticket_id": ticket_id,
+        "cleared_old_ticket_number": cleared,
+    }
+
+
+def store_task_number_for_current_ticket(settings: dict, task_type: str, ticket_id: str, ticket_number: str) -> bool:
+    ticket_id = str(ticket_id or "").strip()
+    ticket_number = str(ticket_number or "").strip()
+    if not ticket_number or not ticket_id:
+        return False
+    if current_task_ticket_id(settings, task_type) != ticket_id:
+        return False
+    if task_type == TASK_SERVICES:
+        settings["duty_service_checks_task_number"] = ticket_number
+    else:
+        settings["duty_zabbix_task_number"] = ticket_number
+        settings["current_ticket_number"] = ticket_number
+    return True
+
+
 def has_current_task(settings: dict, task_type: str) -> bool:
     binding = current_task_binding(settings, task_type)
     return bool(binding.get("url") or binding.get("id") or binding.get("number"))
@@ -122,12 +180,13 @@ def save_task_binding(settings: dict, task_type: str, parsed: dict, status: str 
     number = str(parsed.get("number", "") or "").strip()
     url = str(parsed.get("url", "") or "").strip()
     prefix = "duty_service_checks_task" if task_type == TASK_SERVICES else "duty_zabbix_task"
+    old_ticket_id = current_task_ticket_id(settings, task_type)
     if system:
         settings[f"{prefix}_system"] = system
     if ticket_id:
         settings[f"{prefix}_id"] = ticket_id
-    if number:
-        settings[f"{prefix}_number"] = number
+        if system == "otrs" and old_ticket_id and ticket_id != old_ticket_id:
+            clear_task_number(settings, task_type)
     if url:
         settings[f"{prefix}_url"] = url
     settings[f"{prefix}_status"] = status
@@ -136,8 +195,13 @@ def save_task_binding(settings: dict, task_type: str, parsed: dict, status: str 
     if task_type == TASK_ZABBIX:
         if ticket_id:
             settings["current_ticket_id"] = ticket_id
-        if number:
-            settings["current_ticket_number"] = number
         if url:
             settings["current_ticket_url"] = url
+    if number:
+        if system == "otrs" and ticket_id:
+            store_task_number_for_current_ticket(settings, task_type, ticket_id, number)
+        else:
+            settings[f"{prefix}_number"] = number
+            if task_type == TASK_ZABBIX:
+                settings["current_ticket_number"] = number
     return settings

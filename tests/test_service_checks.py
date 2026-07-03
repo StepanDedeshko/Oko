@@ -734,6 +734,16 @@ class ServiceChecksLogicTest(unittest.TestCase):
         self.assertIn("setFixedHeight(95)", duty_source)
         self.assertIn("self.scroll.hide()", duty_source)
         self.assertIn("_task_summary_html", duty_source)
+
+    def test_duty_task_number_links_open_externally_without_relinking_or_clearing_panels(self):
+        duty_source = (Path(__file__).resolve().parents[1] / "app" / "duty_mode.py").read_text(encoding="utf-8")
+        self.assertIn("def configure_text_browser_external_links", duty_source)
+        self.assertIn("browser.setOpenLinks(False)", duty_source)
+        self.assertIn("browser.anchorClicked.connect(lambda url: opener(url.toString()))", duty_source)
+        self.assertIn("configure_text_browser_external_links(self.service_status_panel)", duty_source)
+        self.assertIn("configure_text_browser_external_links(self.zabbix_status_panel)", duty_source)
+        self.assertNotIn("service_status_panel.anchorClicked.connect(lambda url: self.apply_tasks", duty_source)
+        self.assertNotIn("service_status_panel.anchorClicked.connect(lambda url: self._start_hidden_ticket_number_resolver", duty_source)
         self.assertIn("_zabbix_status_html", duty_source)
         self.assertIn("find_problems_page_url", duty_source)
         self.assertIn("ZabbixProblemsDialog", duty_source)

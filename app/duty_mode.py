@@ -60,9 +60,11 @@ from app.duty_tasks import (
     has_current_task,
     parse_ticket_url,
     planned_actions,
+    prepare_otrs_task_url_save,
     save_task_binding as save_duty_task_binding,
     selected_task_types,
     smart_action_text,
+    store_task_number_for_current_ticket,
 )
 
 
@@ -165,6 +167,13 @@ from app.duty_zabbix import (
 
 def open_external_url(url):
     QDesktopServices.openUrl(QUrl(str(url or "")))
+
+
+def configure_text_browser_external_links(browser, opener=open_external_url):
+    browser.setOpenExternalLinks(False)
+    browser.setOpenLinks(False)
+    browser.anchorClicked.connect(lambda url: opener(url.toString()))
+    return browser
 
 
 MSK = timezone(timedelta(hours=3))
@@ -1125,25 +1134,32 @@ class AttachExistingTaskDialog(QDialog):
 
     def _save_task_binding(self, number="", ticket_id="", ticket_url=""):
         settings = self.get_settings()
+        task_type = TASK_SERVICES if self.task_type == "service_checks" else TASK_ZABBIX
+        save_info = prepare_otrs_task_url_save(settings, task_type, ticket_id, ticket_url)
+        self.logger.info(
+            "Duty task URL saved: task_type=%s old_ticket_id=%s new_ticket_id=%s cleared_old_ticket_number=%s",
+            self.task_type,
+            save_info["old_ticket_id"] or "not_set",
+            save_info["new_ticket_id"] or "not_set",
+            str(save_info["cleared_old_ticket_number"]).lower(),
+        )
         if self.task_type == "service_checks":
-            if number:
-                settings["duty_service_checks_task_number"] = number
-            if ticket_id:
-                settings["duty_service_checks_task_id"] = ticket_id
-            if ticket_url:
-                settings["duty_service_checks_task_url"] = ticket_url
             self.logger.info("Duty service checks task attached: ticket_id=%s", ticket_id or "not_set")
         else:
-            if number:
-                settings["current_ticket_number"] = number
-                settings["duty_zabbix_task_number"] = number
-            if ticket_id:
-                settings["current_ticket_id"] = ticket_id
-                settings["duty_zabbix_task_id"] = ticket_id
-            if ticket_url:
-                settings["current_ticket_url"] = ticket_url
-                settings["duty_zabbix_task_url"] = ticket_url
             self.logger.info("Duty Zabbix task attached: ticket_id=%s", ticket_id or "not_set")
+        if number and store_task_number_for_current_ticket(settings, task_type, ticket_id, number):
+            self.logger.info(
+                "Duty task number resolved: task_type=%s ticket_id=%s ticket_number=%s",
+                self.task_type,
+                ticket_id,
+                number,
+            )
+        elif number:
+            self.logger.info(
+                "Duty task number unresolved: task_type=%s ticket_id=%s old_number_reused=false",
+                self.task_type,
+                ticket_id or "not_set",
+            )
         save_config(self.config)
 
     def get_settings(self):
@@ -1180,6 +1196,7 @@ class AttachExistingTaskDialog(QDialog):
             return
         self.pending_ticket_id = ticket_id
         self.pending_ticket_url = value
+        self._save_task_binding(ticket_id=ticket_id, ticket_url=value)
         self.status_label.setText("Открываю задачу и проверяю заголовок...")
         self.view.load(QUrl(value))
 
@@ -1481,6 +1498,11 @@ class AttachExistingTaskDialog(QDialog):
             return
 
         if not number:
+            self.logger.info(
+                "Duty task number unresolved: task_type=%s ticket_id=%s old_number_reused=false",
+                self.task_type,
+                ticket_id or "not_set",
+            )
             self.status_label.setText(
                 "TicketID найден, но номер заявки из заголовка не прочитан.\n\n"
                 f"TicketID={ticket_id}\n"
@@ -1490,7 +1512,7 @@ class AttachExistingTaskDialog(QDialog):
                 f"Title/source: {title or source}\n\n"
                 f"toPlainText/body.innerText: {body_text}\n\n"
                 f"toHtml/body.innerHTML: {body_html}\n\n"
-                "Задача НЕ привязана. Скорее всего страница в QWebEngine отдаёт пустой DOM или открыт экран авторизации."
+                "Ссылка и TicketID сохранены, номер заявки пока не найден. Старый номер не используется."
             )
             return
 
@@ -1720,26 +1742,44 @@ class OtrsCreateTaskDialog(QDialog):
 
     def save_ticket_binding(self, ticket_id="", ticket_url="", ticket_number="", show_message=True):
         settings = self.get_settings()
+        task_type = TASK_SERVICES if self.task_type == "service_checks" else TASK_ZABBIX
 
-        if self.task_type == "service_checks":
-            if ticket_id:
-                settings["duty_service_checks_task_id"] = ticket_id
-            if ticket_url:
-                settings["duty_service_checks_task_url"] = ticket_url
-            if ticket_number:
-                settings["duty_service_checks_task_number"] = ticket_number
-            self.logger.info("Duty service checks task attached: ticket_id=%s", ticket_id or "not_set")
-        else:
-            if ticket_id:
-                settings["current_ticket_id"] = ticket_id
-                settings["duty_zabbix_task_id"] = ticket_id
-            if ticket_url:
-                settings["current_ticket_url"] = ticket_url
-                settings["duty_zabbix_task_url"] = ticket_url
-            if ticket_number:
-                settings["current_ticket_number"] = ticket_number
-                settings["duty_zabbix_task_number"] = ticket_number
-            self.logger.info("Duty Zabbix task attached: ticket_id=%s", ticket_id or "not_set")
+        if ticket_id or ticket_url:
+            save_info = prepare_otrs_task_url_save(settings, task_type, ticket_id, ticket_url)
+            self.logger.info(
+                "Duty task URL saved: task_type=%s old_ticket_id=%s new_ticket_id=%s cleared_old_ticket_number=%s",
+                self.task_type,
+                save_info["old_ticket_id"] or "not_set",
+                save_info["new_ticket_id"] or "not_set",
+                str(save_info["cleared_old_ticket_number"]).lower(),
+            )
+            if self.task_type == "service_checks":
+                self.logger.info("Duty service checks task attached: ticket_id=%s", ticket_id or "not_set")
+            else:
+                self.logger.info("Duty Zabbix task attached: ticket_id=%s", ticket_id or "not_set")
+
+        current_ticket_id = str(
+            ticket_id
+            or (
+                settings.get("duty_service_checks_task_id")
+                if task_type == TASK_SERVICES
+                else settings.get("duty_zabbix_task_id") or settings.get("current_ticket_id")
+            )
+            or ""
+        ).strip()
+        if ticket_number and store_task_number_for_current_ticket(settings, task_type, current_ticket_id, ticket_number):
+            self.logger.info(
+                "Duty task number resolved: task_type=%s ticket_id=%s ticket_number=%s",
+                self.task_type,
+                current_ticket_id,
+                ticket_number,
+            )
+        elif ticket_number:
+            self.logger.info(
+                "Duty task number unresolved: task_type=%s ticket_id=%s old_number_reused=false",
+                self.task_type,
+                current_ticket_id or "not_set",
+            )
 
         save_config(self.config)
 
@@ -1808,8 +1848,20 @@ class OtrsCreateTaskDialog(QDialog):
 
     def after_detect_ticket_number(self, number):
         number = str(number or "").strip()
+        ticket_id = self.extract_ticket_id_from_url(self.view.url().toString())
 
         if not number:
+            settings = self.get_settings()
+            current_ticket_id = (
+                settings.get("duty_service_checks_task_id")
+                if self.task_type == "service_checks"
+                else settings.get("duty_zabbix_task_id") or settings.get("current_ticket_id")
+            )
+            self.logger.info(
+                "Duty task number unresolved: task_type=%s ticket_id=%s old_number_reused=false",
+                self.task_type,
+                str(ticket_id or current_ticket_id or "not_set"),
+            )
             QMessageBox.warning(
                 self,
                 "Номер задачи",
@@ -1818,7 +1870,7 @@ class OtrsCreateTaskDialog(QDialog):
             return
 
         self.ticket_number_input.setText(number)
-        self.save_ticket_binding(ticket_number=number, show_message=False)
+        self.save_ticket_binding(ticket_id=ticket_id, ticket_url=self.view.url().toString(), ticket_number=number, show_message=False)
         self.status_label.setText(f"Найден номер задачи: {number}")
 
     def save_ticket_number(self):
@@ -3796,6 +3848,7 @@ class DutyTasksDialog(QDialog):
         self.inputs = {}
         self.task_types = selected_task_types(ensure_duty_mode_defaults(self.config))
         self._running = False
+        self.hidden_ticket_number_views = []
         self.setWindowTitle("Задачи дежурства")
         self.resize(860, 300)
 
@@ -3873,6 +3926,123 @@ class DutyTasksDialog(QDialog):
             return f"✓ {prefix}«{label}» — привязана к смене"
         return f"✓ Создан тикет «{label}» — привязан к смене"
 
+    def _ticket_number_resolver_url(self, ticket_id, ticket_url=""):
+        ticket_url = str(ticket_url or "").strip()
+        if ticket_url:
+            return ticket_url
+        settings = ensure_duty_mode_defaults(self.config)
+        base = str(settings.get("otrs", {}).get("note_url_base", "") or "").strip()
+        if not base:
+            base = "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketZoom;TicketID="
+        if "{ticket_id}" in base:
+            return base.replace("{ticket_id}", str(ticket_id or ""))
+        return base + str(ticket_id or "")
+
+    def _start_hidden_ticket_number_resolver(self, task_type, ticket_id, ticket_url=""):
+        ticket_id = str(ticket_id or "").strip()
+        if not ticket_id:
+            return
+        url = self._ticket_number_resolver_url(ticket_id, ticket_url)
+        view = register_web_view(QWebEngineView(self))
+        self.hidden_ticket_number_views.append(view)
+
+        def cleanup():
+            if view in self.hidden_ticket_number_views:
+                self.hidden_ticket_number_views.remove(view)
+            safe_delete_web_view(
+                view,
+                logger=self.logger,
+                context=f"hidden OTRS ticket number resolver task_type={task_type} ticket_id={ticket_id}",
+                load_handler=on_loaded,
+            )
+
+        def finish(number=""):
+            self._finish_hidden_ticket_number_resolution(task_type, ticket_id, number)
+            cleanup()
+
+        def after_plain_text(text):
+            finish(self._extract_ticket_number_from_text(text))
+
+        def after_js(result):
+            number = ""
+            if isinstance(result, dict):
+                number = str(result.get("ticketNumber", "") or "").strip()
+            else:
+                number = str(result or "").strip()
+            if number:
+                finish(number)
+            else:
+                view.page().toPlainText(after_plain_text)
+
+        def detect():
+            js = r"""
+            (function() {
+                const text = String((document.body && (document.body.innerText || document.body.textContent)) || '');
+                const patterns = [
+                    /Заявка#\s*(\d{3,})/i,
+                    /Заявка\s*№\s*(\d{3,})/i,
+                    /Ticket#\s*(\d{3,})/i,
+                    /Ticket\s*Number\s*(\d{3,})/i,
+                    /Номер\s+заявки\s*(\d{3,})/i
+                ];
+                for (const pattern of patterns) {
+                    const match = text.match(pattern);
+                    if (match && match[1]) {
+                        return {ticketNumber: String(match[1]).trim()};
+                    }
+                }
+                return {ticketNumber: ''};
+            })();
+            """
+            run_javascript_if_alive(view, js, after_js)
+
+        def on_loaded(ok):
+            inject_shared_otrs_login_if_needed(view, self.config, self.logger)
+            if not ok:
+                finish("")
+                return
+            QTimer.singleShot(1500, detect)
+
+        view.loadFinished.connect(on_loaded)
+        view.load(QUrl(url))
+
+    def _extract_ticket_number_from_text(self, text):
+        source = str(text or "")
+        patterns = [
+            r"Заявка#\s*(\d{3,})",
+            r"Заявка\s*№\s*(\d{3,})",
+            r"Ticket#\s*(\d{3,})",
+            r"Ticket\s*Number\s*(\d{3,})",
+            r"Номер\s+заявки\s*(\d{3,})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, source, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return ""
+
+    def _finish_hidden_ticket_number_resolution(self, task_type, ticket_id, ticket_number=""):
+        settings = ensure_duty_mode_defaults(self.config)
+        ticket_id = str(ticket_id or "").strip()
+        ticket_number = str(ticket_number or "").strip()
+        if ticket_number and store_task_number_for_current_ticket(settings, task_type, ticket_id, ticket_number):
+            save_config(self.config)
+            self.logger.info(
+                "Duty task number resolved: task_type=%s ticket_id=%s ticket_number=%s",
+                task_type,
+                ticket_id,
+                ticket_number,
+            )
+            if self.on_changed:
+                self.on_changed()
+            return True
+        self.logger.info(
+            "Duty task number unresolved: task_type=%s ticket_id=%s old_number_reused=false",
+            task_type,
+            ticket_id or "not_set",
+        )
+        return False
+
     def apply_tasks(self):
         if self._running:
             return
@@ -3890,8 +4060,29 @@ class DutyTasksDialog(QDialog):
                     if not parsed.get("id") and not parsed.get("url"):
                         errors.append(f"✗ {TASK_LABELS[task_type]}: не удалось распознать ссылку.")
                         continue
+                    old_binding = current_task_binding(settings, task_type)
+                    old_ticket_id = old_binding.get("id", "")
+                    had_old_number = bool(old_binding.get("number", ""))
                     save_duty_task_binding(settings, task_type, parsed, status="linked")
+                    new_ticket_id = str(parsed.get("id", "") or "").strip()
+                    cleared_old_number = bool(
+                        parsed.get("system") == "otrs"
+                        and old_ticket_id
+                        and new_ticket_id
+                        and old_ticket_id != new_ticket_id
+                        and had_old_number
+                    )
+                    if parsed.get("system") == "otrs":
+                        self.logger.info(
+                            "Duty task URL saved: task_type=%s old_ticket_id=%s new_ticket_id=%s cleared_old_ticket_number=%s",
+                            task_type,
+                            old_ticket_id or "not_set",
+                            new_ticket_id or "not_set",
+                            str(cleared_old_number).lower(),
+                        )
                     self.logger.info("Duty task linked: task_type=%s system=%s ticket_id=%s", task_type, parsed.get("system") or "unknown", parsed.get("id") or "not_set")
+                    if parsed.get("system") == "otrs":
+                        self._start_hidden_ticket_number_resolver(task_type, parsed.get("id", ""), parsed.get("url", ""))
                     results.append(self._format_success(task_type, "link", parsed))
                 else:
                     if has_current_task(settings, task_type):
@@ -3939,8 +4130,7 @@ class DutyNoteDialog(QDialog):
         root.addWidget(summary)
         root.addWidget(QLabel("Предпросмотр заметки"))
         preview = QTextBrowser()
-        preview.setOpenExternalLinks(False)
-        preview.anchorClicked.connect(lambda url: open_external_url(url.toString()))
+        configure_text_browser_external_links(preview)
         preview.setHtml(plain_text_to_safe_html_with_links(note))
         preview.setMinimumHeight(300)
         root.addWidget(preview)
@@ -4176,8 +4366,7 @@ class DutyModeWidget(QWidget):
         manual_layout = QVBoxLayout(manual_group)
         self.manual_duty_note_text = str(self.get_settings().get("manual_duty_note", "") or "")
         self.manual_duty_note_view = QTextBrowser()
-        self.manual_duty_note_view.setOpenExternalLinks(False)
-        self.manual_duty_note_view.anchorClicked.connect(lambda url: open_external_url(url.toString()))
+        configure_text_browser_external_links(self.manual_duty_note_view)
         self.manual_duty_note_view.setFixedHeight(95)
         self.manual_duty_note_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         manual_group.setMaximumHeight(165)
@@ -4204,11 +4393,11 @@ class DutyModeWidget(QWidget):
         self.service_task_hint_label = QLabel("")
         self.service_summary_label = QLabel("Проверка сервисов ещё не выполнялась."); self.service_summary_label.hide()
         self.service_results_list = QListWidget(); self.service_results_list.hide()
-        self.service_status_panel = QTextBrowser(); self.service_status_panel.setOpenExternalLinks(False); self.service_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.service_status_panel.setMinimumHeight(360)
+        self.service_status_panel = QTextBrowser(); configure_text_browser_external_links(self.service_status_panel); self.service_status_panel.setMinimumHeight(360)
         services_layout.addWidget(self.service_status_panel, stretch=1)
         zabbix_group = QGroupBox("Zabbix / проблемы и графики")
         zabbix_layout = QVBoxLayout(zabbix_group)
-        self.zabbix_status_panel = QTextBrowser(); self.zabbix_status_panel.setOpenExternalLinks(False); self.zabbix_status_panel.anchorClicked.connect(lambda url: open_external_url(url.toString())); self.zabbix_status_panel.setMinimumHeight(360)
+        self.zabbix_status_panel = QTextBrowser(); configure_text_browser_external_links(self.zabbix_status_panel); self.zabbix_status_panel.setMinimumHeight(360)
         zabbix_layout.addWidget(self.zabbix_status_panel, stretch=1)
         panels.addWidget(services_group, 1); panels.addWidget(zabbix_group, 1)
         root.addLayout(panels, stretch=1)
