@@ -116,6 +116,45 @@ class DutyTasksHelpersTest(unittest.TestCase):
         self.assertFalse(info["cleared_old_ticket_number"])
         self.assertEqual(settings["duty_service_checks_task_number"], "202601010000001")
 
+    def test_generic_zabbix_otrs_relink_clears_then_resolver_stores_matching_number_only(self):
+        settings = {
+            "duty_zabbix_task_id": "70400",
+            "current_ticket_id": "70400",
+            "duty_zabbix_task_number": "100069955",
+            "current_ticket_number": "100069955",
+        }
+        save_task_binding(
+            settings,
+            TASK_ZABBIX,
+            parse_ticket_url("https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketZoom;TicketID=70492"),
+        )
+        self.assertEqual(settings["duty_zabbix_task_id"], "70492")
+        self.assertEqual(settings["current_ticket_id"], "70492")
+        self.assertEqual(settings["duty_zabbix_task_number"], "")
+        self.assertEqual(settings["current_ticket_number"], "")
+        self.assertFalse(store_task_number_for_current_ticket(settings, TASK_ZABBIX, "70400", "100070000"))
+        self.assertEqual(current_task_binding(settings, TASK_ZABBIX)["number"], "")
+        self.assertTrue(store_task_number_for_current_ticket(settings, TASK_ZABBIX, "70492", "100070001"))
+        self.assertEqual(settings["duty_zabbix_task_number"], "100070001")
+        self.assertEqual(settings["current_ticket_number"], "100070001")
+
+    def test_generic_service_otrs_relink_clears_then_resolver_stores_matching_number_only(self):
+        settings = {
+            "duty_service_checks_task_id": "70400",
+            "duty_service_checks_task_number": "100069955",
+        }
+        save_task_binding(
+            settings,
+            TASK_SERVICES,
+            parse_ticket_url("https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketZoom;TicketID=70492"),
+        )
+        self.assertEqual(settings["duty_service_checks_task_id"], "70492")
+        self.assertEqual(settings["duty_service_checks_task_number"], "")
+        self.assertFalse(store_task_number_for_current_ticket(settings, TASK_SERVICES, "70400", "100070000"))
+        self.assertEqual(current_task_binding(settings, TASK_SERVICES)["number"], "")
+        self.assertTrue(store_task_number_for_current_ticket(settings, TASK_SERVICES, "70492", "100070001"))
+        self.assertEqual(settings["duty_service_checks_task_number"], "100070001")
+
 
 if __name__ == "__main__":
     unittest.main()
