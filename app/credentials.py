@@ -17,6 +17,54 @@ PROFILE_EXPORT_TYPE = "oko_profile_credentials"
 PROFILE_EXPORT_VERSION = 1
 
 
+def zabbix_credential_key_for_instance(instance: dict) -> str:
+    """Return the stable credentials key for a configured Zabbix instance."""
+    if not isinstance(instance, dict):
+        return ""
+    return str(instance.get("id") or "").strip()
+
+
+def load_zabbix_profile_credentials(instances, credentials=None) -> dict:
+    credentials = load_saved_credentials() if credentials is None else credentials
+    result = {}
+    for instance in instances or []:
+        key = zabbix_credential_key_for_instance(instance)
+        if not key:
+            continue
+        saved = credentials.get(key, {}) if isinstance(credentials, dict) else {}
+        result[key] = {
+            "login": str(saved.get("login", "") or ""),
+            "password": str(saved.get("password", "") or ""),
+        }
+    return result
+
+
+def save_zabbix_profile_credentials(instances, values_by_key: dict, credentials=None) -> dict:
+    credentials = load_saved_credentials() if credentials is None else dict(credentials)
+    values_by_key = values_by_key or {}
+    for instance in instances or []:
+        key = zabbix_credential_key_for_instance(instance)
+        if not key or key not in values_by_key:
+            continue
+        values = values_by_key.get(key) or {}
+        credentials[key] = {
+            "login": str(values.get("login", "") or ""),
+            "password": str(values.get("password", "") or ""),
+        }
+    save_credentials(credentials)
+    return credentials
+
+
+def clear_zabbix_profile_credentials(instances, credentials=None) -> dict:
+    credentials = load_saved_credentials() if credentials is None else dict(credentials)
+    for instance in instances or []:
+        key = zabbix_credential_key_for_instance(instance)
+        if key:
+            credentials.pop(key, None)
+    save_credentials(credentials)
+    return credentials
+
+
 def load_otrs_credentials(config=None) -> dict:
     """Load OTRS credentials from the shared credentials store.
 
