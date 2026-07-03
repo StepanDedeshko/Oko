@@ -65,7 +65,18 @@ from app.templates import (
     reset_redmine_special_task_template,
     variable_details_text,
 )
-from app.credentials import OTRS_CREDENTIALS_KEY, LEGACY_OTRS_CREDENTIALS_KEY, load_otrs_credentials, load_saved_credentials, save_credentials
+from app.credentials import (
+    OTRS_CREDENTIALS_KEY,
+    LEGACY_OTRS_CREDENTIALS_KEY,
+    clear_zabbix_profile_credentials,
+    collect_zabbix_urls,
+    load_otrs_credentials,
+    load_saved_credentials,
+    load_zabbix_profile_credentials,
+    save_credentials,
+    save_zabbix_profile_credentials,
+    zabbix_profile_credential_targets,
+)
 from app.theme import get_available_themes
 from app.app_info import APP_NAME, APP_VERSION, APP_DESCRIPTION
 from app.update_widget import UpdateWidget
@@ -1129,6 +1140,7 @@ class ProfileWidget(QWidget):
         self.logout_callback = logout_callback
         self.saved_credentials = load_saved_credentials()
         self.saved_zabbix_credentials = self.saved_credentials
+        self.enabled_zabbix_instances = []
         self.zabbix_inputs = {}
         self.service_group_inputs = {}
 
@@ -1217,35 +1229,49 @@ class ProfileWidget(QWidget):
 
         add_section_title("Zabbix")
 
-        enabled_zabbix_instances = [
+        self.enabled_zabbix_instances = [
             instance
             for instance in self.config.get("zabbix_instances", [])
             if instance.get("enabled", True)
         ]
-
-        first_saved_zabbix = {}
-        for instance in enabled_zabbix_instances:
-            saved = self.saved_zabbix_credentials.get(instance.get("id"), {})
-            if saved.get("login") or saved.get("password"):
-                first_saved_zabbix = saved
-                break
-
-        self.zabbix_common_login, self.zabbix_common_password = add_labeled_password_pair(
-            first_saved_zabbix.get("login", ""),
-            first_saved_zabbix.get("password", ""),
-            "Логин Zabbix",
-            "Пароль Zabbix",
+        live_zabbix_monitor = self.config.get("live_zabbix_monitor", {})
+        duty_links = self.config.get("duty_links", {})
+        self.live_zabbix_url = str(live_zabbix_monitor.get("url") or "") if isinstance(live_zabbix_monitor, dict) else ""
+        self.duty_live_zabbix_url = str(duty_links.get("live_zabbix_url") or "") if isinstance(duty_links, dict) else ""
+        self.product_zabbix_urls = collect_zabbix_urls({
+            "products": self.config.get("products", []),
+            "products_pages": self.config.get("products_pages", []),
+        })
+        saved_zabbix_by_key = load_zabbix_profile_credentials(
+            self.enabled_zabbix_instances,
+            self.saved_zabbix_credentials,
+            self.live_zabbix_url,
+            self.duty_live_zabbix_url,
+            self.product_zabbix_urls,
         )
 
-        self.zabbix_inputs = {
-            instance.get("id"): {
-                "login": self.zabbix_common_login,
-                "password": self.zabbix_common_password,
-                "name": instance.get("name", instance.get("id")),
+        for target in zabbix_profile_credential_targets(
+            self.enabled_zabbix_instances,
+            self.live_zabbix_url,
+            self.duty_live_zabbix_url,
+            self.product_zabbix_urls,
+        ):
+            zabbix_key = target["id"]
+            instance_name = target["name"]
+            if not target.get("common"):
+                add_caption(instance_name)
+            saved = saved_zabbix_by_key.get(zabbix_key, {})
+            login_input, password_input = add_labeled_password_pair(
+                saved.get("login", ""),
+                saved.get("password", ""),
+                f"Логин Zabbix ({instance_name})",
+                f"Пароль Zabbix ({instance_name})",
+            )
+            self.zabbix_inputs[zabbix_key] = {
+                "login": login_input,
+                "password": password_input,
+                "name": instance_name,
             }
-            for instance in enabled_zabbix_instances
-            if instance.get("id")
-        }
 
         if not self.zabbix_inputs:
             empty = QLabel("В config.json нет включённых Zabbix-инстансов.")
@@ -1338,13 +1364,20 @@ class ProfileWidget(QWidget):
             "password": self.password.text(),
         }
 
-        for zabbix_id, widgets in self.zabbix_inputs.items():
-            credentials[zabbix_id] = {
-                "login": widgets["login"].text().strip(),
-                "password": widgets["password"].text(),
-            }
-
         save_credentials(credentials)
+        save_zabbix_profile_credentials(
+            self.enabled_zabbix_instances,
+            {
+                zabbix_id: {
+                    "login": widgets["login"].text().strip(),
+                    "password": widgets["password"].text(),
+                }
+                for zabbix_id, widgets in self.zabbix_inputs.items()
+            },
+            live_zabbix_url=self.live_zabbix_url,
+            duty_live_zabbix_url=self.duty_live_zabbix_url,
+            zabbix_urls=self.product_zabbix_urls,
+        )
 
         redmine_settings = ensure_live_monitor_defaults(self.config)
         redmine_settings["redmine_login_url"] = self.redmine_login_url_input.text().strip() or DEFAULT_REDMINE_LOGIN_URL
@@ -1377,12 +1410,7 @@ class ProfileWidget(QWidget):
         QMessageBox.information(self, "Профиль", "Доступы сохранены.")
 
     def clear_zabbix_credentials(self):
-        credentials = load_saved_credentials()
-
-        for zabbix_id in self.zabbix_inputs:
-            credentials.pop(zabbix_id, None)
-
-        save_credentials(credentials)
+        clear_zabbix_profile_credentials(self.enabled_zabbix_instances)
 
         for widgets in self.zabbix_inputs.values():
             widgets["login"].clear()
