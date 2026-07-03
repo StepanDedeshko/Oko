@@ -28,6 +28,7 @@ from app.duty_mode import DutyModeWidget
 from app.app_users import clear_remembered_user
 from app.home_config import AppSettingsWidget, HomePageWidget
 from app.config import save_config
+from app.module_status import ModuleStatusChecker, aggregate_module_status, collect_module_status_targets
 from app.permissions import normalize_user_permissions
 from app.dashboard_widgets import GraphsDashboard, ProblemPageDashboard, SimplePageDashboard, ModePagesDashboard
 from app.hotkeys_widget import HotkeysWidget
@@ -83,6 +84,8 @@ class MainWindow(QMainWindow):
         self.auth_web_views = []
         self._last_memory_warning = False
         self._shutdown_completed = False
+        self.module_status_targets = []
+        self.module_status_checker = None
 
         self.is_updating_selectors = False
         self.metrics_provider = SystemMetricsProvider()
@@ -252,11 +255,17 @@ class MainWindow(QMainWindow):
         self.memory_label.setToolTip("Показать процессы, которые используют больше всего RAM")
         self.memory_label.mousePressEvent = self.show_memory_details
         self.network_label = QLabel("Сеть: н/д")
+        self.module_status_label = QLabel("Модули: checking")
+        self.module_status_label.setObjectName("ModuleStatusBadge")
+        self.module_status_label.setCursor(Qt.PointingHandCursor)
+        self.module_status_label.setToolTip("Показать статус проверяемых Zabbix-страниц")
+        self.module_status_label.mousePressEvent = self.show_module_status_popup
         self.updated_label = QLabel("Данные обновлены: --:--:--")
 
         layout.addWidget(self.cpu_temp_label)
         layout.addWidget(self.memory_label)
         layout.addWidget(self.network_label)
+        layout.addWidget(self.module_status_label)
         layout.addStretch()
         layout.addWidget(self.updated_label)
 
@@ -271,8 +280,88 @@ class MainWindow(QMainWindow):
         self.memory_diagnostics_timer.start(60000)
 
         self.update_bottom_hud()
+        self.start_module_status_check()
         self.log_memory_status()
 
+
+    def _module_badge_style(self, color):
+        palette = {
+            "green": ("#12351f", "#2ed573", "#dfffea"),
+            "yellow": ("#3a2f10", "#f6d365", "#fff7d6"),
+            "gray": ("#242b34", "#7b8794", "#d7dde5"),
+            "red": ("#3a1616", "#ff5c5c", "#ffe3e3"),
+        }
+        bg, border, fg = palette.get(color, palette["gray"])
+        return f"QLabel#ModuleStatusBadge {{ background: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 9px; padding: 3px 10px; }}"
+
+    def start_module_status_check(self):
+        self.module_status_targets = collect_module_status_targets(self.config)
+        self._update_module_status_badge(self.module_status_targets)
+        if not self.module_status_targets:
+            return
+        self.module_status_checker = ModuleStatusChecker(self.module_status_targets, profiles=self.profiles, parent=self)
+        self.module_status_checker.targets_changed.connect(self._on_module_status_targets_changed)
+        self.module_status_checker.finished.connect(self._on_module_status_targets_changed)
+        QTimer.singleShot(1000, self.module_status_checker.start)
+
+    def _on_module_status_targets_changed(self, targets):
+        self.module_status_targets = list(targets)
+        self._update_module_status_badge(self.module_status_targets)
+
+    def _update_module_status_badge(self, targets):
+        summary = aggregate_module_status(targets)
+        self.module_status_label.setText(summary["label"])
+        self.module_status_label.setStyleSheet(self._module_badge_style(summary["color"]))
+        self.module_status_label.setToolTip("Нажмите, чтобы открыть список проверяемых ссылок")
+
+    def show_module_status_popup(self, _event=None):
+        dialog = QDialog(self, Qt.Popup)
+        dialog.setWindowTitle("Статус модулей")
+        dialog.setObjectName("ModuleStatusPopup")
+        dialog.setStyleSheet("""
+            QDialog#ModuleStatusPopup { background: rgba(10, 18, 28, 245); border: 1px solid rgba(101, 214, 255, 130); border-radius: 12px; }
+            QLabel { color: #d7f4ff; }
+            QPushButton { background: rgba(37, 74, 96, 190); border: 1px solid rgba(101, 214, 255, 120); border-radius: 8px; padding: 6px 12px; color: #e8fbff; }
+        """)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 12, 14, 12)
+        title = QLabel("Статус модулей")
+        title.setObjectName("PageTitle")
+        layout.addWidget(title)
+        content = QLabel(self._module_status_popup_text())
+        content.setTextFormat(Qt.RichText)
+        content.setWordWrap(True)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        box = QWidget(); box_layout = QVBoxLayout(box); box_layout.addWidget(content); box_layout.addStretch(1); scroll.setWidget(box)
+        layout.addWidget(scroll)
+        row = QHBoxLayout()
+        copy = QPushButton("Копировать URL")
+        close = QPushButton("Закрыть")
+        copy.clicked.connect(lambda: QApplication.clipboard().setText("\n".join(t.url for t in self.module_status_targets if t.url)))
+        close.clicked.connect(dialog.close)
+        row.addStretch(1); row.addWidget(copy); row.addWidget(close); layout.addLayout(row)
+        dialog.resize(720, 420)
+        anchor = self.module_status_label.mapToGlobal(self.module_status_label.rect().topLeft())
+        dialog.move(anchor.x(), max(20, anchor.y() - dialog.height() - 8))
+        dialog.show()
+
+    def _module_status_popup_text(self):
+        from html import escape
+        if not self.module_status_targets:
+            return "<p>Нет включённых/настроенных URL для проверки.</p>"
+        groups = {}
+        for target in self.module_status_targets:
+            groups.setdefault(target.product_name, []).append(target)
+        parts = []
+        for product, items in groups.items():
+            parts.append(f"<h3>{escape(product)}</h3>")
+            for item in items:
+                mode = f" / {escape(item.mode_name)}" if item.mode_name else ""
+                target = ""
+                if item.source == "duty_trigger":
+                    target = f"<br><small>Цель: {escape(item.target_product)} / {escape(item.target_section)} / {escape(item.target_graph_title)}</small>"
+                parts.append(f"<p title='{escape(item.url)}'><b>{escape(item.section_name)}{mode}</b> — {escape(item.status)}<br><small>{escape(item.reason)}</small>{target}</p>")
+        return "".join(parts)
 
     def show_memory_details(self, _event=None):
         dialog = QDialog(self, Qt.Popup)
