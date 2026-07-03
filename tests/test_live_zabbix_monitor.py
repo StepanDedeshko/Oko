@@ -479,6 +479,41 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("Скопировать комментарий задачи на выбранные", self.widget_source)
         self.assertIn("if len(items) < 2", self.widget_source)
 
+    def test_quick_observed_context_action_comments_and_acknowledges(self):
+        self.assertIn("Наблюдаю", self.widget_source)
+        observed_block = self.widget_source.split("def mark_selected_as_observed", 1)[1].split("def mark_selected_as_no_action_required", 1)[0]
+        self.assertIn('"Наблюдаем",', observed_block)
+        self.assertIn("acknowledge_missing=True", observed_block)
+        self.assertNotIn("acknowledge_missing=False", observed_block)
+        self.assertIn('progress_prefix="Добавляю комментарий наблюдения"', observed_block)
+        self.assertIn('summary_prefix="Комментарий наблюдения Zabbix"', observed_block)
+
+    def test_quick_no_action_required_context_action_uses_optional_manual_reason(self):
+        self.assertIn("Не требует обработки", self.widget_source)
+        no_action_block = self.widget_source.split("def mark_selected_as_no_action_required", 1)[1].split("def copy_task_comment_to_selected", 1)[0]
+        self.assertIn('QInputDialog.getMultiLineText(self, "Не требует обработки", "Причина, если нужна:")', no_action_block)
+        self.assertIn('comment = "Не требует обработки"', no_action_block)
+        self.assertIn('comment = f"Не требует обработки: {reason}"', no_action_block)
+        self.assertIn("acknowledge_missing=True", no_action_block)
+        self.assertIn('progress_prefix="Отмечаю как не требующее обработки"', no_action_block)
+        self.assertIn('summary_prefix="Не требует обработки Zabbix"', no_action_block)
+
+    def test_quick_zabbix_comment_actions_validate_current_selection_once(self):
+        self.assertIn("def _selected_items_for_zabbix_comment_action", self.widget_source)
+        self.assertIn("items = self._selected_live_problem_items()", self.widget_source)
+        self.assertIn("Выберите минимум одну строку", self.widget_source)
+        self.assertIn("У выбранной проблемы нет ack_url/problem_url.", self.widget_source)
+
+    def test_quick_zabbix_comment_actions_do_not_create_tasks_or_touch_auto_ack(self):
+        quick_actions_block = self.widget_source.split("def mark_selected_as_observed", 1)[1].split("def copy_task_comment_to_selected", 1)[0]
+        self.assertNotIn("open_redmine_for_selected_row", quick_actions_block)
+        self.assertNotIn("open_mm_otrs_for_selected_row", quick_actions_block)
+        self.assertNotIn("_on_redmine_issue_created", quick_actions_block)
+        self.assertIn("Создать Redmine по выбранным строкам", self.widget_source)
+        self.assertIn("Создать задачу на ММ", self.widget_source)
+        self.assertIn("def _auto_ack_enabled", self.widget_source)
+        self.assertIn("auto_ack_after_mm_otrs_enabled", self.widget_source)
+
     def test_strict_redmine_mm_comment_regex(self):
         self.assertIn('Задача Redmine #\\d+: https?://\\S+|Задача на ММ #\\d+(?:: https?://\\S+)?', self.widget_source)
         self.assertIn('Задача на ММ: \\d{6,}', self.widget_source)
