@@ -52,6 +52,29 @@ ZABBIX_TASK_COMMENT_RE = re.compile(r"Задача Redmine #\d+: https?://\S+|З
 def build_redmine_zabbix_comment(issue_number, issue_url):
     return f"Задача Redmine #{issue_number}: {issue_url}"
 
+def build_mm_otrs_zabbix_comment(ticket_number, ticket_url=""):
+    ticket_number = str(ticket_number or "").strip()
+    ticket_url = str(ticket_url or "").strip()
+    if ticket_url:
+        return f"Задача на ММ #{ticket_number}: {ticket_url}"
+    return f"Задача на ММ: {ticket_number}"
+
+def extract_mm_otrs_ticket_from_payload(payload):
+    payload = payload or {}
+    url = str(payload.get("url") or "")
+    path = str(payload.get("path") or urlparse(url).path or "")
+    text = str(payload.get("text") or "")
+    title = str(payload.get("title") or "")
+    source = "\n".join([title, text, url, path])
+    match = (
+        re.search(r"TicketID=(\d{6,})\b", url, re.IGNORECASE)
+        or re.search(r"TicketID=(\d{6,})\b", path, re.IGNORECASE)
+        or re.search(r"(?:Задача\s+на\s+ММ|Задача\s+ММ|ММ|OTRS|Ticket)\s*#?\s*:?\s*(\d{6,})\b", source, re.IGNORECASE)
+    )
+    if not match:
+        return None
+    return {"ticket_number": match.group(1), "ticket_url": url}
+
 def extract_redmine_issue_from_payload(payload):
     payload = payload or {}
     url = str(payload.get("url") or "")
@@ -2675,12 +2698,15 @@ class LiveZabbixMonitorWidget(QWidget):
 
         root.addWidget(view, stretch=1)
 
-        mm_otrs_state = {"started": False}
+        task_items = list(items or [])
+        mm_otrs_state = {"started": False, "created_task_ack_done": set()}
 
         def fill_form(ok):
             if not ok:
                 status_label.setText("Страница открылась с ошибкой. Проверьте доступ/авторизацию.")
                 return
+
+            self._detect_mm_otrs_created_task(view, status_label, task_items, mm_otrs_state)
 
             if mm_otrs_state["started"]:
                 return
@@ -3716,6 +3742,58 @@ class LiveZabbixMonitorWidget(QWidget):
         run_javascript_if_alive(page, js, after_fill)
 
 
+    @staticmethod
+    def _mm_otrs_created_task_detection_script():
+        return r"""
+(function() {
+  var url = String(window.location.href || "");
+  var path = String(window.location.pathname || "") + String(window.location.search || "");
+  var title = String(document.title || "");
+  var text = String(document.documentElement ? (document.documentElement.innerText || document.documentElement.textContent || "") : "");
+  var match = url.match(/TicketID=(\d{6,})\b/i) || path.match(/TicketID=(\d{6,})\b/i) ||
+    (title + "\n" + text).match(/(?:Задача\s+на\s+ММ|Задача\s+ММ|ММ|OTRS|Ticket)\s*#?\s*:?\s*(\d{6,})\b/i);
+  return JSON.stringify({ok: !!match, ticket_number: match ? match[1] : "", url: url, path: path, title: title, text: text.slice(0, 2000)});
+})();
+"""
+
+    def _mm_otrs_auto_ack_enabled(self):
+        return bool(self.settings.get("auto_ack_after_task_enabled", False) and self.settings.get("auto_ack_after_mm_otrs_enabled", False))
+
+    def _detect_mm_otrs_created_task(self, view, status_label, items, state):
+        page = view.page() if view is not None else None
+        if page is None:
+            return
+
+        def after_detect(result):
+            try:
+                payload = json.loads(result or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            ticket = extract_mm_otrs_ticket_from_payload(payload)
+            if not ticket:
+                return
+            ticket_number = ticket.get("ticket_number")
+            if not ticket_number:
+                return
+            done = state.setdefault("created_task_ack_done", set())
+            if ticket_number in done:
+                return
+            done.add(ticket_number)
+            ticket_url = ticket.get("ticket_url") or ""
+            comment = build_mm_otrs_zabbix_comment(ticket_number, ticket_url)
+            self.logger.info("MM OTRS task detected callback: number=%s url=%s selected=%s", ticket_number, ticket_url, len(items or []))
+            status_label.setText(f"Создана задача на ММ #{ticket_number}")
+            if not self._mm_otrs_auto_ack_enabled():
+                self.logger.info("MM OTRS Zabbix auto-ack disabled; comment=%s", comment)
+                return
+            self._process_zabbix_comments(
+                list(items or []), comment, acknowledge_missing=True,
+                progress_prefix="Подтверждаю Zabbix после создания задачи на ММ",
+                summary_prefix="Подтверждение Zabbix после ММ",
+            )
+
+        run_javascript_if_alive(page, self._mm_otrs_created_task_detection_script(), after_detect)
+
     def open_acknowledgement(self, url):
         if not url:
             return
@@ -3829,8 +3907,8 @@ class LiveZabbixMonitorWidget(QWidget):
         self.logger.info("Zabbix auto-ack enabled; starting")
         self._process_zabbix_comments(
             items or [], comment, acknowledge_missing=True,
-            progress_prefix="Открываю форму подтверждения Zabbix",
-            summary_prefix="Zabbix подтверждение",
+            progress_prefix="Подтверждаю Zabbix после создания Redmine",
+            summary_prefix="Подтверждение Zabbix после Redmine",
             final_error_text="Задача Redmine создана, но подтверждение Zabbix завершилось с ошибками. Подробности в логах.",
         )
 
