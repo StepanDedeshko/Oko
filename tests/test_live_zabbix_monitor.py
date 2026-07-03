@@ -457,6 +457,8 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
 
     def test_zabbix_comment_format_is_exact(self):
         self.assertIn('return f"Задача Redmine #{issue_number}: {issue_url}"', self.widget_source)
+        self.assertIn('return f"Задача на ММ #{ticket_number}: {ticket_url}"', self.widget_source)
+        self.assertIn('return f"Задача на ММ: {ticket_number}"', self.widget_source)
 
     def test_no_auto_ack_before_issue_number_url_exists(self):
         self.assertIn("if not issue_number or not issue_url", self.widget_source)
@@ -466,6 +468,7 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("def _auto_ack_enabled", self.widget_source)
         self.assertIn("Zabbix auto-ack disabled", self.widget_source)
         self.assertIn("return bool(self.settings.get(\"auto_ack_after_task_enabled\", False) and self.settings.get(\"auto_ack_after_redmine_enabled\", False))", self.widget_source)
+        self.assertIn("return bool(self.settings.get(\"auto_ack_after_task_enabled\", False) and self.settings.get(\"auto_ack_after_mm_otrs_enabled\", False))", self.widget_source)
 
     def test_duplicate_comment_is_skipped(self):
         self.assertIn("eventActionsText().indexOf(comment) !== -1", self.widget_source)
@@ -513,6 +516,26 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("Создать задачу на ММ", self.widget_source)
         self.assertIn("def _auto_ack_enabled", self.widget_source)
         self.assertIn("auto_ack_after_mm_otrs_enabled", self.widget_source)
+
+    def test_redmine_auto_ack_uses_callback_items_and_new_prefixes(self):
+        redmine_block = self.widget_source.split("def _on_redmine_issue_created", 1)[1].split("def _zabbix_comment_diagnostics_script", 1)[0]
+        self.assertIn("items or []", redmine_block)
+        self.assertNotIn("_selected_live_problem_items", redmine_block)
+        self.assertIn("acknowledge_missing=True", redmine_block)
+        self.assertIn('progress_prefix="Подтверждаю Zabbix после создания Redmine"', redmine_block)
+        self.assertIn('summary_prefix="Подтверждение Zabbix после Redmine"', redmine_block)
+
+    def test_mm_otrs_auto_ack_uses_saved_items_after_ticket_detection(self):
+        self.assertIn("task_items = list(items or [])", self.widget_source)
+        self.assertIn("created_task_ack_done", self.widget_source)
+        self.assertIn("extract_mm_otrs_ticket_from_payload", self.widget_source)
+        mm_block = self.widget_source.split("def _detect_mm_otrs_created_task", 1)[1].split("def open_acknowledgement", 1)[0]
+        self.assertIn("build_mm_otrs_zabbix_comment", mm_block)
+        self.assertIn("list(items or [])", mm_block)
+        self.assertNotIn("_selected_live_problem_items", mm_block)
+        self.assertIn("acknowledge_missing=True", mm_block)
+        self.assertIn('progress_prefix="Подтверждаю Zabbix после создания задачи на ММ"', mm_block)
+        self.assertIn('summary_prefix="Подтверждение Zabbix после ММ"', mm_block)
 
     def test_strict_redmine_mm_comment_regex(self):
         self.assertIn('Задача Redmine #\\d+: https?://\\S+|Задача на ММ #\\d+(?:: https?://\\S+)?', self.widget_source)
