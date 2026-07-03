@@ -4279,23 +4279,13 @@ class LiveZabbixMonitorWidget(QWidget):
         items = self._selected_items_for_zabbix_comment_action("Не требует обработки")
         if not items:
             return
-        reason_templates = [
-            "Сам напишу причину",
-            "Узел не развернут согласно КР",
-            "Наблюдаются проходы, ошибка не влияет на работу сервиса",
-            "Не реагируем на информационные сообщения",
-        ]
-        reason, ok = QInputDialog.getItem(self, "Не требует обработки", "Почему?", reason_templates, 0, False)
+        reason, ok = QInputDialog.getMultiLineText(self, "Не требует обработки", "Причина, если нужна:")
         if not ok:
             return
-        if reason == "Сам напишу причину":
-            reason, ok = QInputDialog.getMultiLineText(self, "Не требует обработки", "Почему?")
-            if not ok:
-                return
         reason = str(reason or "").strip()
-        if not reason:
-            return
-        comment = f"Не требует обработки: {reason}"
+        comment = "Не требует обработки"
+        if reason:
+            comment = f"Не требует обработки: {reason}"
         self._process_zabbix_comments(
             items,
             comment,

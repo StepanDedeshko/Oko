@@ -488,17 +488,15 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn('progress_prefix="Добавляю комментарий наблюдения"', observed_block)
         self.assertIn('summary_prefix="Комментарий наблюдения Zabbix"', observed_block)
 
-    def test_quick_no_action_required_context_action_acknowledges_with_templates(self):
+    def test_quick_no_action_required_context_action_uses_optional_manual_reason(self):
         self.assertIn("Не требует обработки", self.widget_source)
-        self.assertIn("def mark_selected_as_no_action_required", self.widget_source)
-        self.assertIn("Сам напишу причину", self.widget_source)
-        self.assertIn("Узел не развернут согласно КР", self.widget_source)
-        self.assertIn("Наблюдаются проходы, ошибка не влияет на работу сервиса", self.widget_source)
-        self.assertIn("Не реагируем на информационные сообщения", self.widget_source)
-        self.assertIn('comment = f"Не требует обработки: {reason}"', self.widget_source)
-        self.assertIn("acknowledge_missing=True", self.widget_source)
-        self.assertIn('progress_prefix="Отмечаю как не требующее обработки"', self.widget_source)
-        self.assertIn('summary_prefix="Не требует обработки Zabbix"', self.widget_source)
+        no_action_block = self.widget_source.split("def mark_selected_as_no_action_required", 1)[1].split("def copy_task_comment_to_selected", 1)[0]
+        self.assertIn('QInputDialog.getMultiLineText(self, "Не требует обработки", "Причина, если нужна:")', no_action_block)
+        self.assertIn('comment = "Не требует обработки"', no_action_block)
+        self.assertIn('comment = f"Не требует обработки: {reason}"', no_action_block)
+        self.assertIn("acknowledge_missing=True", no_action_block)
+        self.assertIn('progress_prefix="Отмечаю как не требующее обработки"', no_action_block)
+        self.assertIn('summary_prefix="Не требует обработки Zabbix"', no_action_block)
 
     def test_quick_zabbix_comment_actions_validate_current_selection_once(self):
         self.assertIn("def _selected_items_for_zabbix_comment_action", self.widget_source)
