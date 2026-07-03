@@ -16,18 +16,21 @@ AGG_ONLINE = "online"
 AGG_PARTIAL = "partial"
 AGG_DISABLED = "disabled"
 AGG_OFFLINE = "offline"
+AGG_CHECKING = "checking"
 
 AGG_LABELS = {
     AGG_ONLINE: "Модули: online",
     AGG_PARTIAL: "Модули: частично",
     AGG_DISABLED: "Модули: отключены",
     AGG_OFFLINE: "Модули: offline",
+    AGG_CHECKING: "Модули: checking",
 }
 AGG_COLORS = {
     AGG_ONLINE: "green",
     AGG_PARTIAL: "yellow",
     AGG_DISABLED: "gray",
     AGG_OFFLINE: "red",
+    AGG_CHECKING: "yellow",
 }
 
 
@@ -155,7 +158,10 @@ def aggregate_module_status(targets: Iterable[ModuleStatusTarget]):
         state = AGG_DISABLED
     else:
         online = sum(1 for t in targets if t.status == ROW_ONLINE)
-        if online == len(targets):
+        checking = any(t.status == ROW_CHECKING for t in targets)
+        if checking:
+            state = AGG_CHECKING
+        elif online == len(targets):
             state = AGG_ONLINE
         elif online > 0:
             state = AGG_PARTIAL
@@ -196,7 +202,8 @@ class ModuleStatusChecker:
         self.targets_changed = _CallbackSignal()
         self.finished = _CallbackSignal()
         self.targets = list(targets)
-        self.profiles = profiles or {}
+        self.profiles = profiles if profiles is not None else {}
+        self.result_by_key = {}
         self.timeout_ms = timeout_ms
         self.index = -1
         self.view = None
@@ -218,6 +225,13 @@ class ModuleStatusChecker:
             self.finished.emit(self.targets)
             return
         target = self.targets[self.index]
+        cached = self.result_by_key.get((target.zabbix_id, target.url))
+        if cached is not None:
+            status, reason = cached
+            self.targets[self.index] = replace(target, status=status, reason=reason)
+            self.targets_changed.emit(self.targets)
+            self._QTimer.singleShot(0, self._next)
+            return
         self.targets[self.index] = replace(target, status=ROW_CHECKING, reason="Проверяю страницу")
         self.targets_changed.emit(self.targets)
         self._cleanup_view()
@@ -253,7 +267,9 @@ class ModuleStatusChecker:
         self._finish_current(ROW_TIMEOUT, "Timeout загрузки")
 
     def _finish_current(self, status, reason):
-        self.targets[self.index] = replace(self.targets[self.index], status=status, reason=reason)
+        target = self.targets[self.index]
+        self.result_by_key[(target.zabbix_id, target.url)] = (status, reason)
+        self.targets[self.index] = replace(target, status=status, reason=reason)
         self.targets_changed.emit(self.targets)
         self._QTimer.singleShot(150, self._next)
 

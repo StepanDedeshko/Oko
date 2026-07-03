@@ -98,3 +98,33 @@ def test_aggregate_module_status_states():
         ModuleStatusTarget("p", "s", "u1", status=ROW_ERROR),
         ModuleStatusTarget("p", "s", "u2", status=ROW_LOGIN_REQUIRED),
     ])["state"] == "offline"
+
+
+def test_aggregate_module_status_checking_not_offline():
+    assert aggregate_module_status([
+        ModuleStatusTarget("p", "s", "u1"),
+        ModuleStatusTarget("p", "s", "u2"),
+    ])["state"] == "checking"
+    assert aggregate_module_status([
+        ModuleStatusTarget("p", "s", "u1", status=ROW_ONLINE),
+        ModuleStatusTarget("p", "s", "u2"),
+    ])["state"] != "offline"
+
+
+def test_main_window_starts_module_status_after_profiles_and_dashboards():
+    from pathlib import Path
+
+    source = Path("app/main_window.py").read_text(encoding="utf-8")
+    hud_body = source[source.index("    def create_bottom_hud"):source.index("    def _module_badge_style")]
+    assert "self.start_module_status_check()" not in hud_body
+
+    init_body = source[source.index("    def __init__"):source.index("    def role_title")]
+    assert init_body.index("self.create_profiles()") < init_body.index("self.create_dashboard_pages()")
+    assert init_body.index("self.select_first_dashboard()") < init_body.index("self.start_module_status_check()")
+
+
+def test_module_status_checker_preserves_empty_profiles_mapping_source():
+    from pathlib import Path
+
+    source = Path("app/module_status.py").read_text(encoding="utf-8")
+    assert "profiles if profiles is not None else {}" in source

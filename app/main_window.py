@@ -129,6 +129,7 @@ class MainWindow(QMainWindow):
         self.select_first_dashboard()
 
         self.apply_initial_window_mode()
+        self.start_module_status_check()
 
     def role_title(self, role):
         role = str(role or "agent").lower()
@@ -280,7 +281,6 @@ class MainWindow(QMainWindow):
         self.memory_diagnostics_timer.start(60000)
 
         self.update_bottom_hud()
-        self.start_module_status_check()
         self.log_memory_status()
 
 
