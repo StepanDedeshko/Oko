@@ -4538,17 +4538,23 @@ class LiveZabbixMonitorWidget(QWidget):
     var redmine = source.match(/Задача\s+Redmine\s+#(\d+)\s*:\s*(https?:\/\/\S+)/i);
     if (redmine) found.push('Задача Redmine #' + redmine[1] + ': ' + redmine[2]);
 
+    var rawRedmineUrl = source.match(/https?:\/\/[^\s<>\"']*redmine[^\s<>\"']*\/issues\/(\d+)(?:[\/?#][^\s<>\"']*)?/i);
+    if (rawRedmineUrl) {
+      found.push(source);
+      return found;
+    }
+
     var mmHashUrl = source.match(/Задача\s+на\s+ММ\s+#(\d+)\s*:\s*(https?:\/\/\S+)/i);
     if (mmHashUrl) found.push('Задача на ММ #' + mmHashUrl[1] + ': ' + mmHashUrl[2]);
 
-    var mmHash = source.match(/Задача\s+на\s+ММ\s+#(\d{6,})\b/i);
+    var mmHash = source.match(/Задача\s+на\s+ММ\s+#(\d{5,})\b/i);
     if (mmHash && !mmHashUrl) found.push('Задача на ММ: ' + mmHash[1]);
 
-    var labelNumber = source.match(/(?:Задача\s+на\s+ММ|Задача\s+ММ|ММ|OTRS)\s*:\s*(\d{6,})\b/i);
+    var labelNumber = source.match(/(?:Задача\s+на\s+ММ|Задача\s+ММ|ММ|OTRS)\s*:\s*(\d{5,})\b/i);
     if (labelNumber) found.push('Задача на ММ: ' + labelNumber[1]);
 
-    if (allowPlainNumber) {
-      var plain = source.match(/^\D*(\d{6,})\D*$/);
+    if (allowPlainNumber && !/https?:\/\//i.test(source) && source.length <= 40) {
+      var plain = source.match(/^\s*(?:№|#)?\s*(\d{5,})\s*$/);
       if (plain) found.push('Задача на ММ: ' + plain[1]);
     }
 

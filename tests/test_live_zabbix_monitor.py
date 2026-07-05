@@ -702,3 +702,64 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
 
     def test_app_version_unchanged(self):
         self.assertIn('APP_VERSION = "0.3.5"', self.app_info)
+
+class ZabbixTaskCommentNormalizationTests(unittest.TestCase):
+    def test_raw_redmine_url_does_not_become_mm(self):
+        from app.live_zabbix_comments import normalize_zabbix_task_comment_candidate
+
+        comments = normalize_zabbix_task_comment_candidate(
+            "https://redmine.stdpr.ru/issues/135460",
+            allow_plain_number=True,
+        )
+
+        self.assertIn("https://redmine.stdpr.ru/issues/135460", comments)
+        self.assertFalse(any("Задача на ММ" in item for item in comments))
+        self.assertFalse(any("ММ:" in item for item in comments))
+
+    def test_raw_redmine_url_inside_text_stays_redmine_or_raw(self):
+        from app.live_zabbix_comments import normalize_zabbix_task_comment_candidate
+
+        comments = normalize_zabbix_task_comment_candidate(
+            "См. https://redmine.stdpr.ru/issues/135460",
+            allow_plain_number=True,
+        )
+
+        self.assertTrue(any("https://redmine.stdpr.ru/issues/135460" in item for item in comments))
+        self.assertFalse(any("Задача на ММ" in item for item in comments))
+
+    def test_normal_redmine_comment_stays_redmine(self):
+        from app.live_zabbix_comments import normalize_zabbix_task_comment_candidate
+
+        comments = normalize_zabbix_task_comment_candidate(
+            "Задача Redmine #135460: https://redmine.stdpr.ru/issues/135460",
+            allow_plain_number=True,
+        )
+
+        self.assertEqual(comments, ["Задача Redmine #135460: https://redmine.stdpr.ru/issues/135460"])
+
+    def test_mm_otrs_label_stays_mm(self):
+        from app.live_zabbix_comments import normalize_zabbix_task_comment_candidate
+
+        comments = normalize_zabbix_task_comment_candidate(
+            "Задача на ММ: 70413",
+            allow_plain_number=True,
+        )
+
+        self.assertEqual(comments, ["Задача на ММ: 70413"])
+
+    def test_short_plain_number_can_be_mm(self):
+        from app.live_zabbix_comments import normalize_zabbix_task_comment_candidate
+
+        comments = normalize_zabbix_task_comment_candidate("70413", allow_plain_number=True)
+
+        self.assertEqual(comments, ["Задача на ММ: 70413"])
+
+    def test_non_redmine_url_with_digits_does_not_become_mm(self):
+        from app.live_zabbix_comments import normalize_zabbix_task_comment_candidate
+
+        comments = normalize_zabbix_task_comment_candidate(
+            "https://example.local/path/123456",
+            allow_plain_number=True,
+        )
+
+        self.assertFalse(any("Задача на ММ" in item for item in comments))
