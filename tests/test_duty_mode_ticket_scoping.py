@@ -23,6 +23,9 @@ class DummyLabel:
     def setText(self, value):
         self.value = value
 
+    def text(self):
+        return self.value
+
 
 class DummyLogger:
     def __init__(self):
@@ -34,6 +37,9 @@ class DummyLogger:
 
     def debug(self, message, *args):
         self.debug_messages.append((message, args))
+
+    def exception(self, message, *args):
+        self.messages.append((message, args))
 
 
 def make_note_dialog(config, task_type):
@@ -79,6 +85,160 @@ def test_otrs_note_dialog_keeps_service_and_zabbix_ticket_scope_separate(monkeyp
     zabbix_dialog = make_note_dialog(config, "zabbix")
     assert zabbix_dialog.get_ticket_id() == "B"
     assert zabbix_dialog.get_task_number() == "200"
+
+def test_zabbix_note_updates_zabbix_and_current_but_not_service(monkeypatch):
+    monkeypatch.setattr(duty_mode, "save_config", lambda config: None)
+    config = {
+        "duty_mode": {
+            "current_ticket_id": "B",
+            "current_ticket_url": "https://otrs.example/?Action=AgentTicketZoom;TicketID=B",
+            "duty_zabbix_task_id": "B",
+            "duty_zabbix_task_url": "https://otrs.example/?Action=AgentTicketZoom;TicketID=B",
+            "duty_service_checks_task_id": "A",
+            "duty_service_checks_task_url": "https://otrs.example/?Action=AgentTicketZoom;TicketID=A",
+        }
+    }
+
+    zabbix_dialog = make_note_dialog(config, "zabbix")
+    assert zabbix_dialog.save_ticket_id_from_url("https://otrs.example/?Action=AgentTicketNote;TicketID=B2")
+
+    settings = config["duty_mode"]
+    assert settings["duty_zabbix_task_id"] == "B2"
+    assert settings["current_ticket_id"] == "B2"
+    assert settings["duty_service_checks_task_id"] == "A"
+
+
+def test_task_links_do_not_overwrite_each_other_zabbix_then_service(monkeypatch):
+    monkeypatch.setattr(duty_mode, "save_config", lambda config: None)
+    config = {"duty_mode": {}}
+
+    make_note_dialog(config, "zabbix").save_ticket_id_from_url("https://otrs.example/?Action=AgentTicketNote;TicketID=B")
+    make_note_dialog(config, "service_checks").save_ticket_id_from_url("https://otrs.example/?Action=AgentTicketNote;TicketID=A")
+
+    settings = config["duty_mode"]
+    assert settings["duty_zabbix_task_id"] == "B"
+    assert settings["duty_service_checks_task_id"] == "A"
+    assert settings["current_ticket_id"] == "B"
+    assert settings["current_ticket_id"] != "A"
+    assert settings["duty_zabbix_task_id"] != "A"
+
+
+def test_task_links_do_not_overwrite_each_other_service_then_zabbix(monkeypatch):
+    monkeypatch.setattr(duty_mode, "save_config", lambda config: None)
+    config = {"duty_mode": {}}
+
+    make_note_dialog(config, "service_checks").save_ticket_id_from_url("https://otrs.example/?Action=AgentTicketNote;TicketID=A")
+    make_note_dialog(config, "zabbix").save_ticket_id_from_url("https://otrs.example/?Action=AgentTicketNote;TicketID=B")
+
+    settings = config["duty_mode"]
+    assert settings["duty_zabbix_task_id"] == "B"
+    assert settings["duty_service_checks_task_id"] == "A"
+    assert settings["current_ticket_id"] == "B"
+
+
+def make_create_dialog(config, task_type):
+    dialog = duty_mode.OtrsCreateTaskDialog.__new__(duty_mode.OtrsCreateTaskDialog)
+    dialog.config = config
+    dialog.task_type = task_type
+    dialog.logger = DummyLogger()
+    return dialog
+
+
+def test_create_task_dialog_current_ticket_id_is_scoped():
+    service_config = {
+        "duty_mode": {
+            "duty_service_checks_task_id": "A",
+            "current_ticket_id": "B",
+            "duty_zabbix_task_id": "B",
+        }
+    }
+    assert make_create_dialog(service_config, "service_checks")._current_ticket_id() == "A"
+
+    zabbix_config = {"duty_mode": {"duty_zabbix_task_id": "B", "current_ticket_id": "C"}}
+    assert make_create_dialog(zabbix_config, "zabbix")._current_ticket_id() == "B"
+
+    zabbix_legacy_config = {"duty_mode": {"duty_zabbix_task_id": "", "current_ticket_id": "C"}}
+    assert make_create_dialog(zabbix_legacy_config, "zabbix")._current_ticket_id() == "C"
+
+
+def test_service_create_task_save_ticket_number_does_not_write_current_or_zabbix(monkeypatch):
+    monkeypatch.setattr(duty_mode, "save_config", lambda config: None)
+    config = {
+        "duty_mode": {
+            "current_ticket_number": "200",
+            "duty_zabbix_task_number": "200",
+            "duty_service_checks_task_id": "A",
+        }
+    }
+    dialog = make_create_dialog(config, "service_checks")
+
+    dialog.save_ticket_binding(ticket_number="101", show_message=False)
+
+    settings = config["duty_mode"]
+    assert settings["duty_service_checks_task_number"] == "101"
+    assert settings["duty_zabbix_task_number"] == "200"
+    assert settings["current_ticket_number"] == "200"
+
+
+def test_planned_actions_empty_and_mixed_inputs_ignore_old_bindings():
+    task_types = ["zabbix", "service_checks"]
+    old_config = {
+        "duty_mode": {
+            "duty_zabbix_task_url": "oldB",
+            "duty_service_checks_task_url": "oldA",
+            "current_ticket_url": "oldB",
+        }
+    }
+    assert old_config  # documents that config bindings are irrelevant to input-only planning
+
+    assert duty_mode.planned_actions({"zabbix": "", "service_checks": ""}, task_types) == {
+        "zabbix": "create",
+        "service_checks": "create",
+    }
+    assert duty_mode.planned_actions({"zabbix": "urlB", "service_checks": ""}, task_types) == {
+        "zabbix": "link",
+        "service_checks": "create",
+    }
+    assert duty_mode.planned_actions({"zabbix": "", "service_checks": "urlA"}, task_types) == {
+        "zabbix": "create",
+        "service_checks": "link",
+    }
+
+
+def test_duty_tasks_empty_inputs_open_create_for_both_tasks(monkeypatch):
+    created = []
+
+    class FakeCreateDialog:
+        def __init__(self, config, parent=None, task_type="zabbix"):
+            created.append(task_type)
+
+        def exec(self):
+            return None
+
+    monkeypatch.setattr(duty_mode, "OtrsCreateTaskDialog", FakeCreateDialog)
+    monkeypatch.setattr(duty_mode, "save_config", lambda config: None)
+
+    dialog = duty_mode.DutyTasksDialog.__new__(duty_mode.DutyTasksDialog)
+    dialog.config = {
+        "duty_mode": {
+            "duty_zabbix_task_url": "oldB",
+            "duty_service_checks_task_url": "oldA",
+            "current_ticket_url": "oldB",
+        }
+    }
+    dialog.task_types = ["zabbix", "service_checks"]
+    dialog.inputs = {"zabbix": DummyLineEdit(), "service_checks": DummyLineEdit()}
+    dialog._running = False
+    dialog._set_running = lambda running: setattr(dialog, "_running", bool(running))
+    dialog.result_label = DummyLabel()
+    dialog._refresh_action_text = lambda: None
+    dialog.on_changed = None
+    dialog.logger = DummyLogger()
+
+    duty_mode.DutyTasksDialog.apply_tasks(dialog)
+
+    assert created == ["zabbix", "service_checks"]
+    assert "создание открыто" in dialog.result_label.text()
 
 
 def test_open_graph_check_note_uses_zabbix_ticket_not_service_ticket(monkeypatch):

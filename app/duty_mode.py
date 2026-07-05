@@ -1633,7 +1633,7 @@ class OtrsCreateTaskDialog(QDialog):
         ticket_id_row = QHBoxLayout()
 
         self.ticket_id_input = QLineEdit()
-        self.ticket_id_input.setText(self.get_settings().get("current_ticket_id", ""))
+        self.ticket_id_input.setText(self._current_ticket_id())
         self.ticket_id_input.setPlaceholderText("TicketID из ссылки задачи")
 
         remember_open_button = QPushButton("Запомнить открытую задачу")
@@ -1682,8 +1682,14 @@ class OtrsCreateTaskDialog(QDialog):
     def _current_task_number(self):
         settings = self.get_settings()
         if self.task_type == "service_checks":
-            return settings.get("duty_service_checks_task_number", "")
-        return settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number", "")
+            return str(settings.get("duty_service_checks_task_number", "") or "").strip()
+        return str(settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number", "") or "").strip()
+
+    def _current_ticket_id(self):
+        settings = self.get_settings()
+        if self.task_type == "service_checks":
+            return str(settings.get("duty_service_checks_task_id", "") or "").strip()
+        return str(settings.get("duty_zabbix_task_id") or settings.get("current_ticket_id", "") or "").strip()
 
     def get_settings(self):
         return ensure_duty_mode_defaults(self.config)
@@ -3913,8 +3919,11 @@ class DutyTasksDialog(QDialog):
         label.setStyleSheet("font-size: 10px; font-weight: 700; letter-spacing: 0.08em;")
         label.setMinimumWidth(125)
         field = QLineEdit()
-        field.setPlaceholderText("Ссылка на существующий тикет, или пусто — для создания нового")
-        field.setText(binding.get("url") or binding.get("number") or "")
+        placeholder = "Ссылка на существующий тикет, или пусто — для создания нового"
+        current_value = binding.get("url") or binding.get("number") or ""
+        if current_value:
+            placeholder = f"{placeholder}. Сейчас: {current_value}"
+        field.setPlaceholderText(placeholder)
         field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         field.textChanged.connect(lambda _text: self._refresh_action_text())
         self.inputs[task_type] = field
@@ -4101,17 +4110,12 @@ class DutyTasksDialog(QDialog):
                         self._start_hidden_ticket_number_resolver(task_type, parsed.get("id", ""), parsed.get("url", ""))
                     results.append(self._format_success(task_type, "link", parsed))
                 else:
-                    if has_current_task(settings, task_type):
-                        binding = current_task_binding(settings, task_type)
-                        results.append(f"✓ «{TASK_LABELS[task_type]}» уже привязана к смене")
-                        field = self.inputs.get(task_type)
-                        if field and not field.text().strip():
-                            field.setText(binding.get("url") or binding.get("number") or "")
-                        continue
+                    old_binding = current_task_binding(settings, task_type)
                     self.logger.info("Duty task create opened: task_type=%s", task_type)
                     dialog = OtrsCreateTaskDialog(self.config, parent=self, task_type=task_type)
                     dialog.exec()
-                    if has_current_task(settings, task_type):
+                    new_binding = current_task_binding(settings, task_type)
+                    if has_current_task(settings, task_type) and new_binding != old_binding:
                         results.append(self._format_success(task_type, "create"))
                     else:
                         errors.append(f"✗ {TASK_LABELS[task_type]}: создание открыто, привязка ещё не сохранена. Создайте тикет вручную и привяжите номер/URL.")
