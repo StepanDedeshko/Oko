@@ -241,6 +241,84 @@ def test_duty_tasks_empty_inputs_open_create_for_both_tasks(monkeypatch):
     assert "создание открыто" in dialog.result_label.text()
 
 
+def test_open_service_check_note_uses_note_url_from_service_ticket_id(monkeypatch):
+    captured = {}
+
+    class FakeDialog:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.url_input = DummyLineEdit()
+            self.url_input.setText(kwargs.get("initial_note_url", ""))
+
+        def get_ticket_id(self):
+            return "70413"
+
+        def exec(self):
+            captured["exec_called"] = True
+
+    config = {
+        "duty_mode": {
+            "duty_service_checks_task_id": "70413",
+            "duty_service_checks_task_url": "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketZoom;TicketID=70413",
+        }
+    }
+    widget = duty_mode.DutyModeWidget.__new__(duty_mode.DutyModeWidget)
+    widget.config = config
+    widget.logger = DummyLogger()
+    widget.service_check_results = []
+    widget.service_settings = lambda: {}
+
+    monkeypatch.setattr(duty_mode, "OtrsNoteDialog", FakeDialog)
+    monkeypatch.setattr(duty_mode, "build_service_check_note_text", lambda config, results: "service note")
+
+    duty_mode.DutyModeWidget.open_service_check_note(widget)
+
+    assert captured["task_type"] == "service_checks"
+    assert captured["initial_note_url"].endswith("Action=AgentTicketNote;TicketID=70413")
+    assert "AgentTicketZoom" not in captured["initial_note_url"]
+    assert captured["exec_called"] is True
+
+
+def test_open_service_check_note_extracts_ticket_id_from_service_task_url(monkeypatch):
+    captured = {}
+
+    class FakeDialog:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.url_input = DummyLineEdit()
+            self.url_input.setText(kwargs.get("initial_note_url", ""))
+
+        def get_ticket_id(self):
+            return "70413"
+
+        def exec(self):
+            captured["exec_called"] = True
+
+    config = {
+        "duty_mode": {
+            "duty_service_checks_task_id": "",
+            "duty_service_checks_task_url": "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketZoom;TicketID=70413",
+        }
+    }
+    widget = duty_mode.DutyModeWidget.__new__(duty_mode.DutyModeWidget)
+    widget.config = config
+    widget.logger = DummyLogger()
+    widget.service_check_results = []
+    widget.service_settings = lambda: {}
+
+    monkeypatch.setattr(duty_mode, "OtrsNoteDialog", FakeDialog)
+    monkeypatch.setattr(duty_mode, "build_service_check_note_text", lambda config, results: "service note")
+    monkeypatch.setattr(duty_mode, "save_config", lambda config: None)
+
+    duty_mode.DutyModeWidget.open_service_check_note(widget)
+
+    assert config["duty_mode"]["duty_service_checks_task_id"] == "70413"
+    assert captured["task_type"] == "service_checks"
+    assert captured["initial_note_url"].endswith("Action=AgentTicketNote;TicketID=70413")
+    assert "AgentTicketZoom" not in captured["initial_note_url"]
+    assert captured["exec_called"] is True
+
+
 def test_open_graph_check_note_uses_zabbix_ticket_not_service_ticket(monkeypatch):
     captured = {}
 

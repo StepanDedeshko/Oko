@@ -5226,21 +5226,33 @@ class DutyModeWidget(QWidget):
             self._show_duty_note_dialog("services")
 
     def open_service_check_note(self):
-        task_url = (self.get_settings().get("duty_service_checks_task_url") or self.service_settings().get("otrs_task_url", "")).strip()
-        if not task_url:
+        settings = self.get_settings()
+        task_url = str(settings.get("duty_service_checks_task_url") or self.service_settings().get("otrs_task_url", "") or "").strip()
+        ticket_id = str(settings.get("duty_service_checks_task_id", "") or "").strip()
+
+        if not ticket_id and task_url:
+            match = re.search(r"[?;]TicketID=([^;&?#]+)", task_url)
+            if match:
+                ticket_id = match.group(1).strip()
+                settings["duty_service_checks_task_id"] = ticket_id
+                save_config(self.config)
+
+        if not ticket_id:
             QMessageBox.warning(
                 self,
                 "Проверка сервисов",
-                "Задача ОТРС для проверки сервисов не указана.\nУкажите задачу в настройках проверки сервисов.",
+                "У задачи проверки сервисов не найден TicketID. Укажите задачу ОТРС с TicketID в настройках проверки сервисов.",
             )
             return
+
+        note_url = self._otrs_note_url_for_ticket_id(ticket_id)
         note_text = build_service_check_note_text(self.config, self.service_check_results)
         dialog = OtrsNoteDialog(
             config=self.config,
             note_text=note_text,
             parent=self,
             saved_log_message="Service check OTRS note saved",
-            initial_note_url=task_url,
+            initial_note_url=note_url,
             task_type="service_checks",
         )
         self.logger.info(
@@ -5270,6 +5282,19 @@ class DutyModeWidget(QWidget):
 
     def _task_summary(self, number):
         return f"№{number}" if number else "не привязана"
+
+    def _otrs_note_url_for_ticket_id(self, ticket_id):
+        otrs = self.get_settings().setdefault("otrs", {})
+        note_base = str(
+            otrs.get(
+                "note_url_base",
+                "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=",
+            )
+            or ""
+        ).strip()
+        if not note_base:
+            note_base = "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID="
+        return note_base + str(ticket_id or "").strip()
 
 
     def _duty_task_url(self, task_type):
@@ -6801,17 +6826,7 @@ class DutyModeWidget(QWidget):
 
         note_url = ticket_url
         if ticket_id:
-            otrs = self.get_settings().setdefault("otrs", {})
-            note_base = str(
-                otrs.get(
-                    "note_url_base",
-                    "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=",
-                )
-                or ""
-            ).strip()
-            if not note_base:
-                note_base = "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID="
-            note_url = note_base + ticket_id
+            note_url = self._otrs_note_url_for_ticket_id(ticket_id)
         elif not note_url:
             note_url = (
                 self.get_settings()
