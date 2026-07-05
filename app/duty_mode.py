@@ -1924,7 +1924,7 @@ class OtrsNoteDialog(QDialog):
     - вставить текст в CKEditor/contenteditable body.
     """
 
-    def __init__(self, config, note_text, parent=None, on_saved_callback=None, saved_log_message=None, initial_note_url=None):
+    def __init__(self, config, note_text, parent=None, on_saved_callback=None, saved_log_message=None, initial_note_url=None, task_type="zabbix"):
         super().__init__(parent)
 
         self.config = config
@@ -1932,6 +1932,7 @@ class OtrsNoteDialog(QDialog):
         self.on_saved_callback = on_saved_callback
         self.saved_log_message = saved_log_message
         self.initial_note_url = str(initial_note_url or "").strip()
+        self.task_type = task_type if task_type in {"zabbix", "service_checks"} else "zabbix"
         self.note_saved = False
         self._is_closing = False
         self._observers_stopped = False
@@ -2029,10 +2030,16 @@ class OtrsNoteDialog(QDialog):
         return settings.setdefault("otrs", {})
 
     def get_task_number(self):
-        return self.get_settings().get("current_ticket_number", "").strip()
+        settings = self.get_settings()
+        if self.task_type == "service_checks":
+            return str(settings.get("duty_service_checks_task_number", "") or "").strip()
+        return str(settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number", "") or "").strip()
 
     def get_ticket_id(self):
-        return self.get_settings().get("current_ticket_id", "").strip()
+        settings = self.get_settings()
+        if self.task_type == "service_checks":
+            return str(settings.get("duty_service_checks_task_id", "") or "").strip()
+        return str(settings.get("duty_zabbix_task_id") or settings.get("current_ticket_id", "") or "").strip()
 
     def extract_ticket_id_from_url(self, url):
         match = re.search(r"[?;]TicketID=([^;&?#]+)", url or "")
@@ -2059,8 +2066,14 @@ class OtrsNoteDialog(QDialog):
             return False
 
         settings = self.get_settings()
-        settings["current_ticket_id"] = ticket_id
-        settings["current_ticket_url"] = url
+        if self.task_type == "service_checks":
+            settings["duty_service_checks_task_id"] = ticket_id
+            settings["duty_service_checks_task_url"] = url
+        else:
+            settings["duty_zabbix_task_id"] = ticket_id
+            settings["duty_zabbix_task_url"] = url
+            settings["current_ticket_id"] = ticket_id
+            settings["current_ticket_url"] = url
 
         note_url = self.make_note_url_by_ticket_id(ticket_id)
         self.url_input.setText(note_url)
@@ -2189,8 +2202,11 @@ class OtrsNoteDialog(QDialog):
         settings = self.get_settings()
 
         if number:
-            settings["current_ticket_number"] = number
-            settings["duty_zabbix_task_number"] = number
+            if self.task_type == "service_checks":
+                settings["duty_service_checks_task_number"] = number
+            else:
+                settings["duty_zabbix_task_number"] = number
+                settings["current_ticket_number"] = number
             changed = True
 
         if changed:
@@ -5221,6 +5237,13 @@ class DutyModeWidget(QWidget):
             parent=self,
             saved_log_message="Service check OTRS note saved",
             initial_note_url=task_url,
+            task_type="service_checks",
+        )
+        self.logger.info(
+            "Duty OTRS note opened: task_type=%s ticket_id=%s note_url=%s",
+            "service_checks",
+            dialog.get_ticket_id(),
+            dialog.url_input.text().strip(),
         )
         dialog.exec()
 
@@ -5400,15 +5423,18 @@ class DutyModeWidget(QWidget):
         settings = self.get_settings()
 
         if not settings.get("enabled", False):
+            self.logger.info("Duty hourly notification check skipped: duty disabled")
             return
 
         if not settings.get("hourly_notification", True):
+            self.logger.info("Duty hourly notification check skipped: hourly disabled")
             return
 
         hour_key = now.strftime("%Y-%m-%d %H")
 
-        if now.minute == 0 and now.second <= 2 and self.last_hour_key != hour_key:
+        if now.minute <= 5 and self.last_hour_key != hour_key:
             self.last_hour_key = hour_key
+            self.logger.info("Duty hourly notification shown: hour_key=%s", hour_key)
             self.show_notification("Нужно произвести проверку графиков.")
 
     def play_sound(self):
@@ -6720,13 +6746,14 @@ class DutyModeWidget(QWidget):
     def _bound_task_details(self):
         settings = self.get_settings()
         ticket_number = (settings.get("duty_zabbix_task_number") or settings.get("current_ticket_number", "")).strip()
-        ticket_id = settings.get("current_ticket_id", "").strip()
-        ticket_url = settings.get("current_ticket_url", "").strip()
+        ticket_id = (settings.get("duty_zabbix_task_id") or settings.get("current_ticket_id", "") or "").strip()
+        ticket_url = (settings.get("duty_zabbix_task_url") or settings.get("current_ticket_url", "") or "").strip()
 
         if not ticket_id and ticket_url:
             match = re.search(r"[?;]TicketID=([^;&?#]+)", ticket_url)
             if match:
                 ticket_id = match.group(1).strip()
+                settings["duty_zabbix_task_id"] = ticket_id
                 settings["current_ticket_id"] = ticket_id
                 save_config(self.config)
 
@@ -6766,6 +6793,29 @@ class DutyModeWidget(QWidget):
                 )
                 return
 
+        note_url = ticket_url
+        if ticket_id:
+            otrs = self.get_settings().setdefault("otrs", {})
+            note_base = str(
+                otrs.get(
+                    "note_url_base",
+                    "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID=",
+                )
+                or ""
+            ).strip()
+            if not note_base:
+                note_base = "https://itsm.stdpr.ru/itsm/index.pl?Action=AgentTicketNote;TicketID="
+            note_url = note_base + ticket_id
+        elif not note_url:
+            note_url = (
+                self.get_settings()
+                .setdefault("otrs", {})
+                .get("note_url_template", "")
+                .strip()
+                .replace("{ticket_number}", ticket_number)
+                .replace("{ticket_id}", ticket_id)
+            )
+
         note_text = self.build_graph_check_note_text()
         dialog = OtrsNoteDialog(
             config=self.config,
@@ -6773,11 +6823,14 @@ class DutyModeWidget(QWidget):
             parent=self,
             on_saved_callback=self._after_graph_check_note_saved,
             saved_log_message="Duty graph check note saved",
+            initial_note_url=note_url,
+            task_type="zabbix",
         )
         self.logger.info(
-            "Duty graph check note opened: ticket_number=%s ticket_id=%s",
-            ticket_number or "",
-            ticket_id or "",
+            "Duty OTRS note opened: task_type=%s ticket_id=%s note_url=%s",
+            "zabbix",
+            ticket_id or dialog.get_ticket_id(),
+            dialog.url_input.text().strip(),
         )
         dialog.exec()
 
