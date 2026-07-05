@@ -5423,11 +5423,11 @@ class DutyModeWidget(QWidget):
         settings = self.get_settings()
 
         if not settings.get("enabled", False):
-            self.logger.info("Duty hourly notification check skipped: duty disabled")
+            self.logger.debug("Duty hourly notification check skipped: duty disabled")
             return
 
         if not settings.get("hourly_notification", True):
-            self.logger.info("Duty hourly notification check skipped: hourly disabled")
+            self.logger.debug("Duty hourly notification check skipped: hourly disabled")
             return
 
         hour_key = now.strftime("%Y-%m-%d %H")
