@@ -149,6 +149,84 @@ def run_tick_at(widget, year=2026, month=7, day=5, hour=20, minute=15, second=0)
     duty_mode.DutyModeWidget.tick(widget)
 
 
+def make_toggle_widget(enabled=False):
+    widget = duty_mode.DutyModeWidget.__new__(duty_mode.DutyModeWidget)
+    widget.config = {
+        "duty_mode": {
+            "enabled": enabled,
+            "hourly_notification": True,
+            "check_zabbix_enabled": True,
+        }
+    }
+    widget.last_hour_key = None
+    widget._selected_duty_checks = lambda: ["zabbix"]
+    widget._ask_duty_check_selection = lambda: True
+    widget.update_enable_button = lambda: None
+    widget.ask_duty_task_flow_called = False
+
+    def ask_duty_task_flow():
+        widget.ask_duty_task_flow_called = True
+
+    widget.ask_duty_task_flow = ask_duty_task_flow
+    return widget
+
+
+def test_enabling_duty_at_2003_marks_current_hour_without_immediate_notification(monkeypatch):
+    monkeypatch.setattr(duty_mode, "datetime", FakeDateTime)
+    monkeypatch.setattr(duty_mode, "save_config", lambda config: None)
+    FakeDateTime.current = datetime(2026, 7, 5, 20, 3, 0, tzinfo=duty_mode.MSK)
+    widget = make_toggle_widget(enabled=False)
+
+    duty_mode.DutyModeWidget.toggle_enabled(widget)
+    notifications = []
+    widget.msk_time_label = DummyLabel()
+    widget.logger = DummyLogger()
+    widget.show_notification = notifications.append
+    run_tick_at(widget, hour=20, minute=3)
+
+    assert widget.config["duty_mode"]["enabled"] is True
+    assert widget.ask_duty_task_flow_called is True
+    assert widget.last_hour_key == "2026-07-05 20"
+    assert notifications == []
+
+
+def test_enabling_duty_at_2015_marks_current_hour_without_immediate_notification(monkeypatch):
+    monkeypatch.setattr(duty_mode, "datetime", FakeDateTime)
+    monkeypatch.setattr(duty_mode, "save_config", lambda config: None)
+    FakeDateTime.current = datetime(2026, 7, 5, 20, 15, 0, tzinfo=duty_mode.MSK)
+    widget = make_toggle_widget(enabled=False)
+
+    duty_mode.DutyModeWidget.toggle_enabled(widget)
+    notifications = []
+    widget.msk_time_label = DummyLabel()
+    widget.logger = DummyLogger()
+    widget.show_notification = notifications.append
+    run_tick_at(widget, hour=20, minute=15)
+
+    assert widget.last_hour_key == "2026-07-05 20"
+    assert notifications == []
+
+
+def test_first_hourly_notification_after_enabling_is_next_calendar_hour(monkeypatch):
+    monkeypatch.setattr(duty_mode, "datetime", FakeDateTime)
+    monkeypatch.setattr(duty_mode, "save_config", lambda config: None)
+    FakeDateTime.current = datetime(2026, 7, 5, 20, 3, 0, tzinfo=duty_mode.MSK)
+    widget = make_toggle_widget(enabled=False)
+
+    duty_mode.DutyModeWidget.toggle_enabled(widget)
+    notifications = []
+    widget.msk_time_label = DummyLabel()
+    widget.logger = DummyLogger()
+    widget.show_notification = notifications.append
+
+    run_tick_at(widget, hour=21, minute=0)
+    for minute in (1, 2, 3):
+        run_tick_at(widget, hour=21, minute=minute)
+
+    assert notifications == ["Нужно произвести проверку графиков."]
+    assert widget.last_hour_key == "2026-07-05 21"
+
+
 def test_hourly_notification_not_shown_in_middle_of_hour(monkeypatch):
     monkeypatch.setattr(duty_mode, "datetime", FakeDateTime)
     widget, notifications = make_hourly_widget()

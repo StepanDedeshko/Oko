@@ -5364,6 +5364,8 @@ class DutyModeWidget(QWidget):
             if not self._ask_duty_check_selection():
                 return
         settings["enabled"] = not was_enabled
+        if settings["enabled"] and not was_enabled:
+            self.last_hour_key = datetime.now(MSK).strftime("%Y-%m-%d %H")
         save_config(self.config)
         self.update_enable_button()
 
