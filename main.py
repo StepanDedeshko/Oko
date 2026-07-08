@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from app.config import ensure_config_exists, load_config
 from app.config_migrator import patch_config_file
+from app.jabka_embedded_assets import apply_jabka_icon_to_widget, install_jabka_embedded_assets
 from app.jabka_theme import (
     apply_jabka_runtime,
     apply_jabka_widget_tree,
@@ -78,7 +79,8 @@ def main():
     if jabka_icon_path is not None:
         icon_path = jabka_icon_path
 
-    if icon_path.exists():
+    jabka_icon = install_jabka_embedded_assets(config, app)
+    if jabka_icon is None and icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
     apply_theme(app, config.get("settings", {}).get("theme", "mass_effect"))
@@ -86,7 +88,9 @@ def main():
     startup_screen = screen_under_cursor()
 
     splash = ThemeSplash(config=config, preferred_screen=startup_screen)
-    if icon_path.exists():
+    if jabka_icon is not None:
+        apply_jabka_icon_to_widget(splash, jabka_icon)
+    elif icon_path.exists():
         splash.setWindowIcon(QIcon(str(icon_path)))
     splash.show()
     app.processEvents()
@@ -95,7 +99,9 @@ def main():
     app.processEvents()
 
     login_dialog = LoginDialog(config, preferred_screen=startup_screen)
-    if icon_path.exists():
+    if jabka_icon is not None:
+        apply_jabka_icon_to_widget(login_dialog, jabka_icon)
+    elif icon_path.exists():
         login_dialog.setWindowIcon(QIcon(str(icon_path)))
 
     if login_dialog.exec() != LoginDialog.Accepted:
@@ -106,7 +112,9 @@ def main():
 
     window = MainWindow(config=config, credentials=login_dialog.credentials)
 
-    if icon_path.exists():
+    if jabka_icon is not None:
+        apply_jabka_icon_to_widget(window, jabka_icon)
+    elif icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
     apply_jabka_widget_tree(window, config)
 
