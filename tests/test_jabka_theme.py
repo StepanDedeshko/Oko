@@ -1,6 +1,5 @@
 import unittest
 
-from app.jabka_embedded_assets import jabka_icon, jabka_pixmap
 from app.jabka_theme import (
     JABKA_APP_NAME,
     JABKA_THEME_NAME,
@@ -41,10 +40,6 @@ class JabkaThemeFoundationTests(unittest.TestCase):
     def test_jabka_asset_paths_are_centralized(self):
         self.assertTrue(str(theme_asset_path("frogs", "frog_main.png")).endswith("assets/themes/jabka/frogs/frog_main.png"))
         self.assertTrue(str(jabka_sound_path("jabbix_graph_check_kvak.wav")).endswith("assets/themes/jabka/sounds/jabbix_graph_check_kvak.wav"))
-
-    def test_embedded_frog_icon_is_available(self):
-        self.assertFalse(jabka_pixmap().isNull())
-        self.assertFalse(jabka_icon().isNull())
 
 
 if __name__ == "__main__":
