@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QTimer, Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
-from PySide6.QtWidgets import QAbstractScrollArea, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QAbstractScrollArea, QLabel, QPushButton, QVBoxLayout, QWidget
 
 try:
     from PySide6.QtWidgets import QFrame
@@ -14,9 +14,6 @@ except Exception:  # pragma: no cover - defensive for unusual Qt builds
 from app.jabka_theme import apply_text_overrides, is_jabka_config, theme_asset_path
 
 
-# Main page uses the clean wallpaper from the user's asset pack.
-# Duty/work panels use separate cell art as inner backgrounds; those images are
-# never inserted into layouts and must not resize working fields.
 PAGE_BACKGROUNDS = {
     "HomeShell": "00_main_menu_wallpaper.png",
 }
@@ -30,10 +27,8 @@ CELL_BACKGROUND_FILES = (
 )
 
 MENU_FRAME_FILE = "menu_frame.png"
-MENU_FRAME_ASPECT = 2 / 3  # uploaded frame is a tall 1024x1536-style art
+MENU_FRAME_ASPECT = 2 / 3
 
-# Performance guard: applying image layers to every nested field is expensive.
-# Keep art only on a few large outer panels; nested text fields remain translucent.
 MAX_CELL_BACKGROUNDS_PER_PAGE = 6
 MIN_CELL_BACKGROUND_AREA = 52_000
 
@@ -57,8 +52,11 @@ QWidget#DutyModeShell QGroupBox {
     border-radius: 16px;
 }
 QWidget#HomeShell QWidget#HomeMenuCard,
-QWidget#HomeShell QFrame#HomeMenuCard {
+QWidget#HomeShell QFrame#HomeMenuCard,
+QWidget#HomeShell QWidget#JabkaMenuOverlay,
+QWidget#HomeShell QFrame#JabkaMenuOverlay {
     background: transparent;
+    background-color: transparent;
     border: 0px solid transparent;
     border-radius: 0;
     margin: 0;
@@ -140,10 +138,8 @@ def _resolve_asset(folder: str, filename: str, fallbacks: tuple[str, ...] = ()) 
 
 def _scaled_background_pixmap(source: QPixmap, target_size, overlay_alpha: int, scale_mode: str = "cover") -> QPixmap:
     if scale_mode == "menu_frame":
-        # The generated frame asset contains a faint outer canvas outline.
-        # Crop a tiny edge band before stretching so only the ornate frame remains.
-        crop_x = max(1, int(source.width() * 0.025))
-        crop_y = max(1, int(source.height() * 0.020))
+        crop_x = max(1, int(source.width() * 0.035))
+        crop_y = max(1, int(source.height() * 0.028))
         source = source.copy(
             crop_x,
             crop_y,
@@ -176,12 +172,6 @@ def _scaled_background_pixmap(source: QPixmap, target_size, overlay_alpha: int, 
 
 
 class _JabkaBackgroundResizer(QObject):
-    """Keeps an art image as a non-layout background layer.
-
-    The layer is a child of the target widget, not a layout item. It never pushes
-    buttons, tables, text fields or QtWebEngine views out of the working area.
-    """
-
     def __init__(self, target: QWidget, label: QLabel, pixmap: QPixmap, overlay_alpha: int = 0, scale_mode: str = "cover"):
         super().__init__(target)
         self.target = target
@@ -297,7 +287,7 @@ def _has_cell_background_ancestor(widget: QWidget, shell: QWidget) -> bool:
 def _is_cell_candidate(widget: QWidget, shell: QWidget) -> bool:
     if widget is shell:
         return False
-    if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer", "JabkaMenuFrameLayer", "JabkaMenuCrown"}:
+    if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer", "JabkaMenuFrameLayer", "JabkaMenuOverlay", "JabkaMenuCrown"}:
         return False
     if _is_webengine_widget(widget) or _has_cell_background_ancestor(widget, shell):
         return False
@@ -390,20 +380,28 @@ def _apply_shell_cell_backgrounds(shell: QWidget) -> None:
 
 
 def _find_home_widgets(shell: QWidget):
-    menu = None
+    menu = getattr(shell, "_jabka_home_menu_overlay", None)
+    source_menu = getattr(shell, "_jabka_original_home_menu", None)
     title = None
     subtitle = None
     footer = None
+    if not isinstance(menu, QWidget):
+        menu = None
+    if not isinstance(source_menu, QWidget):
+        source_menu = None
     for widget in _safe_widgets(shell):
-        if widget.objectName() == "HomeMenuCard":
+        object_name = widget.objectName()
+        if object_name == "HomeMenuCard" and source_menu is None:
+            source_menu = widget
+        elif object_name == "JabkaMenuOverlay" and menu is None:
             menu = widget
-        elif widget.objectName() == "HomeTitle" and isinstance(widget, QLabel):
+        elif object_name == "HomeTitle" and isinstance(widget, QLabel):
             title = widget
-        elif widget.objectName() == "AppFooter" and isinstance(widget, QLabel):
+        elif object_name == "AppFooter" and isinstance(widget, QLabel):
             footer = widget
         elif isinstance(widget, QLabel) and "выбери нужный раздел" in widget.text().lower():
             subtitle = widget
-    return menu, title, subtitle, footer
+    return menu, source_menu, title, subtitle, footer
 
 
 def _hide_layout_mascots(shell: QWidget) -> None:
@@ -526,7 +524,7 @@ def _make_menu_container_transparent(menu: QWidget) -> None:
         except Exception:
             pass
     menu.setStyleSheet(
-        "QWidget#HomeMenuCard, QFrame#HomeMenuCard {"
+        "QWidget#HomeMenuCard, QFrame#HomeMenuCard, QWidget#JabkaMenuOverlay, QFrame#JabkaMenuOverlay {"
         "background: transparent;"
         "background-color: transparent;"
         "border: 0px solid transparent;"
@@ -537,9 +535,42 @@ def _make_menu_container_transparent(menu: QWidget) -> None:
     )
 
 
+def _create_menu_overlay(shell: QWidget, source_menu: QWidget) -> QWidget:
+    overlay = getattr(shell, "_jabka_home_menu_overlay", None)
+    if isinstance(overlay, QWidget):
+        return overlay
+
+    buttons = source_menu.findChildren(QPushButton)
+    buttons.sort(key=lambda button: (button.geometry().y(), button.geometry().x()))
+
+    overlay = QWidget(shell)
+    overlay.setObjectName("JabkaMenuOverlay")
+    _make_menu_container_transparent(overlay)
+    overlay_layout = QVBoxLayout(overlay)
+    overlay_layout.setContentsMargins(0, 0, 0, 0)
+    overlay_layout.setSpacing(12)
+
+    for button in buttons:
+        button.setParent(overlay)
+        overlay_layout.addWidget(button)
+
+    _make_menu_container_transparent(source_menu)
+    source_menu.hide()
+    try:
+        source_menu.setParent(None)
+    except Exception:
+        pass
+
+    setattr(shell, "_jabka_original_home_menu", source_menu)
+    setattr(shell, "_jabka_home_menu_overlay", overlay)
+    return overlay
+
+
 def _apply_home_scene(shell: QWidget) -> None:
     _hide_layout_mascots(shell)
-    menu, title, subtitle, footer = _find_home_widgets(shell)
+    menu, source_menu, title, subtitle, footer = _find_home_widgets(shell)
+    if menu is None and source_menu is not None:
+        menu = _create_menu_overlay(shell, source_menu)
     if menu is None:
         return
 
