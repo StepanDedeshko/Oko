@@ -21,10 +21,11 @@ except Exception:  # pragma: no cover - sound is optional
 from app.jabka_theme import apply_text_overrides, is_jabka_config, theme_asset_path
 
 
-# The main wallpaper already contains the swamp, frog and decorative menu frame.
-# Runtime must place ONLY real Qt buttons over that baked-in frame.
+# These wallpapers already contain the decorative frames.
+# Runtime must place ONLY real Qt buttons over those baked-in frames.
 PAGE_BACKGROUNDS = {
     "HomeShell": "00_main_menu_wallpaper.png",
+    "SettingsMenuWidget": "10_settings_menu_wallpaper.png",
 }
 
 CELL_BACKGROUND_FILES = (
@@ -48,6 +49,17 @@ BUTTON_ICONS = {
     "Покинуть болото": "↪",
 }
 
+SETTINGS_BUTTON_ICONS = {
+    "Перенос настроек": "⇅",
+    "Настройки дежурки": "♟",
+    "Проверка сервисов": "⌕",
+    "Шаблоны": "▤",
+    "Что нового": "✦",
+    "Тема": "🎨",
+    "Продукты и страницы": "▣",
+    "Ссылки": "🔗",
+}
+
 FROG_SOUND_FILES = (
     "frog_croak.wav",
     "frog_croak.mp3",
@@ -62,7 +74,8 @@ FROG_SOUND_FILES = (
 
 _READABLE_PANEL_QSS = """
 QWidget#HomeShell QWidget#HomeMenuCard,
-QWidget#HomeShell QFrame#HomeMenuCard {
+QWidget#HomeShell QFrame#HomeMenuCard,
+QWidget#MenuCard {
     background: transparent;
     background-color: transparent;
     border: 0px solid transparent;
@@ -373,7 +386,7 @@ def _clean_button_text(text: str) -> str:
     for marker in ("  ›", " ›", "›", ">"):
         value = value.replace(marker, "")
     value = " ".join(value.split())
-    for icon in BUTTON_ICONS.values():
+    for icon in (*BUTTON_ICONS.values(), *SETTINGS_BUTTON_ICONS.values()):
         if value.startswith(icon):
             value = value[len(icon):].strip()
     return value
@@ -392,7 +405,7 @@ def _make_menu_container_transparent(menu: QWidget) -> None:
         except Exception:
             pass
     menu.setStyleSheet(
-        "QWidget#HomeMenuCard, QFrame#HomeMenuCard {"
+        "QWidget#HomeMenuCard, QFrame#HomeMenuCard, QWidget#MenuCard, QFrame#MenuCard {"
         "background: transparent; background-color: transparent;"
         "border: 0px solid transparent; border-radius: 0; padding: 0; margin: 0;"
         "}"
@@ -719,8 +732,6 @@ class _JabkaHomeLayoutResizer(QObject):
             tail.setGeometry(dialog_x + int(dialog_w * 0.20), dialog_y + dialog_h - 8, 42, 38)
 
         # Buttons are placed directly on the baked right-side menu frame.
-        # These coordinates are intentionally absolute relative to HomeShell,
-        # because the source HomeMenuCard layout keeps fighting setGeometry().
         button_w = min(max(520, int(w * 0.285)), 610)
         button_h = min(max(58, int(h * 0.058)), 68)
         button_x = int(w * 0.492)
@@ -800,6 +811,138 @@ def _apply_home_scene(shell: QWidget) -> None:
     resizer.update_layout()
 
 
+def _find_settings_widgets(shell: QWidget):
+    menu = None
+    hint = None
+    for widget in _safe_widgets(shell):
+        if widget.objectName() == "MenuCard" and menu is None:
+            menu = widget
+        elif isinstance(widget, QLabel) and "выберите подраздел настроек" in widget.text().lower():
+            hint = widget
+    return menu, hint
+
+
+def _extract_settings_buttons(shell: QWidget, menu: QWidget) -> list[QPushButton]:
+    buttons = getattr(shell, "_jabka_absolute_settings_buttons", None)
+    if isinstance(buttons, list) and buttons and all(isinstance(button, QPushButton) for button in buttons):
+        return buttons
+
+    buttons = menu.findChildren(QPushButton)
+    buttons.sort(key=lambda button: (button.geometry().y(), button.geometry().x()))
+    for button in buttons:
+        button.setParent(shell)
+        button.show()
+        button.raise_()
+
+    _make_menu_container_transparent(menu)
+    menu.hide()
+    setattr(shell, "_jabka_absolute_settings_buttons", buttons)
+    return buttons
+
+
+def _polish_settings_buttons(buttons: list[QPushButton]) -> None:
+    for button in buttons:
+        clean_text = _clean_button_text(button.text())
+        icon = SETTINGS_BUTTON_ICONS.get(clean_text, "✦")
+        button.setText(f"{icon}   {clean_text}")
+        button.setMinimumHeight(50)
+        button.setMaximumHeight(60)
+        button.setMinimumWidth(320)
+        button.setMaximumWidth(430)
+        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setStyleSheet(
+            "QPushButton {"
+            "text-align: left;"
+            "padding-left: 34px; padding-right: 18px;"
+            "border-radius: 14px;"
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 rgba(10, 50, 20, 222), stop:0.50 rgba(6, 28, 13, 202), stop:1 rgba(3, 15, 8, 178));"
+            "border: 1px solid rgba(164, 232, 93, 185);"
+            "color: #F2F9D7; font-size: 18px; font-weight: 900;"
+            "}"
+            "QPushButton:hover {"
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 rgba(66, 145, 43, 238), stop:0.55 rgba(25, 86, 29, 224), stop:1 rgba(7, 32, 13, 202));"
+            "border: 1px solid #D7B85A; color: #FBFFE8;"
+            "}"
+            "QPushButton:pressed {"
+            "background: rgba(7, 31, 14, 235); border: 1px solid #F0D36C;"
+            "}"
+        )
+        button.show()
+        button.raise_()
+
+
+class _JabkaSettingsMenuResizer(QObject):
+    def __init__(self, shell: QWidget, menu: QWidget, buttons: list[QPushButton], hint: QLabel | None):
+        super().__init__(shell)
+        self.shell = shell
+        self.menu = menu
+        self.buttons = buttons
+        self.hint = hint
+
+    def eventFilter(self, obj, event):
+        if obj is self.shell and event.type() in {QEvent.Resize, QEvent.Show}:
+            self.update_layout()
+        return False
+
+    def update_layout(self) -> None:
+        w = max(1, self.shell.width())
+        h = max(1, self.shell.height())
+        if self.hint is not None:
+            self.hint.hide()
+
+        button_w = min(max(320, int(w * 0.185)), 410)
+        button_h = min(max(48, int(h * 0.058)), 58)
+        button_x = int(w * 0.408)
+        button_y = int(h * 0.187)
+        gap = max(10, int(h * 0.018))
+
+        self.menu.hide()
+        for index, button in enumerate(self.buttons):
+            button.setGeometry(button_x, button_y + index * (button_h + gap), button_w, button_h)
+            button.show()
+            button.raise_()
+
+
+def _apply_settings_menu_scene(shell: QWidget) -> None:
+    menu, hint = _find_settings_widgets(shell)
+    if menu is None:
+        return
+
+    buttons = _extract_settings_buttons(shell, menu)
+    if not buttons:
+        return
+
+    if shell.property("jabka_settings_menu_scene_done"):
+        _make_menu_container_transparent(menu)
+        _polish_settings_buttons(buttons)
+        if hint is not None:
+            hint.hide()
+        resizer = getattr(shell, "_jabka_settings_menu_resizer", None)
+        if resizer is not None:
+            resizer.update_layout()
+        return
+
+    layout = shell.layout()
+    if layout is not None:
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+    _make_menu_container_transparent(menu)
+    _polish_settings_buttons(buttons)
+    if hint is not None:
+        hint.setParent(shell)
+        hint.hide()
+
+    resizer = _JabkaSettingsMenuResizer(shell, menu, buttons, hint)
+    shell.installEventFilter(resizer)
+    setattr(shell, "_jabka_settings_menu_resizer", resizer)
+    shell.setProperty("jabka_settings_menu_scene_done", True)
+    resizer.update_layout()
+
+
 def apply_jabka_page_polish(window: QWidget | None, config: dict | None) -> None:
     """Apply Jabbix visual polish without touching QtWebEngine internals."""
     if window is None or not is_jabka_config(config):
@@ -810,10 +953,14 @@ def apply_jabka_page_polish(window: QWidget | None, config: dict | None) -> None
             apply_text_overrides(window)
             for widget in _safe_widgets(window):
                 object_name = widget.objectName()
-                if object_name in PAGE_BACKGROUNDS:
-                    _apply_shell_background(widget, PAGE_BACKGROUNDS[object_name])
+                class_name = widget.__class__.__name__
+                background = PAGE_BACKGROUNDS.get(object_name) or PAGE_BACKGROUNDS.get(class_name)
+                if background:
+                    _apply_shell_background(widget, background)
                 if object_name == "HomeShell":
                     _apply_home_scene(widget)
+                elif class_name == "SettingsMenuWidget":
+                    _apply_settings_menu_scene(widget)
                 elif object_name == "DutyModeShell":
                     _apply_shell_cell_backgrounds(widget)
                 if object_name in {"PrimaryAction", "SecondaryAction"}:
