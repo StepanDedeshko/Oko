@@ -38,8 +38,25 @@ class JabkaThemeFoundationTests(unittest.TestCase):
         self.assertEqual(themed_text("dark_1", "Выход"), "Выход")
 
     def test_jabka_asset_paths_are_centralized(self):
-        self.assertTrue(str(theme_asset_path("frogs", "frog_main.png")).endswith("assets/themes/jabka/frogs/frog_main.png"))
+        self.assertTrue(str(theme_asset_path("frogs", "frog_main.svg")).endswith("assets/themes/jabka/frogs/frog_main.svg"))
         self.assertTrue(str(jabka_sound_path("jabbix_graph_check_kvak.wav")).endswith("assets/themes/jabka/sounds/jabbix_graph_check_kvak.wav"))
+
+    def test_jabka_svg_assets_exist(self):
+        required_assets = [
+            theme_asset_path("backgrounds", "swamp_main.svg"),
+            theme_asset_path("backgrounds", "swamp_duty.svg"),
+            theme_asset_path("backgrounds", "swamp_settings.svg"),
+            theme_asset_path("backgrounds", "swamp_profile.svg"),
+            theme_asset_path("backgrounds", "swamp_live_zabbix.svg"),
+            theme_asset_path("frogs", "frog_main.svg"),
+            theme_asset_path("frogs", "frog_duty.svg"),
+            theme_asset_path("frogs", "frog_settings.svg"),
+            theme_asset_path("frogs", "frog_profile.svg"),
+            theme_asset_path("frogs", "frog_live_zabbix.svg"),
+            theme_asset_path("frogs", "frog_developer.svg"),
+        ]
+        for path in required_assets:
+            self.assertTrue(path.exists(), f"Missing Jabbix asset: {path}")
 
 
 if __name__ == "__main__":
