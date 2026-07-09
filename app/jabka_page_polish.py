@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QEvent, QObject, QTimer, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QLabel, QWidget
 
@@ -49,10 +49,6 @@ def _safe_widgets(root: QWidget):
                 stack.append(child)
 
 
-def _asset_url(path: Path) -> str:
-    return path.resolve().as_posix()
-
-
 def _resolve_asset(folder: str, filename: str, fallbacks: tuple[str, ...]) -> Path | None:
     candidates = (filename, *fallbacks)
     for candidate in candidates:
@@ -62,12 +58,35 @@ def _resolve_asset(folder: str, filename: str, fallbacks: tuple[str, ...]) -> Pa
     return None
 
 
+class _JabkaBackgroundResizer(QObject):
+    def __init__(self, shell: QWidget, label: QLabel, pixmap: QPixmap):
+        super().__init__(shell)
+        self.shell = shell
+        self.label = label
+        self.pixmap = pixmap
+
+    def eventFilter(self, obj, event):
+        if obj is self.shell and event.type() in {QEvent.Resize, QEvent.Show, QEvent.LayoutRequest}:
+            self.update_background()
+        return False
+
+    def update_background(self) -> None:
+        if self.pixmap.isNull():
+            return
+        size = self.shell.size()
+        if size.width() <= 1 or size.height() <= 1:
+            return
+        scaled = self.pixmap.scaled(size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        x = max(0, (scaled.width() - size.width()) // 2)
+        y = max(0, (scaled.height() - size.height()) // 2)
+        cropped = scaled.copy(x, y, size.width(), size.height())
+        self.label.setGeometry(0, 0, size.width(), size.height())
+        self.label.setPixmap(cropped)
+        self.label.lower()
+        self.label.show()
+
+
 def _apply_shell_background(shell: QWidget, background_file: str) -> None:
-    if shell.property("jabka_background_applied"):
-        return
-    object_name = shell.objectName()
-    if not object_name:
-        return
     path = _resolve_asset(
         "backgrounds",
         background_file,
@@ -76,24 +95,46 @@ def _apply_shell_background(shell: QWidget, background_file: str) -> None:
     if path is None:
         return
 
-    child_resets = "\n".join(
-        f"QWidget#{object_name} {selector} {{ border-image: none; }}"
-        for selector in _PLAIN_WIDGET_SELECTORS
-    )
-    shell.setStyleSheet(
-        shell.styleSheet()
-        + f"""
-        QWidget#{object_name} {{
-            border-image: url(\"{_asset_url(path)}\") 0 0 0 0 stretch stretch;
-            background-color: #06140B;
-        }}
-        {child_resets}
-        QLabel#JabkaPageBadge, QLabel#JabkaMascot, QLabel#JabkaSideFrog {{
-            border-image: none;
-        }}
-        """
-    )
+    if shell.property("jabka_background_applied"):
+        resizer = getattr(shell, "_jabka_background_resizer", None)
+        if resizer is not None:
+            resizer.update_background()
+        return
+
+    pixmap = QPixmap(str(path))
+    if pixmap.isNull():
+        return
+
+    object_name = shell.objectName()
+    if object_name:
+        child_resets = "\n".join(
+            f"QWidget#{object_name} {selector} {{ border-image: none; }}"
+            for selector in _PLAIN_WIDGET_SELECTORS
+        )
+        shell.setStyleSheet(
+            shell.styleSheet()
+            + f"""
+            QWidget#{object_name} {{
+                background-color: #06140B;
+            }}
+            {child_resets}
+            QLabel#JabkaBackground, QLabel#JabkaPageBadge, QLabel#JabkaMascot, QLabel#JabkaSideFrog {{
+                border-image: none;
+            }}
+            """
+        )
+
+    label = QLabel(shell)
+    label.setObjectName("JabkaBackground")
+    label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+    label.setAlignment(Qt.AlignCenter)
+    label.setStyleSheet("QLabel#JabkaBackground { background: transparent; border: none; }")
+    resizer = _JabkaBackgroundResizer(shell, label, pixmap)
+    shell.installEventFilter(resizer)
+    setattr(shell, "_jabka_background_label", label)
+    setattr(shell, "_jabka_background_resizer", resizer)
     shell.setProperty("jabka_background_applied", True)
+    resizer.update_background()
 
 
 def _pixmap_for_frog(frog_file: str, size: int) -> QPixmap:
