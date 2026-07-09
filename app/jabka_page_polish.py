@@ -264,7 +264,13 @@ def _has_cell_background_ancestor(widget: QWidget, shell: QWidget) -> bool:
 def _is_cell_candidate(widget: QWidget, shell: QWidget) -> bool:
     if widget is shell:
         return False
-    if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer", "JabkaFrogHotspot", "JabkaFrogDialog", "JabkaFrogDialogTail"}:
+    if widget.objectName() in {
+        "JabkaBackgroundLayer",
+        "JabkaCellBackgroundLayer",
+        "JabkaFrogHotspot",
+        "JabkaFrogDialog",
+        "JabkaFrogDialogTail",
+    }:
         return False
     if _is_webengine_widget(widget) or _has_cell_background_ancestor(widget, shell):
         return False
@@ -540,16 +546,23 @@ def _hide_frog_dialog(shell: QWidget) -> None:
         tail.hide()
 
 
-def _show_frog_dialog(shell: QWidget) -> None:
+def _show_frog_dialog(shell: QWidget, text_override: str | None = None, reset_cycle: bool = False) -> None:
     bubble = getattr(shell, "_jabka_frog_dialog", None)
     tail = getattr(shell, "_jabka_frog_dialog_tail", None)
     if not isinstance(bubble, QLabel):
         return
 
-    click_count = int(shell.property("jabka_frog_click_count") or 0) + 1
-    shell.setProperty("jabka_frog_click_count", click_count)
-    subtitle = getattr(shell, "_jabka_frog_subtitle", None)
-    bubble.setText(_frog_dialog_text(subtitle if isinstance(subtitle, QLabel) else None, click_count))
+    if reset_cycle:
+        shell.setProperty("jabka_frog_click_count", 0)
+
+    if text_override is None:
+        click_count = int(shell.property("jabka_frog_click_count") or 0) + 1
+        shell.setProperty("jabka_frog_click_count", click_count)
+        subtitle = getattr(shell, "_jabka_frog_subtitle", None)
+        bubble.setText(_frog_dialog_text(subtitle if isinstance(subtitle, QLabel) else None, click_count))
+    else:
+        bubble.setText(text_override)
+
     bubble.show()
     bubble.raise_()
     if isinstance(tail, QLabel):
@@ -565,6 +578,10 @@ def _show_frog_dialog(shell: QWidget) -> None:
         timer.timeout.connect(lambda: _hide_frog_dialog(shell))
         setattr(shell, "_jabka_frog_dialog_hide_timer", timer)
     timer.start(7000)
+
+
+def _show_frog_return_dialog(shell: QWidget) -> None:
+    _show_frog_dialog(shell, "🐸 Опять ты?!\nЧего тебе?", reset_cycle=True)
 
 
 def _frog_hotspot_qss() -> str:
@@ -655,8 +672,15 @@ class _JabkaHomeLayoutResizer(QObject):
         self.footer = footer
 
     def eventFilter(self, obj, event):
-        if obj is self.shell and event.type() in {QEvent.Resize, QEvent.Show}:
-            self.update_layout()
+        if obj is self.shell:
+            if event.type() == QEvent.Hide:
+                self.shell.setProperty("jabka_frog_left_home", True)
+                _hide_frog_dialog(self.shell)
+            elif event.type() in {QEvent.Resize, QEvent.Show}:
+                self.update_layout()
+                if event.type() == QEvent.Show and self.shell.property("jabka_frog_left_home"):
+                    self.shell.setProperty("jabka_frog_left_home", False)
+                    QTimer.singleShot(160, lambda shell=self.shell: _show_frog_return_dialog(shell))
         return False
 
     def update_layout(self) -> None:
@@ -772,6 +796,7 @@ def _apply_home_scene(shell: QWidget) -> None:
     shell.installEventFilter(resizer)
     setattr(shell, "_jabka_home_layout_resizer", resizer)
     shell.setProperty("jabka_home_scene_done", True)
+    shell.setProperty("jabka_frog_left_home", False)
     resizer.update_layout()
 
 
