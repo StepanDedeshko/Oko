@@ -59,8 +59,10 @@ QWidget#DutyModeShell QGroupBox {
 QWidget#HomeShell QWidget#HomeMenuCard,
 QWidget#HomeShell QFrame#HomeMenuCard {
     background: transparent;
-    border: none;
+    border: 0px solid transparent;
     border-radius: 0;
+    margin: 0;
+    padding: 0;
 }
 QWidget#HomeShell QPushButton,
 QWidget#DutyModeShell QPushButton,
@@ -137,7 +139,19 @@ def _resolve_asset(folder: str, filename: str, fallbacks: tuple[str, ...] = ()) 
 
 
 def _scaled_background_pixmap(source: QPixmap, target_size, overlay_alpha: int, scale_mode: str = "cover") -> QPixmap:
-    if scale_mode == "stretch":
+    if scale_mode == "menu_frame":
+        # The generated frame asset contains a faint outer canvas outline.
+        # Crop a tiny edge band before stretching so only the ornate frame remains.
+        crop_x = max(1, int(source.width() * 0.025))
+        crop_y = max(1, int(source.height() * 0.020))
+        source = source.copy(
+            crop_x,
+            crop_y,
+            max(1, source.width() - crop_x * 2),
+            max(1, source.height() - crop_y * 2),
+        )
+        result = source.scaled(target_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    elif scale_mode == "stretch":
         result = source.scaled(target_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     elif scale_mode == "contain":
         result = QPixmap(target_size)
@@ -340,7 +354,7 @@ def _apply_menu_frame_background(menu: QWidget) -> None:
         "jabka_menu_frame_background",
         overlay_alpha=0,
         object_name="JabkaMenuFrameLayer",
-        scale_mode="stretch",
+        scale_mode="menu_frame",
     )
 
 
@@ -414,28 +428,28 @@ def _polish_home_buttons(menu: QWidget) -> None:
         clean_text = _clean_button_text(button.text())
         icon = BUTTON_ICONS.get(clean_text, "🐸")
         button.setText(f"{icon}   {clean_text}")
-        button.setMinimumHeight(52)
-        button.setMaximumHeight(58)
+        button.setMinimumHeight(64)
+        button.setMaximumHeight(72)
         button.setCursor(Qt.PointingHandCursor)
         button.setStyleSheet(
             "QPushButton {"
             "text-align: left;"
-            "padding-left: 28px;"
-            "padding-right: 18px;"
-            "border-radius: 13px;"
-            "background: rgba(7, 27, 14, 168);"
-            "border: 1px solid rgba(143, 227, 136, 145);"
+            "padding-left: 36px;"
+            "padding-right: 22px;"
+            "border-radius: 16px;"
+            "background: rgba(7, 27, 14, 174);"
+            "border: 1px solid rgba(143, 227, 136, 155);"
             "color: #D6EFC3;"
-            "font-size: 15px;"
-            "font-weight: 850;"
+            "font-size: 18px;"
+            "font-weight: 900;"
             "}"
             "QPushButton:hover {"
-            "background: rgba(45, 125, 58, 212);"
+            "background: rgba(45, 125, 58, 218);"
             "border: 1px solid #B7F27A;"
             "color: #F1FFE0;"
             "}"
             "QPushButton#PrimaryAction {"
-            "background: rgba(45, 125, 58, 220);"
+            "background: rgba(45, 125, 58, 226);"
             "border: 1px solid #D7B85A;"
             "color: #F1FFE0;"
             "}"
@@ -469,26 +483,26 @@ class _JabkaHomeLayoutResizer(QObject):
             self.subtitle.setGeometry(left + 8, top + 70, min(760, int(w * 0.55)), 34)
             self.subtitle.raise_()
 
-        menu_w = min(max(510, int(w * 0.30)), 660)
+        menu_w = min(max(540, int(w * 0.315)), 710)
         menu_h = int(menu_w / MENU_FRAME_ASPECT)
-        max_menu_h = int(h * 0.81)
+        max_menu_h = int(h * 0.83)
         if menu_h > max_menu_h:
             menu_h = max_menu_h
             menu_w = int(menu_h * MENU_FRAME_ASPECT)
         menu_x = int(w * 0.50 - menu_w / 2)
-        menu_y = max(top + 112, int(h * 0.105))
+        menu_y = max(top + 104, int(h * 0.095))
         self.menu.setGeometry(menu_x, menu_y, menu_w, menu_h)
         self.menu.raise_()
 
         menu_layout = self.menu.layout()
         if menu_layout is not None:
             menu_layout.setContentsMargins(
-                int(menu_w * 0.145),
-                int(menu_h * 0.205),
-                int(menu_w * 0.145),
-                int(menu_h * 0.165),
+                int(menu_w * 0.115),
+                int(menu_h * 0.185),
+                int(menu_w * 0.115),
+                int(menu_h * 0.135),
             )
-            menu_layout.setSpacing(max(10, int(menu_h * 0.016)))
+            menu_layout.setSpacing(max(12, int(menu_h * 0.014)))
 
         frame_resizer = getattr(self.menu, "_jabka_menu_frame_background_resizer", None)
         if frame_resizer is not None:
@@ -505,8 +519,10 @@ def _make_menu_container_transparent(menu: QWidget) -> None:
     if QFrame is not None and isinstance(menu, QFrame):
         try:
             menu.setFrameShape(QFrame.NoFrame)
+            menu.setFrameShadow(QFrame.Plain)
             menu.setLineWidth(0)
             menu.setMidLineWidth(0)
+            menu.setFrameStyle(0)
         except Exception:
             pass
     menu.setStyleSheet(
