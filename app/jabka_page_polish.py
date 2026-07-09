@@ -452,7 +452,7 @@ class _JabkaHomeLayoutResizer(QObject):
         # because the source HomeMenuCard layout keeps fighting setGeometry().
         button_w = min(max(520, int(w * 0.285)), 610)
         button_h = min(max(58, int(h * 0.058)), 68)
-        button_x = int(w * 0.475)
+        button_x = int(w * 0.492)
         button_y = int(h * 0.255)
         gap = max(13, int(h * 0.017))
 
