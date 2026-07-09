@@ -365,25 +365,43 @@ def _make_menu_container_transparent(menu: QWidget) -> None:
     )
 
 
-def _polish_home_buttons(menu: QWidget) -> None:
-    for button in menu.findChildren(QPushButton):
+def _extract_home_buttons(shell: QWidget, menu: QWidget) -> list[QPushButton]:
+    buttons = getattr(shell, "_jabka_absolute_home_buttons", None)
+    if isinstance(buttons, list) and buttons and all(isinstance(button, QPushButton) for button in buttons):
+        return buttons
+
+    buttons = menu.findChildren(QPushButton)
+    buttons.sort(key=lambda button: (button.geometry().y(), button.geometry().x()))
+    for button in buttons:
+        button.setParent(shell)
+        button.show()
+        button.raise_()
+
+    _make_menu_container_transparent(menu)
+    menu.hide()
+    setattr(shell, "_jabka_absolute_home_buttons", buttons)
+    return buttons
+
+
+def _polish_home_buttons(buttons: list[QPushButton]) -> None:
+    for button in buttons:
         clean_text = _clean_button_text(button.text())
         icon = BUTTON_ICONS.get(clean_text, "🐸")
         button.setText(f"{icon}   {clean_text}")
-        button.setMinimumHeight(66)
-        button.setMaximumHeight(72)
-        button.setMinimumWidth(470)
-        button.setMaximumWidth(16777215)
-        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        button.setMinimumHeight(60)
+        button.setMaximumHeight(68)
+        button.setMinimumWidth(500)
+        button.setMaximumWidth(620)
+        button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         button.setCursor(Qt.PointingHandCursor)
         button.setStyleSheet(
             "QPushButton {"
             "text-align: left;"
             "padding-left: 38px; padding-right: 22px;"
-            "border-radius: 18px;"
+            "border-radius: 17px;"
             "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-            "stop:0 rgba(9, 39, 17, 205), stop:0.55 rgba(6, 25, 12, 178), stop:1 rgba(3, 13, 7, 154));"
-            "border: 1px solid rgba(151, 232, 128, 170);"
+            "stop:0 rgba(9, 39, 17, 212), stop:0.55 rgba(6, 25, 12, 185), stop:1 rgba(3, 13, 7, 164));"
+            "border: 1px solid rgba(151, 232, 128, 175);"
             "color: #F0F9DC; font-size: 19px; font-weight: 900;"
             "}"
             "QPushButton:hover {"
@@ -402,10 +420,11 @@ def _polish_home_buttons(menu: QWidget) -> None:
 
 
 class _JabkaHomeLayoutResizer(QObject):
-    def __init__(self, shell: QWidget, menu: QWidget, title: QLabel | None, subtitle: QLabel | None, footer: QLabel | None):
+    def __init__(self, shell: QWidget, menu: QWidget, buttons: list[QPushButton], title: QLabel | None, subtitle: QLabel | None, footer: QLabel | None):
         super().__init__(shell)
         self.shell = shell
         self.menu = menu
+        self.buttons = buttons
         self.title = title
         self.subtitle = subtitle
         self.footer = footer
@@ -428,22 +447,18 @@ class _JabkaHomeLayoutResizer(QObject):
             self.subtitle.setGeometry(left, top + 66, min(760, int(w * 0.55)), 32)
             self.subtitle.raise_()
 
-        # Button-only overlay. The decorative frame is already baked into
-        # 00_main_menu_wallpaper.png, so this widget must not draw its own frame.
-        menu_w = min(max(500, int(w * 0.30)), 610)
-        menu_h = min(max(555, int(h * 0.60)), 650)
-        menu_x = int(w * 0.635 - menu_w / 2)
-        menu_y = int(h * 0.255)
-        self.menu.setGeometry(menu_x, menu_y, menu_w, menu_h)
-        self.menu.show()
-        self.menu.raise_()
+        # Buttons are placed directly on the baked right-side menu frame.
+        # These coordinates are intentionally absolute relative to HomeShell,
+        # because the source HomeMenuCard layout keeps fighting setGeometry().
+        button_w = min(max(520, int(w * 0.285)), 610)
+        button_h = min(max(58, int(h * 0.058)), 68)
+        button_x = int(w * 0.475)
+        button_y = int(h * 0.255)
+        gap = max(13, int(h * 0.017))
 
-        menu_layout = self.menu.layout()
-        if menu_layout is not None:
-            menu_layout.setContentsMargins(0, 0, 0, 0)
-            menu_layout.setSpacing(max(11, int(h * 0.013)))
-
-        for button in self.menu.findChildren(QPushButton):
+        self.menu.hide()
+        for index, button in enumerate(self.buttons):
+            button.setGeometry(button_x, button_y + index * (button_h + gap), button_w, button_h)
             button.show()
             button.raise_()
 
@@ -458,9 +473,13 @@ def _apply_home_scene(shell: QWidget) -> None:
     if menu is None:
         return
 
+    buttons = _extract_home_buttons(shell, menu)
+    if not buttons:
+        return
+
     if shell.property("jabka_home_scene_done"):
         _make_menu_container_transparent(menu)
-        _polish_home_buttons(menu)
+        _polish_home_buttons(buttons)
         resizer = getattr(shell, "_jabka_home_layout_resizer", None)
         if resizer is not None:
             resizer.update_layout()
@@ -471,10 +490,8 @@ def _apply_home_scene(shell: QWidget) -> None:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-    menu.setParent(shell)
-    menu.setMaximumWidth(16777215)
     _make_menu_container_transparent(menu)
-    _polish_home_buttons(menu)
+    _polish_home_buttons(buttons)
 
     if title is not None:
         title.setParent(shell)
@@ -498,7 +515,7 @@ def _apply_home_scene(shell: QWidget) -> None:
             "border-radius: 10px; padding: 5px; color: #A9C89C; font-size: 11px; }"
         )
 
-    resizer = _JabkaHomeLayoutResizer(shell, menu, title, subtitle, footer)
+    resizer = _JabkaHomeLayoutResizer(shell, menu, buttons, title, subtitle, footer)
     shell.installEventFilter(resizer)
     setattr(shell, "_jabka_home_layout_resizer", resizer)
     shell.setProperty("jabka_home_scene_done", True)
