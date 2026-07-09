@@ -6,6 +6,11 @@ from PySide6.QtCore import QEvent, QObject, QTimer, Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import QAbstractScrollArea, QLabel, QPushButton, QWidget
 
+try:
+    from PySide6.QtWidgets import QFrame
+except Exception:  # pragma: no cover - defensive for unusual Qt builds
+    QFrame = None
+
 from app.jabka_theme import apply_text_overrides, is_jabka_config, theme_asset_path
 
 
@@ -50,6 +55,12 @@ QWidget#DutyModeShell QGroupBox {
     background: rgba(4, 16, 8, 118);
     border: 1px solid rgba(183, 242, 122, 120);
     border-radius: 16px;
+}
+QWidget#HomeShell QWidget#HomeMenuCard,
+QWidget#HomeShell QFrame#HomeMenuCard {
+    background: transparent;
+    border: none;
+    border-radius: 0;
 }
 QWidget#HomeShell QPushButton,
 QWidget#DutyModeShell QPushButton,
@@ -472,12 +483,12 @@ class _JabkaHomeLayoutResizer(QObject):
         menu_layout = self.menu.layout()
         if menu_layout is not None:
             menu_layout.setContentsMargins(
-                int(menu_w * 0.15),
-                int(menu_h * 0.245),
-                int(menu_w * 0.15),
-                int(menu_h * 0.115),
+                int(menu_w * 0.145),
+                int(menu_h * 0.205),
+                int(menu_w * 0.145),
+                int(menu_h * 0.165),
             )
-            menu_layout.setSpacing(max(10, int(menu_h * 0.018)))
+            menu_layout.setSpacing(max(10, int(menu_h * 0.016)))
 
         frame_resizer = getattr(self.menu, "_jabka_menu_frame_background_resizer", None)
         if frame_resizer is not None:
@@ -488,6 +499,28 @@ class _JabkaHomeLayoutResizer(QObject):
             self.footer.raise_()
 
 
+def _make_menu_container_transparent(menu: QWidget) -> None:
+    menu.setAttribute(Qt.WA_TranslucentBackground, True)
+    menu.setAutoFillBackground(False)
+    if QFrame is not None and isinstance(menu, QFrame):
+        try:
+            menu.setFrameShape(QFrame.NoFrame)
+            menu.setLineWidth(0)
+            menu.setMidLineWidth(0)
+        except Exception:
+            pass
+    menu.setStyleSheet(
+        "QWidget#HomeMenuCard, QFrame#HomeMenuCard {"
+        "background: transparent;"
+        "background-color: transparent;"
+        "border: 0px solid transparent;"
+        "border-radius: 0;"
+        "padding: 0;"
+        "margin: 0;"
+        "}"
+    )
+
+
 def _apply_home_scene(shell: QWidget) -> None:
     _hide_layout_mascots(shell)
     menu, title, subtitle, footer = _find_home_widgets(shell)
@@ -495,6 +528,7 @@ def _apply_home_scene(shell: QWidget) -> None:
         return
 
     if shell.property("jabka_home_scene_done"):
+        _make_menu_container_transparent(menu)
         _polish_home_buttons(menu)
         _apply_menu_frame_background(menu)
         resizer = getattr(shell, "_jabka_home_layout_resizer", None)
@@ -509,14 +543,7 @@ def _apply_home_scene(shell: QWidget) -> None:
 
     menu.setParent(shell)
     menu.setMaximumWidth(16777215)
-    menu.setStyleSheet(
-        "QWidget#HomeMenuCard {"
-        "background: transparent;"
-        "border: none;"
-        "border-radius: 0;"
-        "padding: 0;"
-        "}"
-    )
+    _make_menu_container_transparent(menu)
     _apply_menu_frame_background(menu)
     _polish_home_buttons(menu)
 
