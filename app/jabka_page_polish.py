@@ -3,19 +3,26 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QTimer, Qt
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QLabel, QPushButton, QWidget
+from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtWidgets import QAbstractScrollArea, QLabel, QPushButton, QWidget
 
 from app.jabka_theme import apply_text_overrides, is_jabka_config, theme_asset_path
 
 
-# Use only clean PNG background art here. Do not fall back to old local JPG files,
-# because early test archives contained mockup screenshots with UI already drawn
-# inside them, which caused a duplicated "interface under interface" effect.
+# Main page uses the clean wallpaper from the user's asset pack.
+# Duty/work panels use separate cell art as inner backgrounds; those images are
+# never inserted into layouts and must not resize working fields.
 PAGE_BACKGROUNDS = {
-    "HomeShell": "swamp_main.png",
-    "DutyModeShell": "swamp_duty.png",
+    "HomeShell": "00_main_menu_wallpaper.png",
 }
+
+CELL_BACKGROUND_FILES = (
+    "01_cell_top_left_wide_background.png",
+    "02_cell_top_right_small_background.png",
+    "03_cell_middle_strip_background.png",
+    "04_cell_bottom_left_background.png",
+    "05_cell_bottom_right_background.png",
+)
 
 BUTTON_ICONS = {
     "Дежурный жаб": "🐸",
@@ -32,7 +39,7 @@ QWidget#HomeShell QFrame,
 QWidget#HomeShell QGroupBox,
 QWidget#DutyModeShell QFrame,
 QWidget#DutyModeShell QGroupBox {
-    background: rgba(4, 16, 8, 155);
+    background: rgba(4, 16, 8, 118);
     border: 1px solid rgba(183, 242, 122, 120);
     border-radius: 16px;
 }
@@ -40,7 +47,7 @@ QWidget#HomeShell QPushButton,
 QWidget#DutyModeShell QPushButton,
 QWidget#HomeShell QToolButton,
 QWidget#DutyModeShell QToolButton {
-    background: rgba(8, 28, 15, 180);
+    background: rgba(8, 28, 15, 176);
     border: 1px solid rgba(183, 242, 122, 135);
     border-radius: 12px;
     color: #EAF8D8;
@@ -60,7 +67,7 @@ QWidget#DutyModeShell QLineEdit,
 QWidget#DutyModeShell QTextEdit,
 QWidget#DutyModeShell QPlainTextEdit,
 QWidget#DutyModeShell QComboBox {
-    background: rgba(4, 16, 8, 175);
+    background: rgba(4, 16, 8, 120);
     border: 1px solid rgba(183, 242, 122, 110);
     border-radius: 10px;
 }
@@ -70,12 +77,13 @@ QWidget#HomeShell QListWidget,
 QWidget#DutyModeShell QTableWidget,
 QWidget#DutyModeShell QTreeWidget,
 QWidget#DutyModeShell QListWidget {
-    background: rgba(3, 12, 6, 196);
-    alternate-background-color: rgba(12, 37, 20, 180);
+    background: rgba(3, 12, 6, 178);
+    alternate-background-color: rgba(12, 37, 20, 158);
     border: 1px solid rgba(183, 242, 122, 110);
     border-radius: 13px;
 }
 QLabel#JabkaBackgroundLayer,
+QLabel#JabkaCellBackgroundLayer,
 QLabel#JabkaMenuCrown {
     background: transparent;
     border: none;
@@ -108,45 +116,52 @@ def _resolve_asset(folder: str, filename: str, fallbacks: tuple[str, ...] = ()) 
     return None
 
 
-class _JabkaBackgroundResizer(QObject):
-    """Keeps the chosen art image as a non-layout background layer.
+def _darkened_cover_pixmap(source: QPixmap, target_size, overlay_alpha: int) -> QPixmap:
+    scaled = source.scaled(target_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+    x = max(0, (scaled.width() - target_size.width()) // 2)
+    y = max(0, (scaled.height() - target_size.height()) // 2)
+    cropped = scaled.copy(x, y, target_size.width(), target_size.height())
+    if overlay_alpha > 0:
+        painter = QPainter(cropped)
+        painter.fillRect(cropped.rect(), QColor(2, 10, 5, overlay_alpha))
+        painter.end()
+    return cropped
 
-    The layer is a child of the page shell, not a layout item. It never pushes
-    buttons, tables or QtWebEngine views out of the working area.
+
+class _JabkaBackgroundResizer(QObject):
+    """Keeps an art image as a non-layout background layer.
+
+    The layer is a child of the target widget, not a layout item. It never pushes
+    buttons, tables, text fields or QtWebEngine views out of the working area.
     """
 
-    def __init__(self, shell: QWidget, label: QLabel, pixmap: QPixmap):
-        super().__init__(shell)
-        self.shell = shell
+    def __init__(self, target: QWidget, label: QLabel, pixmap: QPixmap, overlay_alpha: int = 0):
+        super().__init__(target)
+        self.target = target
         self.label = label
         self.pixmap = pixmap
+        self.overlay_alpha = overlay_alpha
 
     def eventFilter(self, obj, event):
-        if obj is self.shell and event.type() in {QEvent.Resize, QEvent.Show, QEvent.LayoutRequest}:
+        if obj is self.target and event.type() in {QEvent.Resize, QEvent.Show, QEvent.LayoutRequest}:
             self.update_background()
         return False
 
     def update_background(self) -> None:
-        size = self.shell.size()
+        size = self.target.size()
         if size.width() <= 1 or size.height() <= 1 or self.pixmap.isNull():
             return
-        scaled = self.pixmap.scaled(size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        x = max(0, (scaled.width() - size.width()) // 2)
-        y = max(0, (scaled.height() - size.height()) // 2)
-        cropped = scaled.copy(x, y, size.width(), size.height())
         self.label.setGeometry(0, 0, size.width(), size.height())
-        self.label.setPixmap(cropped)
+        self.label.setPixmap(_darkened_cover_pixmap(self.pixmap, size, self.overlay_alpha))
         self.label.lower()
         self.label.show()
 
 
-def _apply_shell_background(shell: QWidget, filename: str) -> None:
-    path = _resolve_asset("backgrounds", filename, (filename.replace(".png", ".svg"),))
-    if path is None:
-        return
-
-    if shell.property("jabka_background_applied"):
-        resizer = getattr(shell, "_jabka_background_resizer", None)
+def _install_background_layer(target: QWidget, path: Path, property_name: str, overlay_alpha: int) -> None:
+    resizer_attr = f"_{property_name}_resizer"
+    applied_property = f"{property_name}_applied"
+    if target.property(applied_property):
+        resizer = getattr(target, resizer_attr, None)
         if resizer is not None:
             resizer.update_background()
         return
@@ -155,19 +170,119 @@ def _apply_shell_background(shell: QWidget, filename: str) -> None:
     if pixmap.isNull():
         return
 
-    shell.setStyleSheet(shell.styleSheet() + _READABLE_PANEL_QSS)
-    label = QLabel(shell)
-    label.setObjectName("JabkaBackgroundLayer")
+    label = QLabel(target)
+    label.setObjectName("JabkaCellBackgroundLayer" if "cell" in property_name else "JabkaBackgroundLayer")
     label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
     label.setScaledContents(False)
     label.setAlignment(Qt.AlignCenter)
 
-    resizer = _JabkaBackgroundResizer(shell, label, pixmap)
-    shell.installEventFilter(resizer)
-    setattr(shell, "_jabka_background_label", label)
-    setattr(shell, "_jabka_background_resizer", resizer)
-    shell.setProperty("jabka_background_applied", True)
+    resizer = _JabkaBackgroundResizer(target, label, pixmap, overlay_alpha=overlay_alpha)
+    target.installEventFilter(resizer)
+    setattr(target, f"_{property_name}_label", label)
+    setattr(target, resizer_attr, resizer)
+    target.setProperty(applied_property, True)
     resizer.update_background()
+
+
+def _apply_shell_background(shell: QWidget, filename: str) -> None:
+    path = _resolve_asset("backgrounds", filename, (filename.replace(".png", ".svg"),))
+    if path is None:
+        return
+    shell.setStyleSheet(shell.styleSheet() + _READABLE_PANEL_QSS)
+    _install_background_layer(shell, path, "jabka_page_background", overlay_alpha=34)
+
+
+def _widget_text_blob(widget: QWidget) -> str:
+    parts = [widget.objectName(), widget.accessibleName()]
+    if hasattr(widget, "title"):
+        try:
+            parts.append(widget.title())
+        except Exception:
+            pass
+    if hasattr(widget, "text"):
+        try:
+            parts.append(widget.text())
+        except Exception:
+            pass
+    return " ".join(str(part or "") for part in parts).lower()
+
+
+def _choose_cell_background(widget: QWidget, index: int) -> str:
+    text = _widget_text_blob(widget)
+    if "замет" in text or "квак" in text or "note" in text:
+        return "03_cell_middle_strip_background.png"
+    if "сервис" in text or "service" in text:
+        return "04_cell_bottom_left_background.png"
+    if "zabbix" in text or "граф" in text or "trigger" in text:
+        return "05_cell_bottom_right_background.png"
+    if "состоя" in text or "status" in text or "послед" in text:
+        return "01_cell_top_left_wide_background.png"
+    return CELL_BACKGROUND_FILES[index % len(CELL_BACKGROUND_FILES)]
+
+
+def _is_cell_candidate(widget: QWidget, shell: QWidget) -> bool:
+    if widget is shell:
+        return False
+    if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer", "JabkaMenuCrown"}:
+        return False
+    if _is_webengine_widget(widget):
+        return False
+    class_name = widget.__class__.__name__
+    if isinstance(widget, QPushButton):
+        return False
+    if isinstance(widget, QAbstractScrollArea):
+        return True
+    return class_name in {"QFrame", "QGroupBox"}
+
+
+def _make_cell_translucent(widget: QWidget) -> None:
+    if widget.property("jabka_cell_translucent"):
+        return
+    object_name = widget.objectName()
+    if not object_name:
+        object_name = f"jabka_cell_{id(widget)}"
+        widget.setObjectName(object_name)
+    widget.setStyleSheet(
+        widget.styleSheet()
+        + f"""
+        QWidget#{object_name} {{
+            background: rgba(4, 16, 8, 116);
+            border: 1px solid rgba(183, 242, 122, 110);
+            border-radius: 14px;
+        }}
+        QWidget#{object_name} QLabel,
+        QWidget#{object_name} QPushButton,
+        QWidget#{object_name} QToolButton,
+        QWidget#{object_name} QCheckBox {{
+            background: transparent;
+        }}
+        """
+    )
+    if isinstance(widget, QAbstractScrollArea):
+        try:
+            widget.viewport().setStyleSheet("background: transparent;")
+            widget.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
+        except Exception:
+            pass
+    widget.setProperty("jabka_cell_translucent", True)
+
+
+def _apply_cell_background(widget: QWidget, filename: str) -> None:
+    path = _resolve_asset("backgrounds", filename)
+    if path is None:
+        return
+    _make_cell_translucent(widget)
+    _install_background_layer(widget, path, "jabka_cell_background", overlay_alpha=98)
+
+
+def _apply_shell_cell_backgrounds(shell: QWidget) -> None:
+    index = 0
+    for widget in _safe_widgets(shell):
+        if not _is_cell_candidate(widget, shell):
+            continue
+        filename = _choose_cell_background(widget, index)
+        _apply_cell_background(widget, filename)
+        index += 1
 
 
 def _find_home_widgets(shell: QWidget):
@@ -210,7 +325,7 @@ def _polish_home_buttons(menu: QWidget) -> None:
             "padding-left: 22px;"
             "padding-right: 16px;"
             "border-radius: 12px;"
-            "background: rgba(6, 24, 12, 180);"
+            "background: rgba(6, 24, 12, 170);"
             "border: 1px solid rgba(183, 242, 122, 130);"
             "color: #EAF8D8;"
             "font-weight: 800;"
@@ -221,7 +336,7 @@ def _polish_home_buttons(menu: QWidget) -> None:
             "color: #F1FFE0;"
             "}"
             "QPushButton#PrimaryAction {"
-            "background: rgba(45, 125, 58, 226);"
+            "background: rgba(45, 125, 58, 220);"
             "border: 1px solid #D7B85A;"
             "color: #F1FFE0;"
             "}"
@@ -292,19 +407,20 @@ def _apply_home_scene(shell: QWidget) -> None:
     menu.setMaximumWidth(16777215)
     menu.setStyleSheet(
         "QWidget#HomeMenuCard {"
-        "background: rgba(4, 16, 8, 172);"
+        "background: rgba(4, 16, 8, 132);"
         "border: 1px solid rgba(215, 184, 90, 155);"
         "border-radius: 22px;"
         "}"
     )
     _polish_home_buttons(menu)
+    _apply_cell_background(menu, "03_cell_middle_strip_background.png")
 
     if title is not None:
         title.setParent(shell)
         title.setText("Jabbix")
         title.setStyleSheet(
             "QLabel#HomeTitle {"
-            "background: rgba(4, 16, 8, 150);"
+            "background: rgba(4, 16, 8, 132);"
             "border: 1px solid rgba(183, 242, 122, 100);"
             "border-radius: 14px;"
             "color: #EAF8D8;"
@@ -316,13 +432,13 @@ def _apply_home_scene(shell: QWidget) -> None:
     if subtitle is not None:
         subtitle.setParent(shell)
         subtitle.setStyleSheet(
-            "QLabel { background: rgba(4, 16, 8, 145); border: 1px solid rgba(183, 242, 122, 95);"
+            "QLabel { background: rgba(4, 16, 8, 120); border: 1px solid rgba(183, 242, 122, 95);"
             "border-radius: 8px; padding: 4px 10px; color: #D6EFC3; }"
         )
     if footer is not None:
         footer.setParent(shell)
         footer.setStyleSheet(
-            "QLabel#AppFooter { background: rgba(4, 16, 8, 155); border: 1px solid rgba(183, 242, 122, 95);"
+            "QLabel#AppFooter { background: rgba(4, 16, 8, 130); border: 1px solid rgba(183, 242, 122, 95);"
             "border-radius: 10px; padding: 5px; color: #A9C89C; font-size: 11px; }"
         )
 
@@ -332,7 +448,7 @@ def _apply_home_scene(shell: QWidget) -> None:
     crown.setAttribute(Qt.WA_TransparentForMouseEvents, True)
     crown.setStyleSheet(
         "QLabel#JabkaMenuCrown {"
-        "background: rgba(4, 16, 8, 165);"
+        "background: rgba(4, 16, 8, 150);"
         "border: 1px solid rgba(215, 184, 90, 165);"
         "border-radius: 18px;"
         "color: #D7B85A;"
@@ -362,6 +478,8 @@ def apply_jabka_page_polish(window: QWidget | None, config: dict | None) -> None
                     _apply_shell_background(widget, PAGE_BACKGROUNDS[object_name])
                 if object_name == "HomeShell":
                     _apply_home_scene(widget)
+                elif object_name == "DutyModeShell":
+                    _apply_shell_cell_backgrounds(widget)
                 if object_name in {"PrimaryAction", "SecondaryAction"}:
                     widget.setCursor(Qt.PointingHandCursor)
         except Exception:
