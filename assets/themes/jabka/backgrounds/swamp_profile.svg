@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 800">
+  <defs><linearGradient id="p" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#020905"/><stop offset=".45" stop-color="#0d2f19"/><stop offset="1" stop-color="#07140d"/></linearGradient></defs>
+  <rect width="1400" height="800" fill="url(#p)"/>
+  <circle cx="1060" cy="160" r="100" fill="#b7f27a" opacity=".13"/>
+  <rect x="115" y="120" width="500" height="520" rx="44" fill="#08160d" opacity=".62" stroke="#66b95b"/>
+  <circle cx="365" cy="260" r="92" fill="#12331f" opacity=".8" stroke="#8fe388"/>
+  <rect x="230" y="390" width="270" height="46" rx="18" fill="#12331f" opacity=".7"/><rect x="205" y="465" width="320" height="46" rx="18" fill="#12331f" opacity=".56"/>
+  <path d="M0 620 C210 580 330 650 560 620 S930 548 1140 610 1310 660 1400 618 V800 H0Z" fill="#031008" opacity=".86"/>
+  <text x="130" y="92" fill="#eaffd8" opacity=".17" font-size="42" font-family="DejaVu Sans, Arial" font-weight="700">frog profile cave</text>
+</svg>
