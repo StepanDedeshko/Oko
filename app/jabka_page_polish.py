@@ -24,6 +24,8 @@ CELL_BACKGROUND_FILES = (
     "05_cell_bottom_right_background.png",
 )
 
+MENU_FRAME_FILE = "menu_frame.png"
+
 # Performance guard: applying image layers to every nested field is expensive.
 # Keep art only on a few large outer panels; nested text fields remain translucent.
 MAX_CELL_BACKGROUNDS_PER_PAGE = 6
@@ -89,6 +91,7 @@ QWidget#DutyModeShell QListWidget {
 }
 QLabel#JabkaBackgroundLayer,
 QLabel#JabkaCellBackgroundLayer,
+QLabel#JabkaMenuFrameLayer,
 QLabel#JabkaMenuCrown {
     background: transparent;
     border: none;
@@ -165,7 +168,13 @@ class _JabkaBackgroundResizer(QObject):
         self.label.show()
 
 
-def _install_background_layer(target: QWidget, path: Path, property_name: str, overlay_alpha: int) -> None:
+def _install_background_layer(
+    target: QWidget,
+    path: Path,
+    property_name: str,
+    overlay_alpha: int,
+    object_name: str | None = None,
+) -> None:
     resizer_attr = f"_{property_name}_resizer"
     applied_property = f"{property_name}_applied"
     if target.property(applied_property):
@@ -179,7 +188,12 @@ def _install_background_layer(target: QWidget, path: Path, property_name: str, o
         return
 
     label = QLabel(target)
-    label.setObjectName("JabkaCellBackgroundLayer" if "cell" in property_name else "JabkaBackgroundLayer")
+    if object_name:
+        label.setObjectName(object_name)
+    elif "cell" in property_name:
+        label.setObjectName("JabkaCellBackgroundLayer")
+    else:
+        label.setObjectName("JabkaBackgroundLayer")
     label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
     label.setScaledContents(False)
     label.setAlignment(Qt.AlignCenter)
@@ -242,7 +256,7 @@ def _has_cell_background_ancestor(widget: QWidget, shell: QWidget) -> bool:
 def _is_cell_candidate(widget: QWidget, shell: QWidget) -> bool:
     if widget is shell:
         return False
-    if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer", "JabkaMenuCrown"}:
+    if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer", "JabkaMenuFrameLayer", "JabkaMenuCrown"}:
         return False
     if _is_webengine_widget(widget) or _has_cell_background_ancestor(widget, shell):
         return False
@@ -287,6 +301,19 @@ def _apply_cell_background(widget: QWidget, filename: str) -> None:
         return
     _make_cell_translucent(widget)
     _install_background_layer(widget, path, "jabka_cell_background", overlay_alpha=105)
+
+
+def _apply_menu_frame_background(menu: QWidget) -> None:
+    path = _resolve_asset("menu", MENU_FRAME_FILE)
+    if path is None:
+        return
+    _install_background_layer(
+        menu,
+        path,
+        "jabka_menu_frame_background",
+        overlay_alpha=0,
+        object_name="JabkaMenuFrameLayer",
+    )
 
 
 def _update_existing_cell_backgrounds(shell: QWidget) -> None:
@@ -359,7 +386,7 @@ def _polish_home_buttons(menu: QWidget) -> None:
         clean_text = _clean_button_text(button.text())
         icon = BUTTON_ICONS.get(clean_text, "🐸")
         button.setText(f"{icon}   {clean_text}")
-        button.setMinimumHeight(58)
+        button.setMinimumHeight(56)
         button.setCursor(Qt.PointingHandCursor)
         button.setStyleSheet(
             "QPushButton {"
@@ -367,19 +394,19 @@ def _polish_home_buttons(menu: QWidget) -> None:
             "padding-left: 28px;"
             "padding-right: 18px;"
             "border-radius: 13px;"
-            "background: rgba(7, 27, 14, 185);"
-            "border: 1px solid rgba(143, 227, 136, 150);"
+            "background: rgba(7, 27, 14, 168);"
+            "border: 1px solid rgba(143, 227, 136, 145);"
             "color: #D6EFC3;"
             "font-size: 15px;"
             "font-weight: 850;"
             "}"
             "QPushButton:hover {"
-            "background: rgba(45, 125, 58, 215);"
+            "background: rgba(45, 125, 58, 212);"
             "border: 1px solid #B7F27A;"
             "color: #F1FFE0;"
             "}"
             "QPushButton#PrimaryAction {"
-            "background: rgba(45, 125, 58, 225);"
+            "background: rgba(45, 125, 58, 220);"
             "border: 1px solid #D7B85A;"
             "color: #F1FFE0;"
             "}"
@@ -387,14 +414,13 @@ def _polish_home_buttons(menu: QWidget) -> None:
 
 
 class _JabkaHomeLayoutResizer(QObject):
-    def __init__(self, shell: QWidget, menu: QWidget, title: QLabel | None, subtitle: QLabel | None, footer: QLabel | None, crown: QLabel):
+    def __init__(self, shell: QWidget, menu: QWidget, title: QLabel | None, subtitle: QLabel | None, footer: QLabel | None):
         super().__init__(shell)
         self.shell = shell
         self.menu = menu
         self.title = title
         self.subtitle = subtitle
         self.footer = footer
-        self.crown = crown
 
     def eventFilter(self, obj, event):
         if obj is self.shell and event.type() in {QEvent.Resize, QEvent.Show}:
@@ -414,15 +440,29 @@ class _JabkaHomeLayoutResizer(QObject):
             self.subtitle.setGeometry(left + 8, top + 70, min(760, int(w * 0.55)), 34)
             self.subtitle.raise_()
 
-        menu_w = min(max(410, int(w * 0.28)), 540)
-        menu_h = min(max(485, self.menu.sizeHint().height() + 118), int(h * 0.72))
+        menu_w = min(max(430, int(w * 0.265)), 560)
+        menu_h = min(int(menu_w * 900 / 568), int(h * 0.78))
+        if menu_h < 620:
+            menu_h = min(620, int(h * 0.78))
+            menu_w = int(menu_h * 568 / 900)
         menu_x = int(w * 0.50 - menu_w / 2)
-        menu_y = max(top + 135, int(h * 0.18))
+        menu_y = max(top + 118, int(h * 0.135))
         self.menu.setGeometry(menu_x, menu_y, menu_w, menu_h)
         self.menu.raise_()
 
-        self.crown.setGeometry(menu_x + int(menu_w * 0.30), max(top + 104, menu_y - 54), int(menu_w * 0.40), 56)
-        self.crown.raise_()
+        menu_layout = self.menu.layout()
+        if menu_layout is not None:
+            menu_layout.setContentsMargins(
+                int(menu_w * 0.13),
+                int(menu_h * 0.18),
+                int(menu_w * 0.13),
+                int(menu_h * 0.10),
+            )
+            menu_layout.setSpacing(max(9, int(menu_h * 0.014)))
+
+        frame_resizer = getattr(self.menu, "_jabka_menu_frame_background_resizer", None)
+        if frame_resizer is not None:
+            frame_resizer.update_background()
 
         if self.footer is not None:
             self.footer.setGeometry(left, h - 76, w - left * 2, 46)
@@ -437,6 +477,7 @@ def _apply_home_scene(shell: QWidget) -> None:
 
     if shell.property("jabka_home_scene_done"):
         _polish_home_buttons(menu)
+        _apply_menu_frame_background(menu)
         resizer = getattr(shell, "_jabka_home_layout_resizer", None)
         if resizer is not None:
             resizer.update_layout()
@@ -451,23 +492,22 @@ def _apply_home_scene(shell: QWidget) -> None:
     menu.setMaximumWidth(16777215)
     menu.setStyleSheet(
         "QWidget#HomeMenuCard {"
-        "background: rgba(4, 16, 8, 168);"
-        "border: 2px solid rgba(215, 184, 90, 165);"
-        "border-radius: 24px;"
-        "padding: 22px;"
+        "background: transparent;"
+        "border: none;"
+        "border-radius: 0;"
+        "padding: 0;"
         "}"
     )
+    _apply_menu_frame_background(menu)
     _polish_home_buttons(menu)
-    _apply_cell_background(menu, "03_cell_middle_strip_background.png")
 
     if title is not None:
         title.setParent(shell)
         title.setText("Jabbix")
         title.setStyleSheet(
             "QLabel#HomeTitle {"
-            "background: rgba(4, 16, 8, 132);"
-            "border: 1px solid rgba(183, 242, 122, 100);"
-            "border-radius: 14px;"
+            "background: transparent;"
+            "border: none;"
             "color: #EAF8D8;"
             "font-size: 42px;"
             "font-weight: 900;"
@@ -487,22 +527,7 @@ def _apply_home_scene(shell: QWidget) -> None:
             "border-radius: 10px; padding: 5px; color: #A9C89C; font-size: 11px; }"
         )
 
-    crown = QLabel("♕", shell)
-    crown.setObjectName("JabkaMenuCrown")
-    crown.setAlignment(Qt.AlignCenter)
-    crown.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-    crown.setStyleSheet(
-        "QLabel#JabkaMenuCrown {"
-        "background: rgba(4, 16, 8, 178);"
-        "border: 2px solid rgba(215, 184, 90, 170);"
-        "border-radius: 22px;"
-        "color: #D7B85A;"
-        "font-size: 31px;"
-        "font-weight: 900;"
-        "}"
-    )
-
-    resizer = _JabkaHomeLayoutResizer(shell, menu, title, subtitle, footer, crown)
+    resizer = _JabkaHomeLayoutResizer(shell, menu, title, subtitle, footer)
     shell.installEventFilter(resizer)
     setattr(shell, "_jabka_home_layout_resizer", resizer)
     shell.setProperty("jabka_home_scene_done", True)
