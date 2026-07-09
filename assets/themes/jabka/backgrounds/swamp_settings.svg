@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 800">
+  <defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#06120a"/><stop offset=".5" stop-color="#10331d"/><stop offset="1" stop-color="#031008"/></linearGradient></defs>
+  <rect width="1400" height="800" fill="url(#b)"/>
+  <g opacity=".18" fill="none" stroke="#b7f27a" stroke-width="3"><circle cx="1080" cy="190" r="82"/><circle cx="1080" cy="190" r="42"/><path d="M1080 60v52M1080 268v52M950 190h52M1158 190h52M988 98l36 36M1136 246l36 36M1172 98l-36 36M1024 246l-36 36"/></g>
+  <rect x="80" y="96" width="540" height="560" rx="34" fill="#08160d" opacity=".54" stroke="#66b95b"/>
+  <rect x="690" y="120" width="530" height="80" rx="20" fill="#12331f" opacity=".45"/><rect x="690" y="232" width="470" height="80" rx="20" fill="#12331f" opacity=".32"/><rect x="690" y="344" width="560" height="80" rx="20" fill="#12331f" opacity=".35"/>
+  <path d="M0 620 C180 590 330 640 510 615 S860 560 1080 620 1290 660 1400 610 V800 H0Z" fill="#06140b" opacity=".88"/>
+  <text x="96" y="154" fill="#eaffd8" opacity=".16" font-size="44" font-family="DejaVu Sans, Arial" font-weight="700">settings swamp</text>
+</svg>
