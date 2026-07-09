@@ -15,13 +15,13 @@ PAGE_HINTS = {
 }
 
 PAGE_BACKGROUNDS = {
-    "HomeShell": "swamp_main.svg",
-    "DutyModeShell": "swamp_duty.svg",
+    "HomeShell": "swamp_main.jpg",
+    "DutyModeShell": "swamp_duty.jpg",
 }
 
 PAGE_FROGS = {
-    "HomeShell": "frog_main.svg",
-    "DutyModeShell": "frog_duty.svg",
+    "HomeShell": "frog_main.jpg",
+    "DutyModeShell": "frog_duty.jpg",
 }
 
 
@@ -53,14 +53,27 @@ def _asset_url(path: Path) -> str:
     return path.resolve().as_posix()
 
 
+def _resolve_asset(folder: str, filename: str, fallbacks: tuple[str, ...]) -> Path | None:
+    candidates = (filename, *fallbacks)
+    for candidate in candidates:
+        path = theme_asset_path(folder, candidate)
+        if path.exists():
+            return path
+    return None
+
+
 def _apply_shell_background(shell: QWidget, background_file: str) -> None:
     if shell.property("jabka_background_applied"):
         return
     object_name = shell.objectName()
     if not object_name:
         return
-    path = theme_asset_path("backgrounds", background_file)
-    if not path.exists():
+    path = _resolve_asset(
+        "backgrounds",
+        background_file,
+        (background_file.replace(".jpg", ".png"), background_file.replace(".jpg", ".svg")),
+    )
+    if path is None:
         return
 
     child_resets = "\n".join(
@@ -84,8 +97,12 @@ def _apply_shell_background(shell: QWidget, background_file: str) -> None:
 
 
 def _pixmap_for_frog(frog_file: str, size: int) -> QPixmap:
-    path = theme_asset_path("frogs", frog_file)
-    pixmap = QPixmap(str(path)) if path.exists() else QPixmap()
+    path = _resolve_asset(
+        "frogs",
+        frog_file,
+        (frog_file.replace(".jpg", ".png"), frog_file.replace(".jpg", ".svg")),
+    )
+    pixmap = QPixmap(str(path)) if path is not None else QPixmap()
     if pixmap.isNull():
         try:
             from app.jabka_embedded_assets import jabka_pixmap
@@ -138,7 +155,7 @@ def _upgrade_existing_home_mascots(window: QWidget) -> None:
     for mascot in [w for w in _safe_widgets(window) if w.objectName() == "JabkaMascot" and isinstance(w, QLabel)]:
         if mascot.property("jabka_real_art_applied"):
             continue
-        pixmap = _pixmap_for_frog("frog_main.svg", 360)
+        pixmap = _pixmap_for_frog("frog_main.jpg", 360)
         if pixmap.isNull():
             continue
         mascot.setPixmap(pixmap)
