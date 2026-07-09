@@ -24,6 +24,11 @@ CELL_BACKGROUND_FILES = (
     "05_cell_bottom_right_background.png",
 )
 
+# Performance guard: applying image layers to every nested field is expensive.
+# Keep art only on a few large outer panels; nested text fields remain translucent.
+MAX_CELL_BACKGROUNDS_PER_PAGE = 6
+MIN_CELL_BACKGROUND_AREA = 52_000
+
 BUTTON_ICONS = {
     "Дежурный жаб": "🐸",
     "Профиль": "🐸",
@@ -141,9 +146,10 @@ class _JabkaBackgroundResizer(QObject):
         self.label = label
         self.pixmap = pixmap
         self.overlay_alpha = overlay_alpha
+        self._last_size = None
 
     def eventFilter(self, obj, event):
-        if obj is self.target and event.type() in {QEvent.Resize, QEvent.Show, QEvent.LayoutRequest}:
+        if obj is self.target and event.type() in {QEvent.Resize, QEvent.Show}:
             self.update_background()
         return False
 
@@ -152,7 +158,9 @@ class _JabkaBackgroundResizer(QObject):
         if size.width() <= 1 or size.height() <= 1 or self.pixmap.isNull():
             return
         self.label.setGeometry(0, 0, size.width(), size.height())
-        self.label.setPixmap(_darkened_cover_pixmap(self.pixmap, size, self.overlay_alpha))
+        if self._last_size != size:
+            self.label.setPixmap(_darkened_cover_pixmap(self.pixmap, size, self.overlay_alpha))
+            self._last_size = size
         self.label.lower()
         self.label.show()
 
@@ -188,7 +196,9 @@ def _apply_shell_background(shell: QWidget, filename: str) -> None:
     path = _resolve_asset("backgrounds", filename, (filename.replace(".png", ".svg"),))
     if path is None:
         return
-    shell.setStyleSheet(shell.styleSheet() + _READABLE_PANEL_QSS)
+    if not shell.property("jabka_readable_qss_applied"):
+        shell.setStyleSheet(shell.styleSheet() + _READABLE_PANEL_QSS)
+        shell.setProperty("jabka_readable_qss_applied", True)
     _install_background_layer(shell, path, "jabka_page_background", overlay_alpha=34)
 
 
@@ -220,19 +230,29 @@ def _choose_cell_background(widget: QWidget, index: int) -> str:
     return CELL_BACKGROUND_FILES[index % len(CELL_BACKGROUND_FILES)]
 
 
+def _has_cell_background_ancestor(widget: QWidget, shell: QWidget) -> bool:
+    parent = widget.parentWidget()
+    while parent is not None and parent is not shell:
+        if parent.property("jabka_cell_background_applied"):
+            return True
+        parent = parent.parentWidget()
+    return False
+
+
 def _is_cell_candidate(widget: QWidget, shell: QWidget) -> bool:
     if widget is shell:
         return False
     if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer", "JabkaMenuCrown"}:
         return False
-    if _is_webengine_widget(widget):
+    if _is_webengine_widget(widget) or _has_cell_background_ancestor(widget, shell):
+        return False
+    if isinstance(widget, (QPushButton, QLabel, QAbstractScrollArea)):
         return False
     class_name = widget.__class__.__name__
-    if isinstance(widget, QPushButton):
+    if class_name not in {"QFrame", "QGroupBox"}:
         return False
-    if isinstance(widget, QAbstractScrollArea):
-        return True
-    return class_name in {"QFrame", "QGroupBox"}
+    size = widget.size()
+    return size.width() * size.height() >= MIN_CELL_BACKGROUND_AREA
 
 
 def _make_cell_translucent(widget: QWidget) -> None:
@@ -246,7 +266,7 @@ def _make_cell_translucent(widget: QWidget) -> None:
         widget.styleSheet()
         + f"""
         QWidget#{object_name} {{
-            background: rgba(4, 16, 8, 116);
+            background: rgba(4, 16, 8, 112);
             border: 1px solid rgba(183, 242, 122, 110);
             border-radius: 14px;
         }}
@@ -258,12 +278,6 @@ def _make_cell_translucent(widget: QWidget) -> None:
         }}
         """
     )
-    if isinstance(widget, QAbstractScrollArea):
-        try:
-            widget.viewport().setStyleSheet("background: transparent;")
-            widget.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
-        except Exception:
-            pass
     widget.setProperty("jabka_cell_translucent", True)
 
 
@@ -272,17 +286,38 @@ def _apply_cell_background(widget: QWidget, filename: str) -> None:
     if path is None:
         return
     _make_cell_translucent(widget)
-    _install_background_layer(widget, path, "jabka_cell_background", overlay_alpha=98)
+    _install_background_layer(widget, path, "jabka_cell_background", overlay_alpha=105)
+
+
+def _update_existing_cell_backgrounds(shell: QWidget) -> None:
+    for widget in _safe_widgets(shell):
+        if widget.property("jabka_cell_background_applied"):
+            resizer = getattr(widget, "_jabka_cell_background_resizer", None)
+            if resizer is not None:
+                resizer.update_background()
 
 
 def _apply_shell_cell_backgrounds(shell: QWidget) -> None:
-    index = 0
-    for widget in _safe_widgets(shell):
-        if not _is_cell_candidate(widget, shell):
+    if shell.property("jabka_cell_background_pass_done"):
+        _update_existing_cell_backgrounds(shell)
+        return
+
+    candidates = [widget for widget in _safe_widgets(shell) if _is_cell_candidate(widget, shell)]
+    candidates.sort(key=lambda widget: widget.width() * widget.height(), reverse=True)
+
+    applied = 0
+    for widget in candidates:
+        if applied >= MAX_CELL_BACKGROUNDS_PER_PAGE:
+            break
+        if _has_cell_background_ancestor(widget, shell):
             continue
-        filename = _choose_cell_background(widget, index)
+        filename = _choose_cell_background(widget, applied)
         _apply_cell_background(widget, filename)
-        index += 1
+        if widget.property("jabka_cell_background_applied"):
+            applied += 1
+
+    if applied > 0:
+        shell.setProperty("jabka_cell_background_pass_done", True)
 
 
 def _find_home_widgets(shell: QWidget):
@@ -354,7 +389,7 @@ class _JabkaHomeLayoutResizer(QObject):
         self.crown = crown
 
     def eventFilter(self, obj, event):
-        if obj is self.shell and event.type() in {QEvent.Resize, QEvent.Show, QEvent.LayoutRequest}:
+        if obj is self.shell and event.type() in {QEvent.Resize, QEvent.Show}:
             self.update_layout()
         return False
 
