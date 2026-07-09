@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from app.config import ensure_config_exists, load_config
 from app.config_migrator import patch_config_file
+from app.jabka_duty_note_fix import install_jabka_duty_note_fix
 from app.jabka_embedded_assets import apply_jabka_icon_to_widget, install_jabka_embedded_assets
 from app.jabka_page_polish import apply_jabka_page_polish
 from app.jabka_theme import (
@@ -119,6 +120,7 @@ def main():
         window.setWindowIcon(QIcon(str(icon_path)))
     apply_jabka_widget_tree(window, config)
     apply_jabka_page_polish(window, config)
+    install_jabka_duty_note_fix(window, config)
 
     center_widget_on_screen(window, login_screen)
     window.show()
