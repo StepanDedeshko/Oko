@@ -264,7 +264,7 @@ def _has_cell_background_ancestor(widget: QWidget, shell: QWidget) -> bool:
 def _is_cell_candidate(widget: QWidget, shell: QWidget) -> bool:
     if widget is shell:
         return False
-    if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer"}:
+    if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer", "JabkaFrogHotspot", "JabkaFrogDialog", "JabkaFrogDialogTail"}:
         return False
     if _is_webengine_widget(widget) or _has_cell_background_ancestor(widget, shell):
         return False
@@ -448,7 +448,7 @@ def _polish_home_buttons(buttons: list[QPushButton]) -> None:
 
 
 def _frog_dialog_text(subtitle: QLabel | None) -> str:
-    fallback = "Выбери нужный раздел настроек или перейди в режим жабича."
+    fallback = "Выбери нужный раздел настроек\nили перейди в режим жабича."
     try:
         source = subtitle.text().strip() if subtitle is not None else fallback
     except Exception:
@@ -456,6 +456,7 @@ def _frog_dialog_text(subtitle: QLabel | None) -> str:
     source = source.replace("Мое болото:", "").strip()
     if not source:
         source = fallback
+    source = source.replace("или перейди", "\nили перейди")
     return f"🐸 Ква!\n{source}"
 
 
@@ -544,10 +545,29 @@ def _show_frog_dialog(shell: QWidget) -> None:
     timer.start(7000)
 
 
+def _frog_hotspot_qss() -> str:
+    return (
+        "QPushButton#JabkaFrogHotspot,"
+        "QPushButton#JabkaFrogHotspot:hover,"
+        "QPushButton#JabkaFrogHotspot:pressed,"
+        "QPushButton#JabkaFrogHotspot:focus {"
+        "background: transparent;"
+        "background-color: transparent;"
+        "border: 0px solid transparent;"
+        "outline: none;"
+        "}"
+    )
+
+
 def _ensure_frog_interaction(shell: QWidget, subtitle: QLabel | None) -> None:
     bubble = getattr(shell, "_jabka_frog_dialog", None)
     hotspot = getattr(shell, "_jabka_frog_hotspot", None)
     if isinstance(bubble, QLabel) and isinstance(hotspot, QPushButton):
+        bubble.setText(_frog_dialog_text(subtitle))
+        hotspot.setToolTip("")
+        hotspot.setStatusTip("")
+        hotspot.setWhatsThis("")
+        hotspot.setStyleSheet(_frog_hotspot_qss())
         _prepare_frog_sound(shell)
         return
 
@@ -558,12 +578,12 @@ def _ensure_frog_interaction(shell: QWidget, subtitle: QLabel | None) -> None:
     bubble.setText(_frog_dialog_text(subtitle))
     bubble.setStyleSheet(
         "QLabel#JabkaFrogDialog {"
-        "background: rgba(4, 17, 8, 222);"
-        "border: 1px solid rgba(215, 184, 90, 210);"
-        "border-radius: 22px;"
-        "padding: 14px 20px;"
+        "background: rgba(4, 17, 8, 226);"
+        "border: 1px solid rgba(215, 184, 90, 220);"
+        "border-radius: 20px;"
+        "padding: 12px 18px;"
         "color: #F3FFE4;"
-        "font-size: 17px;"
+        "font-size: 16px;"
         "font-weight: 900;"
         "}"
     )
@@ -571,12 +591,12 @@ def _ensure_frog_interaction(shell: QWidget, subtitle: QLabel | None) -> None:
 
     tail = QLabel(shell)
     tail.setObjectName("JabkaFrogDialogTail")
-    tail.setText("▾")
+    tail.setText("▼")
     tail.setAlignment(Qt.AlignCenter)
     tail.setStyleSheet(
         "QLabel#JabkaFrogDialogTail {"
         "background: transparent; border: none; color: #D7B85A;"
-        "font-size: 44px; font-weight: 900;"
+        "font-size: 34px; font-weight: 900;"
         "}"
     )
     tail.hide()
@@ -585,17 +605,13 @@ def _ensure_frog_interaction(shell: QWidget, subtitle: QLabel | None) -> None:
     hotspot.setObjectName("JabkaFrogHotspot")
     hotspot.setText("")
     hotspot.setCursor(Qt.PointingHandCursor)
-    hotspot.setToolTip("Кликни жабку")
+    hotspot.setToolTip("")
+    hotspot.setStatusTip("")
+    hotspot.setWhatsThis("")
     hotspot.setFlat(True)
-    hotspot.setStyleSheet(
-        "QPushButton#JabkaFrogHotspot {"
-        "background: transparent; border: 0px solid transparent;"
-        "}"
-        "QPushButton#JabkaFrogHotspot:hover {"
-        "background: rgba(183, 242, 122, 18); border: 1px solid rgba(215, 184, 90, 55);"
-        "border-radius: 22px;"
-        "}"
-    )
+    hotspot.setFocusPolicy(Qt.NoFocus)
+    hotspot.setAttribute(Qt.WA_TranslucentBackground, True)
+    hotspot.setStyleSheet(_frog_hotspot_qss())
     hotspot.clicked.connect(lambda: _show_frog_dialog(shell))
     hotspot.show()
 
@@ -632,30 +648,28 @@ class _JabkaHomeLayoutResizer(QObject):
         if self.subtitle is not None:
             self.subtitle.hide()
 
-        frog_x = int(w * 0.162)
-        frog_y = int(h * 0.300)
-        frog_w = min(max(300, int(w * 0.215)), 455)
-        frog_h = min(max(275, int(h * 0.330)), 385)
+        # Invisible click area over the frog only. No hover highlight and no white tooltip.
+        frog_x = int(w * 0.150)
+        frog_y = int(h * 0.230)
+        frog_w = min(max(250, int(w * 0.190)), 385)
+        frog_h = min(max(250, int(h * 0.330)), 360)
         hotspot = getattr(self.shell, "_jabka_frog_hotspot", None)
         if isinstance(hotspot, QPushButton):
             hotspot.setGeometry(frog_x, frog_y, frog_w, frog_h)
             hotspot.show()
             hotspot.raise_()
 
-        dialog_w = min(max(430, int(w * 0.285)), 590)
-        dialog_h = min(max(104, int(h * 0.108)), 130)
-        dialog_x = int(w * 0.315)
-        dialog_y = int(h * 0.215)
+        # Keep the speech bubble left of the menu frame.
+        dialog_w = min(max(360, int(w * 0.220)), 430)
+        dialog_h = min(max(98, int(h * 0.105)), 122)
+        dialog_x = int(w * 0.245)
+        dialog_y = int(h * 0.155)
         bubble = getattr(self.shell, "_jabka_frog_dialog", None)
         tail = getattr(self.shell, "_jabka_frog_dialog_tail", None)
         if isinstance(bubble, QLabel):
             bubble.setGeometry(dialog_x, dialog_y, dialog_w, dialog_h)
-            if bubble.isVisible():
-                bubble.raise_()
         if isinstance(tail, QLabel):
-            tail.setGeometry(dialog_x + int(dialog_w * 0.16), dialog_y + dialog_h - 13, 54, 48)
-            if tail.isVisible():
-                tail.raise_()
+            tail.setGeometry(dialog_x + int(dialog_w * 0.20), dialog_y + dialog_h - 8, 42, 38)
 
         # Buttons are placed directly on the baked right-side menu frame.
         # These coordinates are intentionally absolute relative to HomeShell,
@@ -671,6 +685,11 @@ class _JabkaHomeLayoutResizer(QObject):
             button.setGeometry(button_x, button_y + index * (button_h + gap), button_w, button_h)
             button.show()
             button.raise_()
+
+        if isinstance(bubble, QLabel) and bubble.isVisible():
+            bubble.raise_()
+        if isinstance(tail, QLabel) and tail.isVisible():
+            tail.raise_()
 
         if self.footer is not None:
             self.footer.setGeometry(left, h - 76, w - left * 2, 46)
