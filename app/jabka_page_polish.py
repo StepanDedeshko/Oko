@@ -14,6 +14,8 @@ except Exception:  # pragma: no cover - defensive for unusual Qt builds
 from app.jabka_theme import apply_text_overrides, is_jabka_config, theme_asset_path
 
 
+# The main wallpaper already contains the swamp, frog and decorative menu frame.
+# Runtime must place ONLY real Qt buttons over that baked-in frame.
 PAGE_BACKGROUNDS = {
     "HomeShell": "00_main_menu_wallpaper.png",
 }
@@ -26,8 +28,6 @@ CELL_BACKGROUND_FILES = (
     "05_cell_bottom_right_background.png",
 )
 
-MENU_FRAME_FILE = "menu_frame.png"
-MENU_FRAME_ASPECT = 2 / 3
 MAX_CELL_BACKGROUNDS_PER_PAGE = 6
 MIN_CELL_BACKGROUND_AREA = 52_000
 
@@ -42,14 +42,6 @@ BUTTON_ICONS = {
 }
 
 _READABLE_PANEL_QSS = """
-QWidget#HomeShell QFrame,
-QWidget#HomeShell QGroupBox,
-QWidget#DutyModeShell QFrame,
-QWidget#DutyModeShell QGroupBox {
-    background: rgba(4, 16, 8, 118);
-    border: 1px solid rgba(183, 242, 122, 120);
-    border-radius: 16px;
-}
 QWidget#HomeShell QWidget#HomeMenuCard,
 QWidget#HomeShell QFrame#HomeMenuCard {
     background: transparent;
@@ -59,26 +51,24 @@ QWidget#HomeShell QFrame#HomeMenuCard {
     margin: 0;
     padding: 0;
 }
-QWidget#HomeShell QPushButton,
+QWidget#DutyModeShell QFrame,
+QWidget#DutyModeShell QGroupBox {
+    background: rgba(4, 16, 8, 118);
+    border: 1px solid rgba(183, 242, 122, 120);
+    border-radius: 16px;
+}
 QWidget#DutyModeShell QPushButton,
-QWidget#HomeShell QToolButton,
 QWidget#DutyModeShell QToolButton {
     background: rgba(8, 28, 15, 176);
     border: 1px solid rgba(183, 242, 122, 135);
     border-radius: 12px;
     color: #EAF8D8;
 }
-QWidget#HomeShell QPushButton:hover,
 QWidget#DutyModeShell QPushButton:hover,
-QWidget#HomeShell QToolButton:hover,
 QWidget#DutyModeShell QToolButton:hover {
     background: rgba(45, 125, 58, 210);
     border: 1px solid #B7F27A;
 }
-QWidget#HomeShell QLineEdit,
-QWidget#HomeShell QTextEdit,
-QWidget#HomeShell QPlainTextEdit,
-QWidget#HomeShell QComboBox,
 QWidget#DutyModeShell QLineEdit,
 QWidget#DutyModeShell QTextEdit,
 QWidget#DutyModeShell QPlainTextEdit,
@@ -87,9 +77,6 @@ QWidget#DutyModeShell QComboBox {
     border: 1px solid rgba(183, 242, 122, 110);
     border-radius: 10px;
 }
-QWidget#HomeShell QTableWidget,
-QWidget#HomeShell QTreeWidget,
-QWidget#HomeShell QListWidget,
 QWidget#DutyModeShell QTableWidget,
 QWidget#DutyModeShell QTreeWidget,
 QWidget#DutyModeShell QListWidget {
@@ -99,8 +86,7 @@ QWidget#DutyModeShell QListWidget {
     border-radius: 13px;
 }
 QLabel#JabkaBackgroundLayer,
-QLabel#JabkaCellBackgroundLayer,
-QLabel#JabkaMenuFrameLayer {
+QLabel#JabkaCellBackgroundLayer {
     background: transparent;
     border: none;
 }
@@ -132,41 +118,14 @@ def _resolve_asset(folder: str, filename: str, fallbacks: tuple[str, ...] = ()) 
     return None
 
 
-def _scaled_background_pixmap(source: QPixmap, target_size, overlay_alpha: int, scale_mode: str = "cover") -> QPixmap:
-    if scale_mode == "menu_frame":
-        # The frame asset includes a thin technical edge. Crop only that edge,
-        # then stretch so the ornate frame always fills the menu container.
-        crop_x = max(1, int(source.width() * 0.035))
-        crop_y = max(1, int(source.height() * 0.028))
-        source = source.copy(
-            crop_x,
-            crop_y,
-            max(1, source.width() - crop_x * 2),
-            max(1, source.height() - crop_y * 2),
-        )
-        result = source.scaled(target_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-    elif scale_mode == "stretch":
-        result = source.scaled(target_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-    elif scale_mode == "contain":
-        result = QPixmap(target_size)
-        result.fill(Qt.transparent)
-        scaled = source.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        painter = QPainter(result)
-        painter.drawPixmap(
-            max(0, (target_size.width() - scaled.width()) // 2),
-            max(0, (target_size.height() - scaled.height()) // 2),
-            scaled,
-        )
-        painter.end()
-    else:
-        scaled = source.scaled(target_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        result = scaled.copy(
-            max(0, (scaled.width() - target_size.width()) // 2),
-            max(0, (scaled.height() - target_size.height()) // 2),
-            target_size.width(),
-            target_size.height(),
-        )
-
+def _cover_pixmap(source: QPixmap, target_size, overlay_alpha: int) -> QPixmap:
+    scaled = source.scaled(target_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+    result = scaled.copy(
+        max(0, (scaled.width() - target_size.width()) // 2),
+        max(0, (scaled.height() - target_size.height()) // 2),
+        target_size.width(),
+        target_size.height(),
+    )
     if overlay_alpha > 0:
         painter = QPainter(result)
         painter.fillRect(result.rect(), QColor(2, 10, 5, overlay_alpha))
@@ -175,13 +134,12 @@ def _scaled_background_pixmap(source: QPixmap, target_size, overlay_alpha: int, 
 
 
 class _JabkaBackgroundResizer(QObject):
-    def __init__(self, target: QWidget, label: QLabel, pixmap: QPixmap, overlay_alpha: int = 0, scale_mode: str = "cover"):
+    def __init__(self, target: QWidget, label: QLabel, pixmap: QPixmap, overlay_alpha: int = 0):
         super().__init__(target)
         self.target = target
         self.label = label
         self.pixmap = pixmap
         self.overlay_alpha = overlay_alpha
-        self.scale_mode = scale_mode
         self._last_size = None
 
     def eventFilter(self, obj, event):
@@ -195,30 +153,19 @@ class _JabkaBackgroundResizer(QObject):
             return
         self.label.setGeometry(0, 0, size.width(), size.height())
         if self._last_size != size:
-            self.label.setPixmap(_scaled_background_pixmap(self.pixmap, size, self.overlay_alpha, self.scale_mode))
+            self.label.setPixmap(_cover_pixmap(self.pixmap, size, self.overlay_alpha))
             self._last_size = size
         self.label.lower()
         self.label.show()
 
 
-def _install_background_layer(
-    target: QWidget,
-    path: Path,
-    property_name: str,
-    overlay_alpha: int,
-    object_name: str | None = None,
-    scale_mode: str = "cover",
-) -> None:
+def _install_background_layer(target: QWidget, path: Path, property_name: str, overlay_alpha: int, object_name: str) -> None:
     resizer_attr = f"_{property_name}_resizer"
     applied_property = f"{property_name}_applied"
     if target.property(applied_property):
         resizer = getattr(target, resizer_attr, None)
         if resizer is not None:
             resizer.update_background()
-        label = getattr(target, f"_{property_name}_label", None)
-        if isinstance(label, QLabel):
-            label.show()
-            label.lower()
         return
 
     pixmap = QPixmap(str(path))
@@ -226,17 +173,12 @@ def _install_background_layer(
         return
 
     label = QLabel(target)
-    if object_name:
-        label.setObjectName(object_name)
-    elif "cell" in property_name:
-        label.setObjectName("JabkaCellBackgroundLayer")
-    else:
-        label.setObjectName("JabkaBackgroundLayer")
+    label.setObjectName(object_name)
     label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
     label.setScaledContents(False)
     label.setAlignment(Qt.AlignCenter)
 
-    resizer = _JabkaBackgroundResizer(target, label, pixmap, overlay_alpha=overlay_alpha, scale_mode=scale_mode)
+    resizer = _JabkaBackgroundResizer(target, label, pixmap, overlay_alpha=overlay_alpha)
     target.installEventFilter(resizer)
     setattr(target, f"_{property_name}_label", label)
     setattr(target, resizer_attr, resizer)
@@ -251,7 +193,7 @@ def _apply_shell_background(shell: QWidget, filename: str) -> None:
     if not shell.property("jabka_readable_qss_applied"):
         shell.setStyleSheet(shell.styleSheet() + _READABLE_PANEL_QSS)
         shell.setProperty("jabka_readable_qss_applied", True)
-    _install_background_layer(shell, path, "jabka_page_background", overlay_alpha=34, scale_mode="cover")
+    _install_background_layer(shell, path, "jabka_page_background", overlay_alpha=0, object_name="JabkaBackgroundLayer")
 
 
 def _widget_text_blob(widget: QWidget) -> str:
@@ -294,14 +236,13 @@ def _has_cell_background_ancestor(widget: QWidget, shell: QWidget) -> bool:
 def _is_cell_candidate(widget: QWidget, shell: QWidget) -> bool:
     if widget is shell:
         return False
-    if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer", "JabkaMenuFrameLayer", "JabkaMenuCrown"}:
+    if widget.objectName() in {"JabkaBackgroundLayer", "JabkaCellBackgroundLayer"}:
         return False
     if _is_webengine_widget(widget) or _has_cell_background_ancestor(widget, shell):
         return False
     if isinstance(widget, (QPushButton, QLabel, QAbstractScrollArea)):
         return False
-    class_name = widget.__class__.__name__
-    if class_name not in {"QFrame", "QGroupBox"}:
+    if widget.__class__.__name__ not in {"QFrame", "QGroupBox"}:
         return False
     size = widget.size()
     return size.width() * size.height() >= MIN_CELL_BACKGROUND_AREA
@@ -310,10 +251,8 @@ def _is_cell_candidate(widget: QWidget, shell: QWidget) -> bool:
 def _make_cell_translucent(widget: QWidget) -> None:
     if widget.property("jabka_cell_translucent"):
         return
-    object_name = widget.objectName()
-    if not object_name:
-        object_name = f"jabka_cell_{id(widget)}"
-        widget.setObjectName(object_name)
+    object_name = widget.objectName() or f"jabka_cell_{id(widget)}"
+    widget.setObjectName(object_name)
     widget.setStyleSheet(
         widget.styleSheet()
         + f"""
@@ -338,21 +277,7 @@ def _apply_cell_background(widget: QWidget, filename: str) -> None:
     if path is None:
         return
     _make_cell_translucent(widget)
-    _install_background_layer(widget, path, "jabka_cell_background", overlay_alpha=105, scale_mode="cover")
-
-
-def _apply_menu_frame_background(menu: QWidget) -> None:
-    path = _resolve_asset("menu", MENU_FRAME_FILE)
-    if path is None:
-        return
-    _install_background_layer(
-        menu,
-        path,
-        "jabka_menu_frame_background",
-        overlay_alpha=0,
-        object_name="JabkaMenuFrameLayer",
-        scale_mode="menu_frame",
-    )
+    _install_background_layer(widget, path, "jabka_cell_background", overlay_alpha=105, object_name="JabkaCellBackgroundLayer")
 
 
 def _update_existing_cell_backgrounds(shell: QWidget) -> None:
@@ -377,8 +302,7 @@ def _apply_shell_cell_backgrounds(shell: QWidget) -> None:
             break
         if _has_cell_background_ancestor(widget, shell):
             continue
-        filename = _choose_cell_background(widget, applied)
-        _apply_cell_background(widget, filename)
+        _apply_cell_background(widget, _choose_cell_background(widget, applied))
         if widget.property("jabka_cell_background_applied"):
             applied += 1
 
@@ -421,35 +345,49 @@ def _clean_button_text(text: str) -> str:
     return value
 
 
+def _make_menu_container_transparent(menu: QWidget) -> None:
+    menu.setAttribute(Qt.WA_TranslucentBackground, True)
+    menu.setAutoFillBackground(False)
+    if QFrame is not None and isinstance(menu, QFrame):
+        try:
+            menu.setFrameShape(QFrame.NoFrame)
+            menu.setFrameShadow(QFrame.Plain)
+            menu.setLineWidth(0)
+            menu.setMidLineWidth(0)
+            menu.setFrameStyle(0)
+        except Exception:
+            pass
+    menu.setStyleSheet(
+        "QWidget#HomeMenuCard, QFrame#HomeMenuCard {"
+        "background: transparent; background-color: transparent;"
+        "border: 0px solid transparent; border-radius: 0; padding: 0; margin: 0;"
+        "}"
+    )
+
+
 def _polish_home_buttons(menu: QWidget) -> None:
     for button in menu.findChildren(QPushButton):
         clean_text = _clean_button_text(button.text())
         icon = BUTTON_ICONS.get(clean_text, "🐸")
         button.setText(f"{icon}   {clean_text}")
-        button.setMinimumHeight(64)
-        button.setMaximumHeight(72)
+        button.setMinimumHeight(60)
+        button.setMaximumHeight(66)
         button.setCursor(Qt.PointingHandCursor)
         button.setStyleSheet(
             "QPushButton {"
             "text-align: left;"
-            "padding-left: 36px;"
-            "padding-right: 22px;"
+            "padding-left: 34px; padding-right: 18px;"
             "border-radius: 16px;"
-            "background: rgba(7, 27, 14, 174);"
-            "border: 1px solid rgba(143, 227, 136, 155);"
-            "color: #D6EFC3;"
-            "font-size: 18px;"
-            "font-weight: 900;"
+            "background: rgba(7, 27, 14, 150);"
+            "border: 1px solid rgba(143, 227, 136, 135);"
+            "color: #EAF8D8; font-size: 18px; font-weight: 900;"
             "}"
             "QPushButton:hover {"
-            "background: rgba(45, 125, 58, 218);"
-            "border: 1px solid #B7F27A;"
-            "color: #F1FFE0;"
+            "background: rgba(45, 125, 58, 210);"
+            "border: 1px solid #D7B85A; color: #F7FFE8;"
             "}"
             "QPushButton#PrimaryAction {"
-            "background: rgba(45, 125, 58, 226);"
-            "border: 1px solid #D7B85A;"
-            "color: #F1FFE0;"
+            "background: rgba(55, 140, 68, 220); border: 1px solid #D7B85A;"
             "}"
         )
         button.show()
@@ -480,38 +418,23 @@ class _JabkaHomeLayoutResizer(QObject):
             self.title.setGeometry(left, top, min(430, int(w * 0.38)), 64)
             self.title.raise_()
         if self.subtitle is not None:
-            self.subtitle.setGeometry(left + 8, top + 70, min(760, int(w * 0.55)), 34)
+            self.subtitle.setGeometry(left, top + 66, min(760, int(w * 0.55)), 32)
             self.subtitle.raise_()
 
-        menu_w = min(max(540, int(w * 0.315)), 710)
-        menu_h = int(menu_w / MENU_FRAME_ASPECT)
-        max_menu_h = int(h * 0.83)
-        if menu_h > max_menu_h:
-            menu_h = max_menu_h
-            menu_w = int(menu_h * MENU_FRAME_ASPECT)
-        menu_x = int(w * 0.50 - menu_w / 2)
-        menu_y = max(top + 104, int(h * 0.095))
+        # Button-only overlay. The decorative frame is already baked into
+        # 00_main_menu_wallpaper.png, so this widget must not draw its own frame.
+        menu_w = min(max(430, int(w * 0.255)), 560)
+        menu_h = min(max(500, int(h * 0.50)), 600)
+        menu_x = int(w * 0.605 - menu_w / 2)
+        menu_y = int(h * 0.275)
         self.menu.setGeometry(menu_x, menu_y, menu_w, menu_h)
         self.menu.show()
         self.menu.raise_()
 
         menu_layout = self.menu.layout()
         if menu_layout is not None:
-            menu_layout.setContentsMargins(
-                int(menu_w * 0.115),
-                int(menu_h * 0.185),
-                int(menu_w * 0.115),
-                int(menu_h * 0.135),
-            )
-            menu_layout.setSpacing(max(12, int(menu_h * 0.014)))
-
-        frame_resizer = getattr(self.menu, "_jabka_menu_frame_background_resizer", None)
-        if frame_resizer is not None:
-            frame_resizer.update_background()
-        frame = getattr(self.menu, "_jabka_menu_frame_background_label", None)
-        if isinstance(frame, QLabel):
-            frame.show()
-            frame.lower()
+            menu_layout.setContentsMargins(0, 0, 0, 0)
+            menu_layout.setSpacing(max(12, int(h * 0.014)))
 
         for button in self.menu.findChildren(QPushButton):
             button.show()
@@ -522,30 +445,6 @@ class _JabkaHomeLayoutResizer(QObject):
             self.footer.raise_()
 
 
-def _make_menu_container_transparent(menu: QWidget) -> None:
-    menu.setAttribute(Qt.WA_TranslucentBackground, True)
-    menu.setAutoFillBackground(False)
-    if QFrame is not None and isinstance(menu, QFrame):
-        try:
-            menu.setFrameShape(QFrame.NoFrame)
-            menu.setFrameShadow(QFrame.Plain)
-            menu.setLineWidth(0)
-            menu.setMidLineWidth(0)
-            menu.setFrameStyle(0)
-        except Exception:
-            pass
-    menu.setStyleSheet(
-        "QWidget#HomeMenuCard, QFrame#HomeMenuCard {"
-        "background: transparent;"
-        "background-color: transparent;"
-        "border: 0px solid transparent;"
-        "border-radius: 0;"
-        "padding: 0;"
-        "margin: 0;"
-        "}"
-    )
-
-
 def _apply_home_scene(shell: QWidget) -> None:
     _hide_layout_mascots(shell)
     menu, title, subtitle, footer = _find_home_widgets(shell)
@@ -554,10 +453,7 @@ def _apply_home_scene(shell: QWidget) -> None:
 
     if shell.property("jabka_home_scene_done"):
         _make_menu_container_transparent(menu)
-        _apply_menu_frame_background(menu)
         _polish_home_buttons(menu)
-        menu.show()
-        menu.raise_()
         resizer = getattr(shell, "_jabka_home_layout_resizer", None)
         if resizer is not None:
             resizer.update_layout()
@@ -571,22 +467,15 @@ def _apply_home_scene(shell: QWidget) -> None:
     menu.setParent(shell)
     menu.setMaximumWidth(16777215)
     _make_menu_container_transparent(menu)
-    _apply_menu_frame_background(menu)
     _polish_home_buttons(menu)
-    menu.show()
-    menu.raise_()
 
     if title is not None:
         title.setParent(shell)
         title.setText("Jabbix")
         title.setStyleSheet(
             "QLabel#HomeTitle {"
-            "background: transparent;"
-            "border: none;"
-            "color: #EAF8D8;"
-            "font-size: 42px;"
-            "font-weight: 900;"
-            "padding-left: 14px;"
+            "background: transparent; border: none; color: #EAF8D8;"
+            "font-size: 42px; font-weight: 900; padding-left: 14px;"
             "}"
         )
     if subtitle is not None:
