@@ -343,27 +343,35 @@ def _hide_layout_mascots(shell: QWidget) -> None:
         mascot.setParent(None)
 
 
+def _clean_button_text(text: str) -> str:
+    value = text.strip()
+    for marker in ("  ›", " ›", "›", ">"):
+        value = value.replace(marker, "")
+    value = " ".join(value.split())
+    for icon in BUTTON_ICONS.values():
+        if value.startswith(icon):
+            value = value[len(icon):].strip()
+    return value
+
+
 def _polish_home_buttons(menu: QWidget) -> None:
     for button in menu.findChildren(QPushButton):
-        text = button.text().strip()
-        clean_text = text.split("  ›", 1)[0].strip()
-        for icon in BUTTON_ICONS.values():
-            if clean_text.startswith(icon):
-                clean_text = clean_text[len(icon):].strip()
+        clean_text = _clean_button_text(button.text())
         icon = BUTTON_ICONS.get(clean_text, "🐸")
-        button.setText(f"{icon}   {clean_text}                                      ›")
-        button.setMinimumHeight(50)
+        button.setText(f"{icon}   {clean_text}")
+        button.setMinimumHeight(58)
         button.setCursor(Qt.PointingHandCursor)
         button.setStyleSheet(
             "QPushButton {"
             "text-align: left;"
-            "padding-left: 22px;"
-            "padding-right: 16px;"
-            "border-radius: 12px;"
-            "background: rgba(6, 24, 12, 170);"
-            "border: 1px solid rgba(183, 242, 122, 130);"
-            "color: #EAF8D8;"
-            "font-weight: 800;"
+            "padding-left: 28px;"
+            "padding-right: 18px;"
+            "border-radius: 13px;"
+            "background: rgba(7, 27, 14, 185);"
+            "border: 1px solid rgba(143, 227, 136, 150);"
+            "color: #D6EFC3;"
+            "font-size: 15px;"
+            "font-weight: 850;"
             "}"
             "QPushButton:hover {"
             "background: rgba(45, 125, 58, 215);"
@@ -371,7 +379,7 @@ def _polish_home_buttons(menu: QWidget) -> None:
             "color: #F1FFE0;"
             "}"
             "QPushButton#PrimaryAction {"
-            "background: rgba(45, 125, 58, 220);"
+            "background: rgba(45, 125, 58, 225);"
             "border: 1px solid #D7B85A;"
             "color: #F1FFE0;"
             "}"
@@ -406,14 +414,14 @@ class _JabkaHomeLayoutResizer(QObject):
             self.subtitle.setGeometry(left + 8, top + 70, min(760, int(w * 0.55)), 34)
             self.subtitle.raise_()
 
-        menu_w = min(max(360, int(w * 0.25)), 470)
-        menu_h = min(max(390, self.menu.sizeHint().height() + 72), int(h * 0.64))
+        menu_w = min(max(410, int(w * 0.28)), 540)
+        menu_h = min(max(485, self.menu.sizeHint().height() + 118), int(h * 0.72))
         menu_x = int(w * 0.50 - menu_w / 2)
-        menu_y = max(top + 155, int(h * 0.22))
+        menu_y = max(top + 135, int(h * 0.18))
         self.menu.setGeometry(menu_x, menu_y, menu_w, menu_h)
         self.menu.raise_()
 
-        self.crown.setGeometry(menu_x + int(menu_w * 0.31), max(top + 130, menu_y - 48), int(menu_w * 0.38), 48)
+        self.crown.setGeometry(menu_x + int(menu_w * 0.30), max(top + 104, menu_y - 54), int(menu_w * 0.40), 56)
         self.crown.raise_()
 
         if self.footer is not None:
@@ -428,6 +436,7 @@ def _apply_home_scene(shell: QWidget) -> None:
         return
 
     if shell.property("jabka_home_scene_done"):
+        _polish_home_buttons(menu)
         resizer = getattr(shell, "_jabka_home_layout_resizer", None)
         if resizer is not None:
             resizer.update_layout()
@@ -442,9 +451,10 @@ def _apply_home_scene(shell: QWidget) -> None:
     menu.setMaximumWidth(16777215)
     menu.setStyleSheet(
         "QWidget#HomeMenuCard {"
-        "background: rgba(4, 16, 8, 132);"
-        "border: 1px solid rgba(215, 184, 90, 155);"
-        "border-radius: 22px;"
+        "background: rgba(4, 16, 8, 168);"
+        "border: 2px solid rgba(215, 184, 90, 165);"
+        "border-radius: 24px;"
+        "padding: 22px;"
         "}"
     )
     _polish_home_buttons(menu)
@@ -483,11 +493,11 @@ def _apply_home_scene(shell: QWidget) -> None:
     crown.setAttribute(Qt.WA_TransparentForMouseEvents, True)
     crown.setStyleSheet(
         "QLabel#JabkaMenuCrown {"
-        "background: rgba(4, 16, 8, 150);"
-        "border: 1px solid rgba(215, 184, 90, 165);"
-        "border-radius: 18px;"
+        "background: rgba(4, 16, 8, 178);"
+        "border: 2px solid rgba(215, 184, 90, 170);"
+        "border-radius: 22px;"
         "color: #D7B85A;"
-        "font-size: 28px;"
+        "font-size: 31px;"
         "font-weight: 900;"
         "}"
     )
