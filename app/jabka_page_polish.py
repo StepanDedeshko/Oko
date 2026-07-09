@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QTimer, Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
-from PySide6.QtWidgets import QAbstractScrollArea, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QAbstractScrollArea, QLabel, QPushButton, QSizePolicy, QWidget
 
 try:
     from PySide6.QtWidgets import QFrame
@@ -370,24 +370,31 @@ def _polish_home_buttons(menu: QWidget) -> None:
         clean_text = _clean_button_text(button.text())
         icon = BUTTON_ICONS.get(clean_text, "🐸")
         button.setText(f"{icon}   {clean_text}")
-        button.setMinimumHeight(60)
-        button.setMaximumHeight(66)
+        button.setMinimumHeight(66)
+        button.setMaximumHeight(72)
+        button.setMinimumWidth(470)
+        button.setMaximumWidth(16777215)
+        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         button.setCursor(Qt.PointingHandCursor)
         button.setStyleSheet(
             "QPushButton {"
             "text-align: left;"
-            "padding-left: 34px; padding-right: 18px;"
-            "border-radius: 16px;"
-            "background: rgba(7, 27, 14, 150);"
-            "border: 1px solid rgba(143, 227, 136, 135);"
-            "color: #EAF8D8; font-size: 18px; font-weight: 900;"
+            "padding-left: 38px; padding-right: 22px;"
+            "border-radius: 18px;"
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 rgba(9, 39, 17, 205), stop:0.55 rgba(6, 25, 12, 178), stop:1 rgba(3, 13, 7, 154));"
+            "border: 1px solid rgba(151, 232, 128, 170);"
+            "color: #F0F9DC; font-size: 19px; font-weight: 900;"
             "}"
             "QPushButton:hover {"
-            "background: rgba(45, 125, 58, 210);"
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 rgba(55, 143, 67, 230), stop:0.55 rgba(24, 79, 36, 214), stop:1 rgba(7, 31, 15, 188));"
             "border: 1px solid #D7B85A; color: #F7FFE8;"
             "}"
             "QPushButton#PrimaryAction {"
-            "background: rgba(55, 140, 68, 220); border: 1px solid #D7B85A;"
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 rgba(69, 155, 76, 238), stop:0.58 rgba(47, 126, 59, 226), stop:1 rgba(16, 58, 26, 206));"
+            "border: 1px solid #D7B85A; color: #FBFFE8;"
             "}"
         )
         button.show()
@@ -423,10 +430,10 @@ class _JabkaHomeLayoutResizer(QObject):
 
         # Button-only overlay. The decorative frame is already baked into
         # 00_main_menu_wallpaper.png, so this widget must not draw its own frame.
-        menu_w = min(max(430, int(w * 0.255)), 560)
-        menu_h = min(max(500, int(h * 0.50)), 600)
-        menu_x = int(w * 0.605 - menu_w / 2)
-        menu_y = int(h * 0.275)
+        menu_w = min(max(500, int(w * 0.30)), 610)
+        menu_h = min(max(555, int(h * 0.60)), 650)
+        menu_x = int(w * 0.635 - menu_w / 2)
+        menu_y = int(h * 0.255)
         self.menu.setGeometry(menu_x, menu_y, menu_w, menu_h)
         self.menu.show()
         self.menu.raise_()
@@ -434,7 +441,7 @@ class _JabkaHomeLayoutResizer(QObject):
         menu_layout = self.menu.layout()
         if menu_layout is not None:
             menu_layout.setContentsMargins(0, 0, 0, 0)
-            menu_layout.setSpacing(max(12, int(h * 0.014)))
+            menu_layout.setSpacing(max(11, int(h * 0.013)))
 
         for button in self.menu.findChildren(QPushButton):
             button.show()
