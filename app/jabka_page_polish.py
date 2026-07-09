@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QTimer, Qt
+from PySide6.QtCore import QEvent, QObject, QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import QAbstractScrollArea, QLabel, QPushButton, QSizePolicy, QWidget
 
@@ -10,6 +10,13 @@ try:
     from PySide6.QtWidgets import QFrame
 except Exception:  # pragma: no cover - defensive for unusual Qt builds
     QFrame = None
+
+try:
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect
+except Exception:  # pragma: no cover - sound is optional
+    QAudioOutput = None
+    QMediaPlayer = None
+    QSoundEffect = None
 
 from app.jabka_theme import apply_text_overrides, is_jabka_config, theme_asset_path
 
@@ -40,6 +47,18 @@ BUTTON_ICONS = {
     "Улучшения болота": "⬆",
     "Покинуть болото": "↪",
 }
+
+FROG_SOUND_FILES = (
+    "frog_croak.wav",
+    "frog_croak.mp3",
+    "frog_croak.ogg",
+    "croak.wav",
+    "croak.mp3",
+    "croak.ogg",
+    "kwak.wav",
+    "kwak.mp3",
+    "kwak.ogg",
+)
 
 _READABLE_PANEL_QSS = """
 QWidget#HomeShell QWidget#HomeMenuCard,
@@ -115,6 +134,15 @@ def _resolve_asset(folder: str, filename: str, fallbacks: tuple[str, ...] = ()) 
         path = theme_asset_path(folder, candidate)
         if path.exists():
             return path
+    return None
+
+
+def _resolve_sound_asset() -> Path | None:
+    for folder in ("sounds", "audio", "sfx", "backgrounds"):
+        for filename in FROG_SOUND_FILES:
+            path = _resolve_asset(folder, filename)
+            if path is not None:
+                return path
     return None
 
 
@@ -419,6 +447,164 @@ def _polish_home_buttons(buttons: list[QPushButton]) -> None:
         button.raise_()
 
 
+def _frog_dialog_text(subtitle: QLabel | None) -> str:
+    fallback = "Выбери нужный раздел настроек или перейди в режим жабича."
+    try:
+        source = subtitle.text().strip() if subtitle is not None else fallback
+    except Exception:
+        source = fallback
+    source = source.replace("Мое болото:", "").strip()
+    if not source:
+        source = fallback
+    return f"🐸 Ква!\n{source}"
+
+
+def _prepare_frog_sound(shell: QWidget) -> None:
+    if shell.property("jabka_frog_sound_prepared"):
+        return
+    shell.setProperty("jabka_frog_sound_prepared", True)
+
+    path = _resolve_sound_asset()
+    if path is None:
+        return
+
+    suffix = path.suffix.lower()
+    if QSoundEffect is not None and suffix in {".wav", ".ogg"}:
+        try:
+            sound = QSoundEffect(shell)
+            sound.setSource(QUrl.fromLocalFile(str(path.resolve())))
+            sound.setVolume(0.65)
+            setattr(shell, "_jabka_frog_sound_effect", sound)
+            return
+        except Exception:
+            pass
+
+    if QMediaPlayer is not None and QAudioOutput is not None:
+        try:
+            player = QMediaPlayer(shell)
+            audio = QAudioOutput(shell)
+            audio.setVolume(0.65)
+            player.setAudioOutput(audio)
+            player.setSource(QUrl.fromLocalFile(str(path.resolve())))
+            setattr(shell, "_jabka_frog_sound_player", player)
+            setattr(shell, "_jabka_frog_sound_audio", audio)
+        except Exception:
+            pass
+
+
+def _play_frog_sound(shell: QWidget) -> None:
+    sound = getattr(shell, "_jabka_frog_sound_effect", None)
+    if sound is not None:
+        try:
+            if sound.isPlaying():
+                sound.stop()
+            sound.play()
+            return
+        except Exception:
+            pass
+
+    player = getattr(shell, "_jabka_frog_sound_player", None)
+    if player is not None:
+        try:
+            player.setPosition(0)
+            player.play()
+        except Exception:
+            pass
+
+
+def _hide_frog_dialog(shell: QWidget) -> None:
+    bubble = getattr(shell, "_jabka_frog_dialog", None)
+    tail = getattr(shell, "_jabka_frog_dialog_tail", None)
+    if isinstance(bubble, QLabel):
+        bubble.hide()
+    if isinstance(tail, QLabel):
+        tail.hide()
+
+
+def _show_frog_dialog(shell: QWidget) -> None:
+    bubble = getattr(shell, "_jabka_frog_dialog", None)
+    tail = getattr(shell, "_jabka_frog_dialog_tail", None)
+    if not isinstance(bubble, QLabel):
+        return
+
+    bubble.show()
+    bubble.raise_()
+    if isinstance(tail, QLabel):
+        tail.show()
+        tail.raise_()
+
+    _play_frog_sound(shell)
+
+    timer = getattr(shell, "_jabka_frog_dialog_hide_timer", None)
+    if not isinstance(timer, QTimer):
+        timer = QTimer(shell)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: _hide_frog_dialog(shell))
+        setattr(shell, "_jabka_frog_dialog_hide_timer", timer)
+    timer.start(7000)
+
+
+def _ensure_frog_interaction(shell: QWidget, subtitle: QLabel | None) -> None:
+    bubble = getattr(shell, "_jabka_frog_dialog", None)
+    hotspot = getattr(shell, "_jabka_frog_hotspot", None)
+    if isinstance(bubble, QLabel) and isinstance(hotspot, QPushButton):
+        _prepare_frog_sound(shell)
+        return
+
+    bubble = QLabel(shell)
+    bubble.setObjectName("JabkaFrogDialog")
+    bubble.setWordWrap(True)
+    bubble.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    bubble.setText(_frog_dialog_text(subtitle))
+    bubble.setStyleSheet(
+        "QLabel#JabkaFrogDialog {"
+        "background: rgba(4, 17, 8, 222);"
+        "border: 1px solid rgba(215, 184, 90, 210);"
+        "border-radius: 22px;"
+        "padding: 14px 20px;"
+        "color: #F3FFE4;"
+        "font-size: 17px;"
+        "font-weight: 900;"
+        "}"
+    )
+    bubble.hide()
+
+    tail = QLabel(shell)
+    tail.setObjectName("JabkaFrogDialogTail")
+    tail.setText("▾")
+    tail.setAlignment(Qt.AlignCenter)
+    tail.setStyleSheet(
+        "QLabel#JabkaFrogDialogTail {"
+        "background: transparent; border: none; color: #D7B85A;"
+        "font-size: 44px; font-weight: 900;"
+        "}"
+    )
+    tail.hide()
+
+    hotspot = QPushButton(shell)
+    hotspot.setObjectName("JabkaFrogHotspot")
+    hotspot.setText("")
+    hotspot.setCursor(Qt.PointingHandCursor)
+    hotspot.setToolTip("Кликни жабку")
+    hotspot.setFlat(True)
+    hotspot.setStyleSheet(
+        "QPushButton#JabkaFrogHotspot {"
+        "background: transparent; border: 0px solid transparent;"
+        "}"
+        "QPushButton#JabkaFrogHotspot:hover {"
+        "background: rgba(183, 242, 122, 18); border: 1px solid rgba(215, 184, 90, 55);"
+        "border-radius: 22px;"
+        "}"
+    )
+    hotspot.clicked.connect(lambda: _show_frog_dialog(shell))
+    hotspot.show()
+
+    setattr(shell, "_jabka_frog_dialog", bubble)
+    setattr(shell, "_jabka_frog_dialog_tail", tail)
+    setattr(shell, "_jabka_frog_hotspot", hotspot)
+    _prepare_frog_sound(shell)
+
+
 class _JabkaHomeLayoutResizer(QObject):
     def __init__(self, shell: QWidget, menu: QWidget, buttons: list[QPushButton], title: QLabel | None, subtitle: QLabel | None, footer: QLabel | None):
         super().__init__(shell)
@@ -444,8 +630,32 @@ class _JabkaHomeLayoutResizer(QObject):
             self.title.setGeometry(left, top, min(430, int(w * 0.38)), 64)
             self.title.raise_()
         if self.subtitle is not None:
-            self.subtitle.setGeometry(left, top + 66, min(760, int(w * 0.55)), 32)
-            self.subtitle.raise_()
+            self.subtitle.hide()
+
+        frog_x = int(w * 0.162)
+        frog_y = int(h * 0.300)
+        frog_w = min(max(300, int(w * 0.215)), 455)
+        frog_h = min(max(275, int(h * 0.330)), 385)
+        hotspot = getattr(self.shell, "_jabka_frog_hotspot", None)
+        if isinstance(hotspot, QPushButton):
+            hotspot.setGeometry(frog_x, frog_y, frog_w, frog_h)
+            hotspot.show()
+            hotspot.raise_()
+
+        dialog_w = min(max(430, int(w * 0.285)), 590)
+        dialog_h = min(max(104, int(h * 0.108)), 130)
+        dialog_x = int(w * 0.315)
+        dialog_y = int(h * 0.215)
+        bubble = getattr(self.shell, "_jabka_frog_dialog", None)
+        tail = getattr(self.shell, "_jabka_frog_dialog_tail", None)
+        if isinstance(bubble, QLabel):
+            bubble.setGeometry(dialog_x, dialog_y, dialog_w, dialog_h)
+            if bubble.isVisible():
+                bubble.raise_()
+        if isinstance(tail, QLabel):
+            tail.setGeometry(dialog_x + int(dialog_w * 0.16), dialog_y + dialog_h - 13, 54, 48)
+            if tail.isVisible():
+                tail.raise_()
 
         # Buttons are placed directly on the baked right-side menu frame.
         # These coordinates are intentionally absolute relative to HomeShell,
@@ -477,9 +687,13 @@ def _apply_home_scene(shell: QWidget) -> None:
     if not buttons:
         return
 
+    _ensure_frog_interaction(shell, subtitle)
+
     if shell.property("jabka_home_scene_done"):
         _make_menu_container_transparent(menu)
         _polish_home_buttons(buttons)
+        if subtitle is not None:
+            subtitle.hide()
         resizer = getattr(shell, "_jabka_home_layout_resizer", None)
         if resizer is not None:
             resizer.update_layout()
@@ -504,10 +718,7 @@ def _apply_home_scene(shell: QWidget) -> None:
         )
     if subtitle is not None:
         subtitle.setParent(shell)
-        subtitle.setStyleSheet(
-            "QLabel { background: rgba(4, 16, 8, 120); border: 1px solid rgba(183, 242, 122, 95);"
-            "border-radius: 8px; padding: 4px 10px; color: #D6EFC3; }"
-        )
+        subtitle.hide()
     if footer is not None:
         footer.setParent(shell)
         footer.setStyleSheet(
