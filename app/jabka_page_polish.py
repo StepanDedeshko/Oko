@@ -9,9 +9,12 @@ from PySide6.QtWidgets import QLabel, QPushButton, QWidget
 from app.jabka_theme import apply_text_overrides, is_jabka_config, theme_asset_path
 
 
+# Use only clean PNG background art here. Do not fall back to old local JPG files,
+# because early test archives contained mockup screenshots with UI already drawn
+# inside them, which caused a duplicated "interface under interface" effect.
 PAGE_BACKGROUNDS = {
-    "HomeShell": "swamp_main.jpg",
-    "DutyModeShell": "swamp_duty.jpg",
+    "HomeShell": "swamp_main.png",
+    "DutyModeShell": "swamp_duty.png",
 }
 
 BUTTON_ICONS = {
@@ -29,16 +32,16 @@ QWidget#HomeShell QFrame,
 QWidget#HomeShell QGroupBox,
 QWidget#DutyModeShell QFrame,
 QWidget#DutyModeShell QGroupBox {
-    background: rgba(4, 16, 8, 145);
-    border: 1px solid rgba(183, 242, 122, 115);
+    background: rgba(4, 16, 8, 155);
+    border: 1px solid rgba(183, 242, 122, 120);
     border-radius: 16px;
 }
 QWidget#HomeShell QPushButton,
 QWidget#DutyModeShell QPushButton,
 QWidget#HomeShell QToolButton,
 QWidget#DutyModeShell QToolButton {
-    background: rgba(8, 28, 15, 172);
-    border: 1px solid rgba(183, 242, 122, 130);
+    background: rgba(8, 28, 15, 180);
+    border: 1px solid rgba(183, 242, 122, 135);
     border-radius: 12px;
     color: #EAF8D8;
 }
@@ -46,7 +49,7 @@ QWidget#HomeShell QPushButton:hover,
 QWidget#DutyModeShell QPushButton:hover,
 QWidget#HomeShell QToolButton:hover,
 QWidget#DutyModeShell QToolButton:hover {
-    background: rgba(45, 125, 58, 205);
+    background: rgba(45, 125, 58, 210);
     border: 1px solid #B7F27A;
 }
 QWidget#HomeShell QLineEdit,
@@ -57,8 +60,8 @@ QWidget#DutyModeShell QLineEdit,
 QWidget#DutyModeShell QTextEdit,
 QWidget#DutyModeShell QPlainTextEdit,
 QWidget#DutyModeShell QComboBox {
-    background: rgba(4, 16, 8, 165);
-    border: 1px solid rgba(183, 242, 122, 105);
+    background: rgba(4, 16, 8, 175);
+    border: 1px solid rgba(183, 242, 122, 110);
     border-radius: 10px;
 }
 QWidget#HomeShell QTableWidget,
@@ -67,9 +70,9 @@ QWidget#HomeShell QListWidget,
 QWidget#DutyModeShell QTableWidget,
 QWidget#DutyModeShell QTreeWidget,
 QWidget#DutyModeShell QListWidget {
-    background: rgba(3, 12, 6, 188);
-    alternate-background-color: rgba(12, 37, 20, 172);
-    border: 1px solid rgba(183, 242, 122, 105);
+    background: rgba(3, 12, 6, 196);
+    alternate-background-color: rgba(12, 37, 20, 180);
+    border: 1px solid rgba(183, 242, 122, 110);
     border-radius: 13px;
 }
 QLabel#JabkaBackgroundLayer,
@@ -138,7 +141,7 @@ class _JabkaBackgroundResizer(QObject):
 
 
 def _apply_shell_background(shell: QWidget, filename: str) -> None:
-    path = _resolve_asset("backgrounds", filename, (filename.replace(".jpg", ".png"), filename.replace(".jpg", ".svg")))
+    path = _resolve_asset("backgrounds", filename, (filename.replace(".png", ".svg"),))
     if path is None:
         return
 
@@ -207,18 +210,18 @@ def _polish_home_buttons(menu: QWidget) -> None:
             "padding-left: 22px;"
             "padding-right: 16px;"
             "border-radius: 12px;"
-            "background: rgba(6, 24, 12, 172);"
-            "border: 1px solid rgba(183, 242, 122, 125);"
+            "background: rgba(6, 24, 12, 180);"
+            "border: 1px solid rgba(183, 242, 122, 130);"
             "color: #EAF8D8;"
             "font-weight: 800;"
             "}"
             "QPushButton:hover {"
-            "background: rgba(45, 125, 58, 205);"
+            "background: rgba(45, 125, 58, 215);"
             "border: 1px solid #B7F27A;"
             "color: #F1FFE0;"
             "}"
             "QPushButton#PrimaryAction {"
-            "background: rgba(45, 125, 58, 218);"
+            "background: rgba(45, 125, 58, 226);"
             "border: 1px solid #D7B85A;"
             "color: #F1FFE0;"
             "}"
@@ -289,8 +292,8 @@ def _apply_home_scene(shell: QWidget) -> None:
     menu.setMaximumWidth(16777215)
     menu.setStyleSheet(
         "QWidget#HomeMenuCard {"
-        "background: rgba(4, 16, 8, 162);"
-        "border: 1px solid rgba(215, 184, 90, 150);"
+        "background: rgba(4, 16, 8, 172);"
+        "border: 1px solid rgba(215, 184, 90, 155);"
         "border-radius: 22px;"
         "}"
     )
@@ -301,8 +304,8 @@ def _apply_home_scene(shell: QWidget) -> None:
         title.setText("Jabbix")
         title.setStyleSheet(
             "QLabel#HomeTitle {"
-            "background: rgba(4, 16, 8, 145);"
-            "border: 1px solid rgba(183, 242, 122, 95);"
+            "background: rgba(4, 16, 8, 150);"
+            "border: 1px solid rgba(183, 242, 122, 100);"
             "border-radius: 14px;"
             "color: #EAF8D8;"
             "font-size: 42px;"
@@ -313,13 +316,13 @@ def _apply_home_scene(shell: QWidget) -> None:
     if subtitle is not None:
         subtitle.setParent(shell)
         subtitle.setStyleSheet(
-            "QLabel { background: rgba(4, 16, 8, 135); border: 1px solid rgba(183, 242, 122, 90);"
+            "QLabel { background: rgba(4, 16, 8, 145); border: 1px solid rgba(183, 242, 122, 95);"
             "border-radius: 8px; padding: 4px 10px; color: #D6EFC3; }"
         )
     if footer is not None:
         footer.setParent(shell)
         footer.setStyleSheet(
-            "QLabel#AppFooter { background: rgba(4, 16, 8, 150); border: 1px solid rgba(183, 242, 122, 90);"
+            "QLabel#AppFooter { background: rgba(4, 16, 8, 155); border: 1px solid rgba(183, 242, 122, 95);"
             "border-radius: 10px; padding: 5px; color: #A9C89C; font-size: 11px; }"
         )
 
@@ -329,8 +332,8 @@ def _apply_home_scene(shell: QWidget) -> None:
     crown.setAttribute(Qt.WA_TransparentForMouseEvents, True)
     crown.setStyleSheet(
         "QLabel#JabkaMenuCrown {"
-        "background: rgba(4, 16, 8, 158);"
-        "border: 1px solid rgba(215, 184, 90, 160);"
+        "background: rgba(4, 16, 8, 165);"
+        "border: 1px solid rgba(215, 184, 90, 165);"
         "border-radius: 18px;"
         "color: #D7B85A;"
         "font-size: 28px;"
