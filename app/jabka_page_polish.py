@@ -447,7 +447,7 @@ def _polish_home_buttons(buttons: list[QPushButton]) -> None:
         button.raise_()
 
 
-def _frog_dialog_text(subtitle: QLabel | None) -> str:
+def _first_frog_dialog_text(subtitle: QLabel | None) -> str:
     fallback = "Выбери нужный раздел настроек\nили перейди в режим жабича."
     try:
         source = subtitle.text().strip() if subtitle is not None else fallback
@@ -458,6 +458,24 @@ def _frog_dialog_text(subtitle: QLabel | None) -> str:
         source = fallback
     source = source.replace("или перейди", "\nили перейди")
     return f"🐸 Ква!\n{source}"
+
+
+def _frog_dialog_text(subtitle: QLabel | None, click_count: int) -> str:
+    if click_count <= 1:
+        return _first_frog_dialog_text(subtitle)
+    if click_count == 2:
+        return "🐸 Ква!\nРежим жабича включается\nв разделе «Дежурный жаб»."
+    if click_count < 8:
+        return "🐸 Ква!\nЯ уже всё сказал."
+    if click_count < 11:
+        return "🐸 Ква!\nХватит тыкать в меня!"
+    if click_count < 18:
+        return "🐸 Ква!\nБольше не трогай меня."
+    if click_count < 28:
+        return "🐸 Ква!\nИгнорируй проблему\nи она уйдёт."
+    if (click_count - 28) % 3 == 0:
+        return "🐸 Ква-ква."
+    return "🐸 Ква!\nИгнорируй проблему\nи она уйдёт."
 
 
 def _prepare_frog_sound(shell: QWidget) -> None:
@@ -528,6 +546,10 @@ def _show_frog_dialog(shell: QWidget) -> None:
     if not isinstance(bubble, QLabel):
         return
 
+    click_count = int(shell.property("jabka_frog_click_count") or 0) + 1
+    shell.setProperty("jabka_frog_click_count", click_count)
+    subtitle = getattr(shell, "_jabka_frog_subtitle", None)
+    bubble.setText(_frog_dialog_text(subtitle if isinstance(subtitle, QLabel) else None, click_count))
     bubble.show()
     bubble.raise_()
     if isinstance(tail, QLabel):
@@ -560,10 +582,11 @@ def _frog_hotspot_qss() -> str:
 
 
 def _ensure_frog_interaction(shell: QWidget, subtitle: QLabel | None) -> None:
+    if subtitle is not None:
+        setattr(shell, "_jabka_frog_subtitle", subtitle)
     bubble = getattr(shell, "_jabka_frog_dialog", None)
     hotspot = getattr(shell, "_jabka_frog_hotspot", None)
     if isinstance(bubble, QLabel) and isinstance(hotspot, QPushButton):
-        bubble.setText(_frog_dialog_text(subtitle))
         hotspot.setToolTip("")
         hotspot.setStatusTip("")
         hotspot.setWhatsThis("")
@@ -575,7 +598,7 @@ def _ensure_frog_interaction(shell: QWidget, subtitle: QLabel | None) -> None:
     bubble.setObjectName("JabkaFrogDialog")
     bubble.setWordWrap(True)
     bubble.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-    bubble.setText(_frog_dialog_text(subtitle))
+    bubble.setText(_first_frog_dialog_text(subtitle))
     bubble.setStyleSheet(
         "QLabel#JabkaFrogDialog {"
         "background: rgba(4, 17, 8, 226);"
