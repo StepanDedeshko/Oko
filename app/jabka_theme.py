@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-from PySide6.QtCore import QObject, QEvent, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QToolButton,
     QVBoxLayout,
@@ -105,49 +104,129 @@ PARTIAL_TEXT_OVERRIDES = {
 
 JABKA_QSS_EXTRA = """
 QWidget#HomeShell, QWidget#DutyModeShell {
+    background: qradialgradient(cx:0.84, cy:0.12, radius:1.15,
+        fx:0.84, fy:0.12,
+        stop:0 rgba(52, 108, 52, 0.42),
+        stop:0.28 #102818,
+        stop:0.74 #0B1F13,
+        stop:1 #07140D);
+}
+QWidget#HomeShell::disabled, QWidget#DutyModeShell::disabled {
+    background: #07140D;
+}
+QMainWindow {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 #07140D, stop:0.55 #0B1F13, stop:1 #163A22);
+        stop:0 #07140D, stop:0.55 #0B1F13, stop:1 #102818);
 }
 QWidget#HomeMenuCard, QWidget#MenuCard {
-    background: rgba(10, 34, 20, 210);
-    border: 1px solid rgba(143, 227, 136, 150);
-    border-radius: 22px;
+    background: rgba(10, 34, 20, 220);
+    border: 1px solid rgba(143, 227, 136, 170);
+    border-radius: 24px;
+}
+QFrame, QGroupBox {
+    border: 1px solid rgba(102, 185, 91, 135);
+    border-radius: 18px;
+    background: rgba(10, 34, 20, 205);
 }
 QLabel#HomeTitle, QLabel#AppTitle {
     color: #F1FFE0;
     letter-spacing: 1px;
 }
+QLabel#HomeTitle {
+    font-size: 31px;
+    padding-bottom: 8px;
+}
+QLabel#PageTitle {
+    color: #F1FFE0;
+    font-weight: 900;
+}
 QLabel#ThemeLogo {
-    background: rgba(17, 50, 29, 180);
-    border: 1px solid rgba(183, 242, 122, 160);
+    background: rgba(17, 50, 29, 190);
+    border: 1px solid rgba(183, 242, 122, 180);
     border-radius: 12px;
     padding: 3px;
 }
+QToolBar, QWidget#BottomHud, QStatusBar {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 rgba(7, 20, 13, 235),
+        stop:0.45 rgba(17, 50, 29, 215),
+        stop:1 rgba(7, 20, 13, 235));
+    border: 1px solid rgba(102, 185, 91, 130);
+}
+QPushButton, QToolButton {
+    border-radius: 14px;
+    border: 1px solid rgba(102, 185, 91, 150);
+    background: rgba(18, 51, 31, 225);
+    color: #EAF8D8;
+}
 QPushButton#PrimaryAction {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 #2D7D3A, stop:1 #8FE388);
+        stop:0 #2D7D3A, stop:0.55 #8FE388, stop:1 #B7F27A);
     color: #07140D;
-    border: 1px solid #B7F27A;
+    border: 1px solid #D7B85A;
 }
 QPushButton#SecondaryAction {
-    background: rgba(18, 51, 31, 220);
+    background: rgba(18, 51, 31, 230);
     color: #EAF8D8;
-    border: 1px solid rgba(102, 185, 91, 150);
+    border: 1px solid rgba(102, 185, 91, 165);
 }
+QPushButton:hover, QToolButton:hover,
 QPushButton#PrimaryAction:hover, QPushButton#SecondaryAction:hover {
     border: 1px solid #B7F27A;
-    background: rgba(33, 79, 43, 230);
+    background: rgba(33, 79, 43, 240);
+    color: #F1FFE0;
+}
+QLineEdit, QTextEdit, QTextBrowser, QPlainTextEdit, QComboBox, QSpinBox {
+    background: rgba(8, 22, 13, 235);
+    border: 1px solid rgba(102, 185, 91, 145);
+    border-radius: 13px;
+    color: #F1FFE0;
+}
+QLineEdit:focus, QTextEdit:focus, QTextBrowser:focus, QPlainTextEdit:focus,
+QComboBox:focus, QSpinBox:focus {
+    border: 1px solid #B7F27A;
+    background: rgba(10, 34, 20, 245);
+}
+QTableWidget, QTreeWidget, QListWidget {
+    background: rgba(8, 22, 13, 245);
+    alternate-background-color: rgba(18, 51, 31, 235);
+    border: 1px solid rgba(102, 185, 91, 145);
+    border-radius: 14px;
+    gridline-color: rgba(102, 185, 91, 115);
+}
+QHeaderView::section {
+    background: rgba(18, 51, 31, 245);
+    color: #D6EFC3;
+    border: 1px solid rgba(102, 185, 91, 120);
+}
+QTabWidget::pane {
+    background: rgba(10, 34, 20, 210);
+    border: 1px solid rgba(102, 185, 91, 135);
+    border-radius: 16px;
+}
+QTabBar::tab {
+    background: rgba(18, 51, 31, 225);
+    border: 1px solid rgba(102, 185, 91, 120);
+    border-radius: 12px;
+    padding: 9px 14px;
+}
+QTabBar::tab:selected {
+    background: rgba(45, 125, 58, 220);
+    border: 1px solid #B7F27A;
     color: #F1FFE0;
 }
 QLabel#JabkaMascot {
-    background: rgba(10, 34, 20, 150);
-    border: 1px solid rgba(143, 227, 136, 120);
-    border-radius: 20px;
-    padding: 8px;
+    background: rgba(10, 34, 20, 165);
+    border: 1px solid rgba(143, 227, 136, 130);
+    border-radius: 22px;
+    padding: 10px;
 }
 QDialog#JabkaRestartDialog {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 #07140D, stop:0.55 #0B1F13, stop:1 #163A22);
+    background: qradialgradient(cx:0.82, cy:0.15, radius:1.1,
+        fx:0.82, fy:0.15,
+        stop:0 rgba(52, 108, 52, 0.58),
+        stop:0.35 #102818,
+        stop:1 #07140D);
     border: 1px solid #66B95B;
     border-radius: 18px;
 }
@@ -278,7 +357,6 @@ def apply_jabka_runtime(config: dict | None, app: QApplication | None = None) ->
         app.setApplicationName(JABKA_APP_NAME)
         if icon_path is not None:
             app.setWindowIcon(QIcon(str(icon_path)))
-        install_text_event_filter(app)
     return icon_path
 
 
@@ -298,13 +376,35 @@ def _replace_text(value: str) -> str:
     return replaced
 
 
+def _is_webengine_object(obj: object) -> bool:
+    class_name = obj.__class__.__name__.lower()
+    return "webengine" in class_name or "webview" in class_name
+
+
+def _iter_safe_ui_widgets(root: QWidget) -> Iterable[QWidget]:
+    """Walk normal Qt widgets but never descend into QWebEngine internals.
+
+    QtWebEngine owns native/renderer objects. Touching those from a global event
+    filter or recursive findChildren pass can cause a hard segfault, so the frog
+    theme only rewrites text on safe application widgets.
+    """
+    stack = [root]
+    while stack:
+        widget = stack.pop()
+        if _is_webengine_object(widget):
+            continue
+        yield widget
+        for child in widget.children():
+            if isinstance(child, QWidget) and not _is_webengine_object(child):
+                stack.append(child)
+
+
 def _set_widget_text(widget: QWidget) -> None:
-    for attr in ("text",):
-        if hasattr(widget, attr) and callable(getattr(widget, attr)) and hasattr(widget, "setText"):
-            current = widget.text()
-            updated = _replace_text(current)
-            if updated != current:
-                widget.setText(updated)
+    if hasattr(widget, "text") and callable(getattr(widget, "text")) and hasattr(widget, "setText"):
+        current = widget.text()
+        updated = _replace_text(current)
+        if updated != current:
+            widget.setText(updated)
     if isinstance(widget, QGroupBox):
         current = widget.title()
         updated = _replace_text(current)
@@ -320,7 +420,7 @@ def _set_widget_text(widget: QWidget) -> None:
 def apply_text_overrides(root: QWidget) -> None:
     if root.property("jabka_text_overrides_done"):
         return
-    for widget in [root, *root.findChildren(QWidget)]:
+    for widget in _iter_safe_ui_widgets(root):
         try:
             if isinstance(widget, (QLabel, QPushButton, QToolButton, QCheckBox, QGroupBox)):
                 _set_widget_text(widget)
@@ -329,44 +429,41 @@ def apply_text_overrides(root: QWidget) -> None:
     root.setProperty("jabka_text_overrides_done", True)
 
 
-class _JabkaTextEventFilter(QObject):
-    def eventFilter(self, obj, event):
-        if event.type() in {QEvent.Show, QEvent.Polish, QEvent.EnabledChange}:
-            try:
-                if isinstance(obj, QWidget):
-                    apply_text_overrides(obj)
-            except Exception:
-                pass
-        return False
-
-
 def install_text_event_filter(app: QApplication) -> None:
-    if app.property("jabka_text_filter_installed"):
-        return
-    event_filter = _JabkaTextEventFilter(app)
-    app.installEventFilter(event_filter)
-    app.setProperty("jabka_text_filter_installed", True)
-    app.setProperty("jabka_text_filter_ref", event_filter)
+    """Kept for compatibility; intentionally disabled.
+
+    The first draft used a global QWidget event filter for live text overrides.
+    That is unsafe with QtWebEngine graph pages and can crash the process, so all
+    Jabbix text rewrites are now explicit and WebEngine-safe.
+    """
+    if app is not None:
+        app.setProperty("jabka_text_filter_installed", False)
 
 
 def add_home_mascot(window: QWidget) -> None:
     """Add a lightweight frog mascot to the home menu if the current UI has space for it."""
-    mascot_path = theme_asset_path("frogs", "frog_main.png")
-    if not mascot_path.exists():
-        return
-    home_widgets = [w for w in window.findChildren(QWidget) if w.objectName() == "HomeShell"]
+    home_widgets = [w for w in _iter_safe_ui_widgets(window) if w.objectName() == "HomeShell"]
     for home in home_widgets:
         if home.property("jabka_mascot_added"):
             continue
         layout = home.layout()
         if layout is None:
             continue
+        pixmap = QPixmap()
+        mascot_path = theme_asset_path("frogs", "frog_main.png")
+        if mascot_path.exists():
+            pixmap = QPixmap(str(mascot_path))
+        if pixmap.isNull():
+            try:
+                from app.jabka_embedded_assets import jabka_pixmap
+                pixmap = jabka_pixmap(220)
+            except Exception:
+                pixmap = QPixmap()
+        if pixmap.isNull():
+            continue
         mascot = QLabel()
         mascot.setObjectName("JabkaMascot")
         mascot.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap(str(mascot_path))
-        if pixmap.isNull():
-            continue
         mascot.setPixmap(pixmap.scaled(220, 220, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         try:
             layout.insertWidget(max(0, layout.count() - 1), mascot, alignment=Qt.AlignCenter)
