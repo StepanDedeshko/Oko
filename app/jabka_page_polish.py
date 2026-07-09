@@ -25,6 +25,7 @@ CELL_BACKGROUND_FILES = (
 )
 
 MENU_FRAME_FILE = "menu_frame.png"
+MENU_FRAME_ASPECT = 2 / 3  # uploaded frame is a tall 1024x1536-style art
 
 # Performance guard: applying image layers to every nested field is expensive.
 # Keep art only on a few large outer panels; nested text fields remain translucent.
@@ -124,16 +125,29 @@ def _resolve_asset(folder: str, filename: str, fallbacks: tuple[str, ...] = ()) 
     return None
 
 
-def _darkened_cover_pixmap(source: QPixmap, target_size, overlay_alpha: int) -> QPixmap:
-    scaled = source.scaled(target_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-    x = max(0, (scaled.width() - target_size.width()) // 2)
-    y = max(0, (scaled.height() - target_size.height()) // 2)
-    cropped = scaled.copy(x, y, target_size.width(), target_size.height())
-    if overlay_alpha > 0:
-        painter = QPainter(cropped)
-        painter.fillRect(cropped.rect(), QColor(2, 10, 5, overlay_alpha))
+def _scaled_background_pixmap(source: QPixmap, target_size, overlay_alpha: int, scale_mode: str = "cover") -> QPixmap:
+    if scale_mode == "stretch":
+        result = source.scaled(target_size, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    elif scale_mode == "contain":
+        result = QPixmap(target_size)
+        result.fill(Qt.transparent)
+        scaled = source.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        x = max(0, (target_size.width() - scaled.width()) // 2)
+        y = max(0, (target_size.height() - scaled.height()) // 2)
+        painter = QPainter(result)
+        painter.drawPixmap(x, y, scaled)
         painter.end()
-    return cropped
+    else:
+        scaled = source.scaled(target_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        x = max(0, (scaled.width() - target_size.width()) // 2)
+        y = max(0, (scaled.height() - target_size.height()) // 2)
+        result = scaled.copy(x, y, target_size.width(), target_size.height())
+
+    if overlay_alpha > 0:
+        painter = QPainter(result)
+        painter.fillRect(result.rect(), QColor(2, 10, 5, overlay_alpha))
+        painter.end()
+    return result
 
 
 class _JabkaBackgroundResizer(QObject):
@@ -143,12 +157,13 @@ class _JabkaBackgroundResizer(QObject):
     buttons, tables, text fields or QtWebEngine views out of the working area.
     """
 
-    def __init__(self, target: QWidget, label: QLabel, pixmap: QPixmap, overlay_alpha: int = 0):
+    def __init__(self, target: QWidget, label: QLabel, pixmap: QPixmap, overlay_alpha: int = 0, scale_mode: str = "cover"):
         super().__init__(target)
         self.target = target
         self.label = label
         self.pixmap = pixmap
         self.overlay_alpha = overlay_alpha
+        self.scale_mode = scale_mode
         self._last_size = None
 
     def eventFilter(self, obj, event):
@@ -162,7 +177,7 @@ class _JabkaBackgroundResizer(QObject):
             return
         self.label.setGeometry(0, 0, size.width(), size.height())
         if self._last_size != size:
-            self.label.setPixmap(_darkened_cover_pixmap(self.pixmap, size, self.overlay_alpha))
+            self.label.setPixmap(_scaled_background_pixmap(self.pixmap, size, self.overlay_alpha, self.scale_mode))
             self._last_size = size
         self.label.lower()
         self.label.show()
@@ -174,6 +189,7 @@ def _install_background_layer(
     property_name: str,
     overlay_alpha: int,
     object_name: str | None = None,
+    scale_mode: str = "cover",
 ) -> None:
     resizer_attr = f"_{property_name}_resizer"
     applied_property = f"{property_name}_applied"
@@ -198,7 +214,7 @@ def _install_background_layer(
     label.setScaledContents(False)
     label.setAlignment(Qt.AlignCenter)
 
-    resizer = _JabkaBackgroundResizer(target, label, pixmap, overlay_alpha=overlay_alpha)
+    resizer = _JabkaBackgroundResizer(target, label, pixmap, overlay_alpha=overlay_alpha, scale_mode=scale_mode)
     target.installEventFilter(resizer)
     setattr(target, f"_{property_name}_label", label)
     setattr(target, resizer_attr, resizer)
@@ -213,7 +229,7 @@ def _apply_shell_background(shell: QWidget, filename: str) -> None:
     if not shell.property("jabka_readable_qss_applied"):
         shell.setStyleSheet(shell.styleSheet() + _READABLE_PANEL_QSS)
         shell.setProperty("jabka_readable_qss_applied", True)
-    _install_background_layer(shell, path, "jabka_page_background", overlay_alpha=34)
+    _install_background_layer(shell, path, "jabka_page_background", overlay_alpha=34, scale_mode="cover")
 
 
 def _widget_text_blob(widget: QWidget) -> str:
@@ -300,7 +316,7 @@ def _apply_cell_background(widget: QWidget, filename: str) -> None:
     if path is None:
         return
     _make_cell_translucent(widget)
-    _install_background_layer(widget, path, "jabka_cell_background", overlay_alpha=105)
+    _install_background_layer(widget, path, "jabka_cell_background", overlay_alpha=105, scale_mode="cover")
 
 
 def _apply_menu_frame_background(menu: QWidget) -> None:
@@ -313,6 +329,7 @@ def _apply_menu_frame_background(menu: QWidget) -> None:
         "jabka_menu_frame_background",
         overlay_alpha=0,
         object_name="JabkaMenuFrameLayer",
+        scale_mode="stretch",
     )
 
 
@@ -386,7 +403,8 @@ def _polish_home_buttons(menu: QWidget) -> None:
         clean_text = _clean_button_text(button.text())
         icon = BUTTON_ICONS.get(clean_text, "🐸")
         button.setText(f"{icon}   {clean_text}")
-        button.setMinimumHeight(56)
+        button.setMinimumHeight(52)
+        button.setMaximumHeight(58)
         button.setCursor(Qt.PointingHandCursor)
         button.setStyleSheet(
             "QPushButton {"
@@ -440,25 +458,26 @@ class _JabkaHomeLayoutResizer(QObject):
             self.subtitle.setGeometry(left + 8, top + 70, min(760, int(w * 0.55)), 34)
             self.subtitle.raise_()
 
-        menu_w = min(max(430, int(w * 0.265)), 560)
-        menu_h = min(int(menu_w * 900 / 568), int(h * 0.78))
-        if menu_h < 620:
-            menu_h = min(620, int(h * 0.78))
-            menu_w = int(menu_h * 568 / 900)
+        menu_w = min(max(510, int(w * 0.30)), 660)
+        menu_h = int(menu_w / MENU_FRAME_ASPECT)
+        max_menu_h = int(h * 0.81)
+        if menu_h > max_menu_h:
+            menu_h = max_menu_h
+            menu_w = int(menu_h * MENU_FRAME_ASPECT)
         menu_x = int(w * 0.50 - menu_w / 2)
-        menu_y = max(top + 118, int(h * 0.135))
+        menu_y = max(top + 112, int(h * 0.105))
         self.menu.setGeometry(menu_x, menu_y, menu_w, menu_h)
         self.menu.raise_()
 
         menu_layout = self.menu.layout()
         if menu_layout is not None:
             menu_layout.setContentsMargins(
-                int(menu_w * 0.13),
-                int(menu_h * 0.18),
-                int(menu_w * 0.13),
-                int(menu_h * 0.10),
+                int(menu_w * 0.15),
+                int(menu_h * 0.245),
+                int(menu_w * 0.15),
+                int(menu_h * 0.115),
             )
-            menu_layout.setSpacing(max(9, int(menu_h * 0.014)))
+            menu_layout.setSpacing(max(10, int(menu_h * 0.018)))
 
         frame_resizer = getattr(self.menu, "_jabka_menu_frame_background_resizer", None)
         if frame_resizer is not None:
