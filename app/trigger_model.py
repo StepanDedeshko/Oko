@@ -9,6 +9,7 @@ from pathlib import Path
 import json
 from typing import Iterable
 
+from app.critical_triggers import CRITICAL_TRIGGER_KIND, is_critical_trigger_name
 from app.time_range import apply_time_range_to_url
 
 TRIGGER_CATALOG_CONFIG_KEY = "zabbix_trigger_definitions"
@@ -185,6 +186,12 @@ def find_trigger_definition(config: dict, problem: dict | ZabbixProblemSnapshotI
 
 
 def trigger_kind_for_problem(config: dict, problem: dict | ZabbixProblemSnapshotItem) -> str:
+    if isinstance(problem, ZabbixProblemSnapshotItem):
+        trigger_name = problem.trigger_name
+    else:
+        trigger_name = (problem or {}).get("trigger_name") or (problem or {}).get("display_name") or (problem or {}).get("name")
+    if is_critical_trigger_name(trigger_name):
+        return CRITICAL_TRIGGER_KIND
     definition = find_trigger_definition(config, problem)
     return definition.get("kind", SPECIAL_TRIGGER_KIND) if definition else STANDARD_TRIGGER_KIND
 
@@ -209,6 +216,12 @@ def graph_url_from_config(graph, time_range="1h") -> str:
 
 
 def graph_urls_for_problem(config: dict, problem: dict | ZabbixProblemSnapshotItem, time_range="1h") -> list[str]:
+    if isinstance(problem, ZabbixProblemSnapshotItem):
+        trigger_name = problem.trigger_name
+    else:
+        trigger_name = (problem or {}).get("trigger_name") or (problem or {}).get("display_name") or (problem or {}).get("name")
+    if is_critical_trigger_name(trigger_name):
+        return []
     definition = find_trigger_definition(config, problem)
     if not definition or definition.get("kind") != SPECIAL_TRIGGER_KIND:
         return []
