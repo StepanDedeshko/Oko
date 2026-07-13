@@ -114,7 +114,11 @@ def test_aggregate_module_status_checking_not_offline():
 def test_main_window_starts_module_status_after_profiles_and_dashboards():
     from pathlib import Path
 
-    source = Path("app/main_window.py").read_text(encoding="utf-8")
+    implementation_path = Path("app/main_window_base.py")
+    if not implementation_path.exists():
+        implementation_path = Path("app/main_window.py")
+
+    source = implementation_path.read_text(encoding="utf-8")
     hud_body = source[source.index("    def create_bottom_hud"):source.index("    def _module_badge_style")]
     assert "self.start_module_status_check()" not in hud_body
 
