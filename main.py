@@ -19,6 +19,7 @@ from app.jabka_live_zabbix_polish import (
     apply_jabka_global_contrast,
     install_jabka_live_zabbix_polish,
 )
+from app.jabka_live_zabbix_performance import install_jabka_live_zabbix_performance_fix
 from app.jabka_notification_sounds import install_jabbix_notification_sounds
 from app.jabka_page_polish import apply_jabka_page_polish
 from app.jabka_theme import (
@@ -91,6 +92,7 @@ def main():
     install_live_zabbix_two_step_auth_fix()
     install_live_zabbix_refresh_button()
     install_jabka_live_zabbix_polish()
+    install_jabka_live_zabbix_performance_fix()
     install_profile_links_polish()
     install_live_zabbix_link_label_polish()
 
