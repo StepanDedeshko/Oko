@@ -1,0 +1,79 @@
+name: One-time 0.3.7 version guard migration
+
+on:
+  push:
+    branches: [release/0.3.7]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: release/0.3.7
+          fetch-depth: 0
+
+      - name: Update exact release version guards
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              "tests/test_critical_live_zabbix_integration.py": [
+                  ('assert APP_VERSION == "0.3.6"', 'assert APP_VERSION == "0.3.7"'),
+              ],
+              "tests/test_critical_main_window_wiring.py": [
+                  ('assert APP_VERSION == "0.3.6"', 'assert APP_VERSION == "0.3.7"'),
+                  ('\'APP_VERSION = "0.3.6"\'', '\'APP_VERSION = "0.3.7"\''),
+              ],
+              "tests/test_critical_triggers.py": [
+                  ('def test_app_version_is_not_changed():', 'def test_release_app_version():'),
+                  ('assert APP_VERSION == "0.3.6"', 'assert APP_VERSION == "0.3.7"'),
+              ],
+              "tests/test_live_zabbix_monitor.py": [
+                  ('def test_app_version_unchanged(self):', 'def test_release_app_version(self):'),
+                  ('self.assertIn(\'APP_VERSION = "0.3.6"\', self.app_info)', 'self.assertIn(\'APP_VERSION = "0.3.7"\', self.app_info)'),
+              ],
+              "tests/test_live_zabbix_redmine_auth.py": [
+                  ('def test_app_version_remains_unchanged(self):', 'def test_release_app_version(self):'),
+                  ('self.assertEqual(APP_VERSION, "0.3.6")', 'self.assertEqual(APP_VERSION, "0.3.7")'),
+              ],
+          }
+
+          changed = 0
+          for filename, pairs in replacements.items():
+              path = Path(filename)
+              text = path.read_text(encoding="utf-8")
+              for old, new in pairs:
+                  count = text.count(old)
+                  if count != 1:
+                      raise SystemExit(f"Expected exactly one occurrence in {filename}: {old!r}; found {count}")
+                  text = text.replace(old, new, 1)
+                  changed += 1
+              path.write_text(text, encoding="utf-8")
+
+          if changed != 9:
+              raise SystemExit(f"Expected 9 exact replacements, got {changed}")
+          PY
+
+          rm .github/workflows/bump-release-version-guards.yml
+          git diff --check
+
+      - name: Commit release version guards
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            tests/test_critical_live_zabbix_integration.py \
+            tests/test_critical_main_window_wiring.py \
+            tests/test_critical_triggers.py \
+            tests/test_live_zabbix_monitor.py \
+            tests/test_live_zabbix_redmine_auth.py \
+            .github/workflows/bump-release-version-guards.yml
+          git commit -m "Update release version guards to 0.3.7"
+          git push origin HEAD:release/0.3.7
