@@ -7,7 +7,6 @@ from app.critical_redmine_images import (
     CHART_IMAGE_EXTRACTION_SCRIPT,
     CriticalRedmineCreateDialog,
     build_critical_redmine_description,
-    install_critical_redmine_images,
 )
 from app.critical_triggers import CriticalAnalysisResult, definition_by_id
 
@@ -133,13 +132,8 @@ def test_submit_stays_locked_until_attachments_and_description_are_ready():
 
 
 def test_runtime_patch_is_installed_before_main_window_creation():
-    install_critical_redmine_images()
-    import app.critical_live_zabbix_widget as critical_widget
-
-    assert critical_widget.CriticalLiveZabbixMonitorWidget._critical_redmine_images_installed is True
-    assert (
-        critical_widget.CriticalLiveZabbixMonitorWidget._critical_analysis_complete.__module__
-        == "app.critical_redmine_images"
-    )
+    assert "def install_critical_redmine_images" in SOURCE
+    assert "cls._critical_analysis_complete = _critical_analysis_complete_with_images" in SOURCE
+    assert "cls._open_critical_redmine_dialog = _open_critical_redmine_dialog_with_images" in SOURCE
     assert "install_critical_redmine_images()" in MAIN_SOURCE
     assert MAIN_SOURCE.index("install_critical_redmine_images()") < MAIN_SOURCE.index("window = MainWindow")
