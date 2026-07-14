@@ -4,7 +4,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QGroupBox, QLineEdit, QMessageBox
 
-from app.canonical_links import (
+from app.canonical_link_store import (
+    CANONICAL_LINKS_SCHEMA_KEY,
     CANONICAL_LINKS_SCHEMA_VERSION,
     get_canonical_link,
     install_canonical_link_settings,
@@ -15,8 +16,8 @@ from app.config import get_default_config
 
 def _config_with_canonical_links():
     config = get_default_config()
+    config[CANONICAL_LINKS_SCHEMA_KEY] = CANONICAL_LINKS_SCHEMA_VERSION
     config["duty_links"] = {
-        "_schema_version": CANONICAL_LINKS_SCHEMA_VERSION,
         "redmine_create_url": "https://redmine.example/issues/new",
         "otrs_create_url": "https://itsm.example/normal",
         "mm_otrs_create_url": "https://itsm.example/mm",
@@ -64,10 +65,11 @@ def test_shared_urls_are_editable_only_on_links_page(monkeypatch):
 
     developer = LiveZabbixDeveloperSettingsWidget(config)
     visible_developer_fields = [
-        field for field in developer.findChildren(QLineEdit) if not field.isHidden()
+        field
+        for field in developer.findChildren(QLineEdit)
+        if not field.isHidden() and field.objectName() != "qt_spinbox_lineedit"
     ]
-    assert len(visible_developer_fields) == 1
-    assert visible_developer_fields[0] is developer.profile_input
+    assert visible_developer_fields == [developer.profile_input]
 
     duty = DutyModeSettingsWidget(config)
     assert duty.live_zabbix_url_input.isHidden()
