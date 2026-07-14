@@ -442,6 +442,10 @@ class CriticalLiveZabbixMonitorWidget(_CriticalLiveZabbixMonitorWidget):
         if not definition.slow_history_url:
             analysis = CriticalAnalysisResult(
                 trigger_id=definition.id,
+                analysis_text=(
+                    "Критический триггер времени с последнего запроса. "
+                    "Дополнительный автоматический анализ значений не требуется."
+                ),
                 graph_page_urls=[definition.main_graph_page_url],
                 chart_image_urls=[definition.main_chart_image_url],
             )
