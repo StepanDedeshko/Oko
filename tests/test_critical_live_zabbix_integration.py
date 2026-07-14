@@ -47,7 +47,7 @@ def test_main_window_uses_integrated_widget_without_touching_main_py():
     assert "CriticalLiveZabbixMonitorWidget" in MAIN_WINDOW_SOURCE
     assert "CriticalLiveZabbixMonitorWidget(" in MAIN_WINDOW_SOURCE
     assert "critical_live_zabbix_widget" not in MAIN_SOURCE
-    assert APP_VERSION == "0.3.6"
+    assert APP_VERSION == "0.3.7"
 
 
 def test_history_webview_uses_shared_profile_and_safe_lifecycle_helpers():

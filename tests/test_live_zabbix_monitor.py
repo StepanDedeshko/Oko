@@ -700,8 +700,8 @@ class LiveZabbixMonitorRedmineAutoAckSourceTests(unittest.TestCase):
         self.assertIn("len(self._zbx_workers)", self.widget_source)
         self.assertIn("safe_delete_web_view", self.widget_source)
 
-    def test_app_version_unchanged(self):
-        self.assertIn('APP_VERSION = "0.3.6"', self.app_info)
+    def test_release_app_version(self):
+        self.assertIn('APP_VERSION = "0.3.7"', self.app_info)
 
 class ZabbixTaskCommentNormalizationTests(unittest.TestCase):
     def test_raw_redmine_url_does_not_become_mm(self):

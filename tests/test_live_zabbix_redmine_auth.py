@@ -136,8 +136,8 @@ class LiveZabbixRedmineAuthTests(unittest.TestCase):
         self.assertIn('issue[custom_field_values][94]', self.widget_source)
         self.assertIn('or "Не применим"', self.widget_source)
 
-    def test_app_version_remains_unchanged(self):
-        self.assertEqual(APP_VERSION, "0.3.6")
+    def test_release_app_version(self):
+        self.assertEqual(APP_VERSION, "0.3.7")
 
 
 class LiveZabbixRedmineCredentialPreservationTests(unittest.TestCase):

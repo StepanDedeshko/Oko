@@ -286,5 +286,5 @@ def test_regular_redmine_auto_ack_keeps_common_checkbox_logic():
     assert redmine_auto_ack_enabled_for_items([item], {"auto_ack_after_task_enabled": True, "auto_ack_after_redmine_enabled": True})
 
 
-def test_app_version_is_not_changed():
-    assert APP_VERSION == "0.3.6"
+def test_release_app_version():
+    assert APP_VERSION == "0.3.7"

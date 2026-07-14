@@ -19,8 +19,8 @@ APP_INFO_SOURCE = (ROOT / "app" / "app_info.py").read_text(encoding="utf-8")
 def test_final_wiring_uses_critical_widget_without_changing_main_py():
     assert "CriticalLiveZabbixMonitorWidget(" in MAIN_WINDOW_SOURCE
     assert "critical_live_zabbix_widget" not in MAIN_SOURCE
-    assert APP_VERSION == "0.3.6"
-    assert 'APP_VERSION = "0.3.6"' in APP_INFO_SOURCE
+    assert APP_VERSION == "0.3.7"
+    assert 'APP_VERSION = "0.3.7"' in APP_INFO_SOURCE
 
 
 def test_normal_redmine_flow_delegates_directly_to_original_once():
