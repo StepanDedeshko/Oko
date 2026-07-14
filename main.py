@@ -10,6 +10,7 @@ from app.config import ensure_config_exists, load_config
 from app.config_migrator import patch_config_file
 from app.jabka_duty_note_fix import install_jabka_duty_note_fix
 from app.jabka_embedded_assets import apply_jabka_icon_to_widget, install_jabka_embedded_assets
+from app.jabka_notification_sounds import install_jabbix_notification_sounds
 from app.jabka_page_polish import apply_jabka_page_polish
 from app.jabka_theme import (
     apply_jabka_runtime,
@@ -52,7 +53,6 @@ def show_start_loading(config):
     loop.exec()
 
 
-
 def main():
     logger = get_logger()
     app_root = Path(__file__).resolve().parent
@@ -78,6 +78,7 @@ def main():
     config = load_config()
 
     jabka_icon_path = apply_jabka_runtime(config, app)
+    install_jabbix_notification_sounds(config)
     if jabka_icon_path is not None:
         icon_path = jabka_icon_path
 
