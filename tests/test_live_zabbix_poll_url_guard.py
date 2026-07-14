@@ -10,7 +10,7 @@ class _FakeView:
         self.reload_called = False
 
     def load(self, url):
-        self.loaded.append(url.toString())
+        self.loaded.append(bytes(url.toEncoded()).decode("ascii"))
 
     def reload(self):
         self.reload_called = True
