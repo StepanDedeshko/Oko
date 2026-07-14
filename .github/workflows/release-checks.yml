@@ -1,0 +1,77 @@
+name: Release checks
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb \
+            libegl1 libgl1 libgbm1 libnss3 \
+            libxcomposite1 libxdamage1 libxrandr2 \
+            libxcb-cursor0 libxkbcommon-x11-0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Check shell syntax
+        run: |
+          bash -n install.sh
+          bash -n INSTALL_OKO.sh
+          bash -n INSTALL_OKO_GUI.sh
+          bash -n install_gui.sh
+          bash -n UPDATE_OKO.sh
+          bash -n CHECK_RELEASE.sh
+
+      - name: Check diff whitespace
+        run: git diff --check origin/main...HEAD
+
+      - name: Run full test suite
+        env:
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+          QTWEBENGINE_CHROMIUM_FLAGS: "--no-sandbox --disable-gpu"
+        run: xvfb-run -a env PYTHONPATH=. python -m pytest -q
+
+  required-jabka-assets:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify release assets
+        run: |
+          required=(
+            assets/themes/jabka/backgrounds/00_main_menu_wallpaper.png
+            assets/themes/jabka/backgrounds/10_settings_menu_wallpaper.png
+            assets/themes/jabka/sounds/frog_croak.wav
+          )
+          for path in "${required[@]}"; do
+            if [[ ! -f "$path" ]]; then
+              echo "Missing required Jabbix asset: $path" >&2
+              exit 1
+            fi
+            echo "Asset OK: $path"
+          done
