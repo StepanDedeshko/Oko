@@ -22,6 +22,7 @@ from app.jabka_live_zabbix_polish import (
 from app.jabka_live_zabbix_performance import install_jabka_live_zabbix_performance_fix
 from app.jabka_service_checks_polish import install_jabka_service_checks_polish
 from app.jabka_profile_polish import install_jabka_profile_polish
+from app.jabka_profile_compact_actions import install_jabka_profile_compact_actions
 from app.jabka_notification_sounds import install_jabbix_notification_sounds
 from app.jabka_page_polish import apply_jabka_page_polish
 from app.jabka_theme import (
@@ -98,6 +99,7 @@ def main():
     install_jabka_service_checks_polish()
     install_profile_links_polish()
     install_jabka_profile_polish()
+    install_jabka_profile_compact_actions()
     install_live_zabbix_link_label_polish()
 
     jabka_icon_path = apply_jabka_runtime(config, app)
