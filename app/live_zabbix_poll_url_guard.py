@@ -4,13 +4,14 @@ from PySide6.QtCore import QUrl
 
 
 def install_live_zabbix_poll_url_guard() -> bool:
-    """Always poll the configured Live Zabbix URL, never a mutated WebView URL.
+    """Refresh the already opened Live Zabbix page without losing its session state.
 
-    Zabbix can remember the last active Problems filter for the current user and
-    can redirect/rewrite the page loaded in the hidden WebView.  The old monitor
-    used ``reload()``, so after such a change it kept polling the rewritten page
-    instead of the URL saved in Oko settings.  Loading the configured URL on
-    every timer tick keeps Oko attached to its dedicated named filter.
+    A named Zabbix filter URL does not necessarily contain the filter conditions
+    themselves. Zabbix can keep those conditions in the current user/session
+    profile, so force-loading the configured URL on every timer tick may replace
+    a working page with an empty filter state. The monitor therefore reloads the
+    page that was successfully opened. The configured URL is used only when the
+    WebView has no current page yet.
     """
     import app.live_zabbix_widget as live_widget
 
@@ -34,9 +35,16 @@ def install_live_zabbix_poll_url_guard() -> bool:
         if status is not None:
             status.setText("Опрос страницы…")
 
-        # Deliberately do not call view.reload(): the current WebView URL may
-        # already have been rewritten by Zabbix's per-user filter state.
-        view.load(QUrl(configured_url))
+        current_url = ""
+        try:
+            current_url = str(view.url().toString() or "").strip()
+        except Exception:
+            current_url = ""
+
+        if current_url:
+            view.reload()
+        else:
+            view.load(QUrl(configured_url))
 
     cls.poll_now = poll_now
     cls._configured_poll_url_guard_installed = True
