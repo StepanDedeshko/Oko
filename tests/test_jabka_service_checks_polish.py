@@ -61,10 +61,8 @@ def test_jabka_service_checks_uses_full_width_and_bottom_group_manager():
     assert len(hidden_titles) == 1
     assert hidden_titles[0].isHidden()
 
-    button_texts = {button.text() for button in widget.findChildren(QPushButton)}
-    assert "Добавить группу" in button_texts
-    assert "Удалить группу" in button_texts
-    assert "Добавить доступ" not in button_texts
+    button_texts = {button.text() for button in widget.service_credential_groups_card.findChildren(QPushButton)}
+    assert button_texts == {"Добавить группу", "Удалить группу"}
 
 
 def test_group_list_selects_existing_group_for_editing():
