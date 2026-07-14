@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from app.config import ensure_config_exists, load_config
 from app.config_migrator import patch_config_file
 from app.canonical_link_store import install_canonical_link_settings
+from app.live_zabbix_poll_url_guard import install_live_zabbix_poll_url_guard
 from app.profile_links_polish import install_profile_links_polish
 from app.live_zabbix_link_label_polish import install_live_zabbix_link_label_polish
 from app.jabka_duty_note_fix import install_jabka_duty_note_fix
@@ -82,6 +83,7 @@ def main():
     # на странице «Настройки → Ссылки». Старые ключи остаются зеркалами
     # совместимости, поэтому обновление не удаляет пользовательские значения.
     install_canonical_link_settings(config)
+    install_live_zabbix_poll_url_guard()
     install_profile_links_polish()
     install_live_zabbix_link_label_polish()
 
