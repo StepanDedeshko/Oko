@@ -46,6 +46,7 @@ jobs:
           bash -n UPDATE_OKO.sh
           bash -n CHECK_RELEASE.sh
           bash -n IMPORT_JABBIX_RELEASE_ASSETS.sh
+          python -m py_compile app/critical_redmine_images.py
 
       - name: Check diff whitespace
         run: git diff --check origin/main...HEAD
