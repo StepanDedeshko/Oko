@@ -69,20 +69,35 @@ def should_exclude(relative: Path) -> bool:
     return False
 
 
+def copy_ignore(directory: str, names: list[str]) -> set[str]:
+    current = Path(directory)
+    ignored: set[str] = set()
+    for name in names:
+        candidate = current / name
+        try:
+            relative = candidate.relative_to(ROOT)
+        except ValueError:
+            continue
+        if should_exclude(relative):
+            ignored.add(name)
+    return ignored
+
+
 def copy_runtime_tree() -> None:
     if DIST.exists():
         shutil.rmtree(DIST)
     STAGE.mkdir(parents=True)
 
-    for source in ROOT.rglob("*"):
+    # Обходим только исходные элементы верхнего уровня. Так staging-папка dist,
+    # создаваемая внутри репозитория, никогда не попадает в собственный обход.
+    for source in list(ROOT.iterdir()):
         relative = source.relative_to(ROOT)
         if should_exclude(relative):
             continue
-        destination = STAGE / relative
+        destination = STAGE / source.name
         if source.is_dir():
-            destination.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, destination, ignore=copy_ignore)
         elif source.is_file():
-            destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
 
     for script in STAGE.glob("*.sh"):
