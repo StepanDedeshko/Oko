@@ -7,6 +7,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: publish-oko-0.3.7
+  cancel-in-progress: false
+
 jobs:
   publish:
     if: startsWith(github.event.head_commit.message, 'Release Oko 0.3.7')
