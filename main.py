@@ -15,6 +15,10 @@ from app.profile_links_polish import install_profile_links_polish
 from app.live_zabbix_link_label_polish import install_live_zabbix_link_label_polish
 from app.jabka_duty_note_fix import install_jabka_duty_note_fix
 from app.jabka_embedded_assets import apply_jabka_icon_to_widget, install_jabka_embedded_assets
+from app.jabka_live_zabbix_polish import (
+    apply_jabka_global_contrast,
+    install_jabka_live_zabbix_polish,
+)
 from app.jabka_notification_sounds import install_jabbix_notification_sounds
 from app.jabka_page_polish import apply_jabka_page_polish
 from app.jabka_theme import (
@@ -86,6 +90,7 @@ def main():
     install_canonical_link_settings(config)
     install_live_zabbix_two_step_auth_fix()
     install_live_zabbix_refresh_button()
+    install_jabka_live_zabbix_polish()
     install_profile_links_polish()
     install_live_zabbix_link_label_polish()
 
@@ -99,6 +104,7 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
 
     apply_theme(app, config.get("settings", {}).get("theme", "mass_effect"))
+    apply_jabka_global_contrast(app, config)
 
     startup_screen = screen_under_cursor()
 
