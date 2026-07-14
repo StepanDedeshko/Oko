@@ -13,6 +13,7 @@ from app.live_zabbix_refresh_button import install_live_zabbix_refresh_button
 from app.live_zabbix_two_step_auth_fix import install_live_zabbix_two_step_auth_fix
 from app.profile_links_polish import install_profile_links_polish
 from app.live_zabbix_link_label_polish import install_live_zabbix_link_label_polish
+from app.critical_redmine_images import install_critical_redmine_images
 from app.jabka_duty_note_fix import install_jabka_duty_note_fix
 from app.jabka_embedded_assets import apply_jabka_icon_to_widget, install_jabka_embedded_assets
 from app.jabka_live_zabbix_polish import (
@@ -94,6 +95,7 @@ def main():
     install_canonical_link_settings(config)
     install_live_zabbix_two_step_auth_fix()
     install_live_zabbix_refresh_button()
+    install_critical_redmine_images()
     install_jabka_live_zabbix_polish()
     install_jabka_live_zabbix_performance_fix()
     install_jabka_service_checks_polish()
