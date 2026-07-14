@@ -10,6 +10,7 @@ from app.service_checks_widget import ServiceChecksSettingsWidget
 
 
 _APP = QApplication.instance() or QApplication([])
+_MAX_WIDGET_WIDTH = 16777215
 
 
 def _config(theme="jabka"):
@@ -18,6 +19,7 @@ def _config(theme="jabka"):
         "service_checks": {
             "credential_groups": [
                 {"id": "shared_group", "name": "Общая группа", "service_ids": ["service_1"]},
+                {"id": "second_group", "name": "Вторая группа", "service_ids": ["service_2"]},
             ],
             "items": [
                 {"id": "service_1", "name": "Сервис 1", "enabled": True},
@@ -27,17 +29,27 @@ def _config(theme="jabka"):
     }
 
 
-def test_jabka_service_checks_page_is_compact_and_not_duplicated():
+def test_jabka_service_checks_uses_full_width_and_bottom_group_manager():
     install_jabka_service_checks_polish()
     widget = ServiceChecksSettingsWidget(_config())
 
     assert widget.property("jabka_service_checks_polished") is True
     assert widget.service_credential_groups_card.title() == "Группы общих доступов"
-    assert widget.service_credential_groups_card.maximumWidth() == 1180
-    assert widget.credential_group_services_list.maximumWidth() == 920
-    assert widget.credential_group_services_list.maximumHeight() == 155
-    assert widget.list_widget.maximumWidth() == 310
-    assert widget.service_checks_editor_splitter.maximumWidth() == 1400
+    assert widget.service_credential_groups_card.maximumWidth() == _MAX_WIDGET_WIDTH
+    assert widget.service_checks_editor_splitter.maximumWidth() == _MAX_WIDGET_WIDTH
+    assert widget.form_scroll.maximumWidth() == _MAX_WIDGET_WIDTH
+    assert widget.list_widget.maximumWidth() == 340
+
+    layout = widget.layout()
+    assert layout.indexOf(widget.service_checks_editor_splitter) >= 0
+    assert layout.indexOf(widget.service_credential_groups_card) > layout.indexOf(widget.service_checks_editor_splitter)
+    assert layout.indexOf(widget.service_credential_groups_legacy_card) == -1
+    assert widget.service_credential_groups_legacy_card.isHidden()
+
+    assert widget.credential_groups_list.count() == 2
+    assert widget.credential_groups_list.item(0).text() == "Общая группа"
+    assert widget.credential_groups_list.item(1).text() == "Вторая группа"
+    assert widget.credential_group_services_list.maximumWidth() == _MAX_WIDGET_WIDTH
 
     hidden_titles = [
         child
@@ -55,7 +67,23 @@ def test_jabka_service_checks_page_is_compact_and_not_duplicated():
     assert "Добавить доступ" not in button_texts
 
 
-def test_group_name_typing_keeps_cursor_position_and_updates_combos_in_place():
+def test_group_list_selects_existing_group_for_editing():
+    install_jabka_service_checks_polish()
+    widget = ServiceChecksSettingsWidget(_config())
+
+    widget.credential_groups_list.setCurrentRow(1)
+
+    assert widget.credential_group_select.currentData() == "second_group"
+    assert widget.credential_group_name_input.text() == "Вторая группа"
+    checked_ids = {
+        widget.credential_group_services_list.item(row).data(0x0100)
+        for row in range(widget.credential_group_services_list.count())
+        if widget.credential_group_services_list.item(row).checkState().value == 2
+    }
+    assert checked_ids == {"service_2"}
+
+
+def test_group_name_typing_keeps_cursor_position_and_updates_every_view_in_place():
     install_jabka_service_checks_polish()
     config = _config()
     widget = ServiceChecksSettingsWidget(config)
@@ -69,6 +97,7 @@ def test_group_name_typing_keeps_cursor_position_and_updates_combos_in_place():
     assert editor.text() == "ОбщXая группа"
     assert config["service_checks"]["credential_groups"][0]["name"] == "ОбщXая группа"
     assert widget.credential_group_select.currentText() == "ОбщXая группа"
+    assert widget.credential_groups_list.currentItem().text() == "ОбщXая группа"
 
     matching_names = [
         widget.credential_group_input.itemText(index)
