@@ -81,11 +81,6 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setDesktopFileName("oko")
 
-    # QtWebEngine-расширение критического Redmine загружается только после
-    # создания QApplication. Это исключает небезопасную выгрузку Qt при
-    # служебном импорте main.py тестами и утилитами.
-    from app.critical_redmine_images import install_critical_redmine_images
-
     default_icon_path = Path(__file__).resolve().parent / "assets" / "dezhurka_icon.png"
     icon_path = default_icon_path
 
@@ -99,7 +94,6 @@ def main():
     install_canonical_link_settings(config)
     install_live_zabbix_two_step_auth_fix()
     install_live_zabbix_refresh_button()
-    install_critical_redmine_images()
     install_jabka_live_zabbix_polish()
     install_jabka_live_zabbix_performance_fix()
     install_jabka_service_checks_polish()
