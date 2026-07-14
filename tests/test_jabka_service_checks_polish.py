@@ -89,6 +89,37 @@ def test_group_list_selects_existing_group_for_editing():
     assert checked_ids == {"service_2"}
 
 
+def test_double_click_toggles_membership_and_keeps_checked_state_obvious():
+    install_jabka_service_checks_polish()
+    config = _config()
+    widget = ServiceChecksSettingsWidget(config)
+    members = widget.credential_group_services_list
+
+    second = members.item(1)
+    assert second.data(Qt.ItemDataRole.UserRole) == "service_2"
+    assert second.checkState() == Qt.CheckState.Unchecked
+    assert second.icon().isNull()
+
+    members.setCurrentItem(second)
+    members.itemDoubleClicked.emit(second)
+
+    assert second.checkState() == Qt.CheckState.Checked
+    assert not second.icon().isNull()
+    assert "service_2" in config["service_checks"]["credential_groups"][0]["service_ids"]
+    assert "Двойной щелчок исключит" in second.toolTip()
+
+    members.itemDoubleClicked.emit(second)
+
+    assert second.checkState() == Qt.CheckState.Unchecked
+    assert second.icon().isNull()
+    assert "service_2" not in config["service_checks"]["credential_groups"][0]["service_ids"]
+    assert "Двойной щелчок добавит" in second.toolTip()
+
+    qss = widget.styleSheet()
+    assert "ServiceCredentialGroupMembers::item:selected" in qss
+    assert "ServiceCredentialGroupMembers::indicator:checked" in qss
+
+
 def test_group_name_typing_keeps_cursor_position_and_updates_every_view_in_place():
     install_jabka_service_checks_polish()
     config = _config()
