@@ -160,15 +160,19 @@ MODE="new"
 if [[ -f "$INSTALL_DIR/main.py" && -d "$INSTALL_DIR/app" ]]; then
     MODE="update"
     printf 'Обнаружена существующая установка: пользовательские данные будут сохранены.\n'
+else
+    printf 'Обнаружена новая установка: будет использован базовый config.json из сборки.\n'
 fi
 
-PROTECTED_RSYNC_EXCLUDES=(
+COMMON_RSYNC_EXCLUDES=(
     --exclude='.git/'
     --exclude='.venv/'
     --exclude='_backups/'
     --exclude='__pycache__/'
     --exclude='*.pyc'
-    --exclude='config.json'
+)
+
+RUNTIME_DATA_EXCLUDES=(
     --exclude='credentials.json'
     --exclude='web_profiles/'
     --exclude='data/'
@@ -176,6 +180,13 @@ PROTECTED_RSYNC_EXCLUDES=(
     --exclude='logs/'
     --exclude='*.log'
 )
+
+RSYNC_EXCLUDES=("${COMMON_RSYNC_EXCLUDES[@]}" "${RUNTIME_DATA_EXCLUDES[@]}")
+if [[ "$MODE" == "update" ]]; then
+    # config.json уже принадлежит пользователю. В режиме обновления его нельзя
+    # удалять или заменять базовым файлом из новой сборки.
+    RSYNC_EXCLUDES+=(--exclude='config.json')
+fi
 
 if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
     if [[ "$MODE" == "update" ]]; then
@@ -188,7 +199,7 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
     fi
 
     rsync -a --delete --no-owner --no-group --no-perms \
-        "${PROTECTED_RSYNC_EXCLUDES[@]}" \
+        "${RSYNC_EXCLUDES[@]}" \
         "$SOURCE_DIR/" "$INSTALL_DIR/"
 fi
 ok "копирования файлов ($MODE)"
@@ -205,17 +216,35 @@ ok "виртуального окружения"
 .venv/bin/python -m pip install -r requirements.txt
 ok "Python-зависимостей"
 
-.venv/bin/python - <<'PY'
+if pyside_output="$(.venv/bin/python - <<'PY' 2>&1
 from PySide6 import __version__
 print(f"PySide6 {__version__}")
 PY
-ok "PySide6"
+)"; then
+    printf '%s\n' "$pyside_output"
+    ok "PySide6"
+else
+    printf '%s\n' "$pyside_output" >&2
+    printf 'Команда исправления: %s/.venv/bin/python -m pip install -r %s/requirements.txt\n' "$INSTALL_DIR" "$INSTALL_DIR" >&2
+    fail "PySide6" "импорт завершился ошибкой"
+fi
 
-.venv/bin/python - <<'PY'
+if qtwebengine_output="$(.venv/bin/python - <<'PY' 2>&1
 from PySide6.QtWebEngineWidgets import QWebEngineView
 print(QWebEngineView.__name__)
 PY
-ok "QtWebEngine"
+)"; then
+    printf '%s\n' "$qtwebengine_output"
+    ok "QtWebEngine"
+else
+    printf '%s\n' "$qtwebengine_output" >&2
+    missing_library="$(printf '%s\n' "$qtwebengine_output" | grep -oE 'lib[^ :]+\.so[^ :]*' | head -n1 || true)"
+    if [[ -n "$missing_library" ]]; then
+        printf 'Не хватает библиотеки: %s\n' "$missing_library" >&2
+    fi
+    printf 'Команда исправления системных зависимостей:\n  sudo apt-get update && sudo apt-get install -y %s\n' "${APT_PACKAGES[*]}" >&2
+    fail "QtWebEngine" "импорт завершился ошибкой"
+fi
 
 .venv/bin/python -m py_compile main.py
 find app -name '*.py' -print0 | xargs -0 -r -n1 .venv/bin/python -m py_compile
