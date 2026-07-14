@@ -18,7 +18,7 @@ usage() {
   --install-dir PATH   каталог установки (по умолчанию ~/Applications/Oko)
   --yes                автоматически согласиться на установку apt-зависимостей
   --no-launch          не запускать Око после установки
-  --force-unsupported  продолжить на системе, отличной от Ubuntu
+  --force-unsupported  продолжить на неподдерживаемой системе
   -h, --help           показать справку
 EOF
 }
@@ -72,21 +72,17 @@ ok "комплекта установщика"
 if [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091
     source /etc/os-release
-    if [[ "${ID:-}" == "ubuntu" ]]; then
-        ok "Ubuntu ${VERSION_ID:-неизвестная версия}"
+    if [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" =~ ^(22\.04|24\.04)$ ]]; then
+        ok "Ubuntu ${VERSION_ID} LTS"
     elif [[ "$FORCE_UNSUPPORTED" == "1" ]]; then
-        warn "операционной системы" "${PRETTY_NAME:-не Ubuntu}; продолжение разрешено параметром"
+        warn "операционной системы" "${PRETTY_NAME:-неподдерживаемая версия}; продолжение разрешено параметром"
+    elif [[ "${ID:-}" == "ubuntu" ]]; then
+        fail "операционной системы" "проверены Ubuntu 22.04 и 24.04 LTS; для ручной попытки используйте --force-unsupported"
     else
-        fail "операционной системы" "поддерживается Ubuntu; для ручной попытки используйте --force-unsupported"
+        fail "операционной системы" "поддерживается Ubuntu 22.04/24.04 LTS; для ручной попытки используйте --force-unsupported"
     fi
 else
     [[ "$FORCE_UNSUPPORTED" == "1" ]] || fail "операционной системы" "не найден /etc/os-release"
-fi
-
-if command -v python3 >/dev/null 2>&1; then
-    ok "Python ($(python3 --version 2>&1))"
-else
-    fail "Python" "не найден python3"
 fi
 
 if [[ ! -w "$INSTALL_DIR" ]]; then
@@ -107,7 +103,7 @@ APT_PACKAGES=(
 )
 
 if command -v dpkg-query >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-    if dpkg-query -W -f='${Status}' libasound2t64 2>/dev/null | grep -q 'install ok installed'; then
+    if command -v apt-cache >/dev/null 2>&1 && apt-cache show libasound2t64 >/dev/null 2>&1; then
         APT_PACKAGES+=(libasound2t64)
     else
         APT_PACKAGES+=(libasound2)
@@ -146,10 +142,16 @@ else
     warn "apt/dpkg" "автоматическая установка пакетов недоступна"
 fi
 
+if command -v python3 >/dev/null 2>&1; then
+    ok "Python ($(python3 --version 2>&1))"
+else
+    fail "Python" "не найден python3; установите пакет python3"
+fi
+
 if [[ -x /usr/bin/curl ]]; then
     ok "нативного curl (/usr/bin/curl)"
 elif command -v curl >/dev/null 2>&1 && [[ "$(command -v curl)" == /snap/* ]]; then
-    warn "curl" "обнаружена только Snap-версия; установите нативную: sudo apt-get install -y curl"
+    fail "curl" "обнаружена только Snap-версия; установите нативную: sudo apt-get install -y curl"
 else
     warn "curl" "curl не найден; для установки из локального архива он не требуется"
 fi
@@ -170,6 +172,7 @@ PROTECTED_RSYNC_EXCLUDES=(
     --exclude='credentials.json'
     --exclude='web_profiles/'
     --exclude='data/'
+    --exclude='user_data/'
     --exclude='logs/'
     --exclude='*.log'
 )
