@@ -70,11 +70,6 @@ jobs:
             pytest.log
             pytest-junit.xml
             pytest.exitcode
-            tests/test_critical_live_zabbix_integration.py
-            tests/test_critical_main_window_wiring.py
-            tests/test_critical_triggers.py
-            tests/test_live_zabbix_monitor.py
-            tests/test_live_zabbix_redmine_auth.py
           if-no-files-found: warn
           retention-days: 7
 
