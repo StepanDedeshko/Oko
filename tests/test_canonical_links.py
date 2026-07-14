@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from app.canonical_links import (
+from app.canonical_link_store import (
+    CANONICAL_LINKS_SCHEMA_KEY,
     CANONICAL_LINKS_SCHEMA_VERSION,
     ensure_canonical_links,
     get_canonical_link,
@@ -23,7 +24,7 @@ def test_first_migration_recovers_redmine_url_from_old_template_location():
     links = ensure_canonical_links(config)
 
     assert links["redmine_create_url"] == "https://redmine.example/issues/new"
-    assert links["_schema_version"] == CANONICAL_LINKS_SCHEMA_VERSION
+    assert config[CANONICAL_LINKS_SCHEMA_KEY] == CANONICAL_LINKS_SCHEMA_VERSION
     assert config["live_zabbix_monitor"]["redmine_create_url"] == links["redmine_create_url"]
     assert config["templates"]["redmine_special_task"]["create_url"] == links["redmine_create_url"]
 
@@ -50,8 +51,8 @@ def test_first_migration_recovers_all_historic_link_locations():
 
 def test_explicitly_cleared_canonical_value_does_not_resurrect_from_stale_copy():
     config = {
+        CANONICAL_LINKS_SCHEMA_KEY: CANONICAL_LINKS_SCHEMA_VERSION,
         "duty_links": {
-            "_schema_version": CANONICAL_LINKS_SCHEMA_VERSION,
             "redmine_create_url": "",
             "otrs_create_url": "",
             "mm_otrs_create_url": "",
