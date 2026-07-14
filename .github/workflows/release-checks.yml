@@ -55,12 +55,13 @@ jobs:
         env:
           QTWEBENGINE_DISABLE_SANDBOX: "1"
           QTWEBENGINE_CHROMIUM_FLAGS: "--no-sandbox --disable-gpu"
+          PYTHONFAULTHANDLER: "1"
         run: |
           set +e
-          xvfb-run -a env PYTHONPATH=. python -m pytest -q --junitxml=pytest-junit.xml >pytest.log 2>&1
+          xvfb-run -a env PYTHONPATH=. python -X faulthandler -m pytest -q --junitxml=pytest-junit.xml >pytest.log 2>&1
           status=$?
           printf '%s\n' "$status" > pytest.exitcode
-          tail -n 180 pytest.log
+          tail -n 240 pytest.log
           exit "$status"
 
       - name: Upload pytest diagnostics
