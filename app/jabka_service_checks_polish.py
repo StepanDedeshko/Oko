@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -62,10 +64,26 @@ QListWidget#ServiceCredentialGroupsList::item:hover,
 QListWidget#ServiceCredentialGroupMembers::item:hover {
     background: rgba(33, 79, 43, 210);
 }
-QListWidget#ServiceCredentialGroupsList::item:selected,
-QListWidget#ServiceCredentialGroupMembers::item:selected {
+QListWidget#ServiceCredentialGroupsList::item:selected {
     background: #B7F27A;
     color: #07140D;
+}
+QListWidget#ServiceCredentialGroupMembers::item:selected {
+    background: rgba(45, 92, 51, 235);
+    color: #F2FFE5;
+    border: 1px solid rgba(183, 242, 122, 175);
+}
+QListWidget#ServiceCredentialGroupMembers::indicator {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #6DAF62;
+    border-radius: 4px;
+    background: #06170D;
+}
+QListWidget#ServiceCredentialGroupMembers::indicator:checked,
+QListWidget#ServiceCredentialGroupMembers::indicator:checked:selected {
+    background: #B7F27A;
+    border: 2px solid #F2FFE5;
 }
 QListWidget#ServiceProductsList {
     background: rgba(6, 23, 13, 235);
@@ -196,6 +214,47 @@ def _section_label(text: str) -> QLabel:
     return label
 
 
+def _update_member_item_visual(widget, item: QListWidgetItem | None) -> None:
+    """Keep an unmistakable check icon visible even while the row is selected."""
+    if item is None:
+        return
+    members = getattr(widget, "credential_group_services_list", None)
+    if not isinstance(members, QListWidget):
+        return
+
+    checked = item.checkState() == Qt.CheckState.Checked
+    previous = members.blockSignals(True)
+    try:
+        if checked:
+            item.setIcon(widget.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+            item.setToolTip("Сервис входит в выбранную группу. Двойной щелчок исключит его.")
+        else:
+            item.setIcon(QIcon())
+            item.setToolTip("Сервис не входит в выбранную группу. Двойной щелчок добавит его.")
+    finally:
+        members.blockSignals(previous)
+
+
+def _refresh_member_visuals(widget) -> None:
+    members = getattr(widget, "credential_group_services_list", None)
+    if not isinstance(members, QListWidget):
+        return
+    for row in range(members.count()):
+        _update_member_item_visual(widget, members.item(row))
+
+
+def _toggle_member_on_double_click(widget, item: QListWidgetItem | None) -> None:
+    if item is None:
+        return
+    new_state = (
+        Qt.CheckState.Unchecked
+        if item.checkState() == Qt.CheckState.Checked
+        else Qt.CheckState.Checked
+    )
+    item.setCheckState(new_state)
+    _update_member_item_visual(widget, item)
+
+
 def _build_group_manager(widget, legacy_box) -> QGroupBox:
     """Build the complete group editor as the permanent left page column."""
     manager = QGroupBox("Группы общих доступов")
@@ -244,11 +303,15 @@ def _build_group_manager(widget, legacy_box) -> QGroupBox:
     members.setMinimumHeight(190)
     members.setMaximumHeight(_MAX_WIDGET_WIDTH)
     members.setAlternatingRowColors(False)
+    members.setToolTip("Щёлкните по флажку или дважды щёлкните по сервису, чтобы изменить состав группы")
+    members.itemDoubleClicked.connect(lambda item: _toggle_member_on_double_click(widget, item))
+    members.itemChanged.connect(lambda item: _update_member_item_visual(widget, item))
     layout.addWidget(members, stretch=3)
 
     hint = QLabel(
         "Группа объединяет сервисы с общими учётными данными. "
-        "Пользователи вводят свои логины и пароли в разделе «Профиль»."
+        "Пользователи вводят свои логины и пароли в разделе «Профиль». "
+        "Сервис можно добавить или убрать флажком либо двойным щелчком."
     )
     hint.setWordWrap(True)
     layout.addWidget(hint)
@@ -256,6 +319,7 @@ def _build_group_manager(widget, legacy_box) -> QGroupBox:
     widget.credential_groups_list = group_list
     widget.service_credential_groups_card = manager
     widget.service_credential_groups_legacy_card = legacy_box
+    _refresh_member_visuals(widget)
     return manager
 
 
@@ -405,6 +469,7 @@ def install_jabka_service_checks_polish() -> bool:
     original_init = cls.__init__
     original_refresh_groups = cls.refresh_credential_groups
     original_select_group = cls.select_credential_group
+    original_refresh_members = cls.refresh_credential_group_services_list
 
     def refresh_credential_groups(self, *args, **kwargs):
         result = original_refresh_groups(self, *args, **kwargs)
@@ -416,12 +481,18 @@ def install_jabka_service_checks_polish() -> bool:
         _sync_group_list_selection(self)
         return result
 
+    def refresh_credential_group_services_list(self, *args, **kwargs):
+        result = original_refresh_members(self, *args, **kwargs)
+        _refresh_member_visuals(self)
+        return result
+
     def __init__(self, config, parent=None):
         original_init(self, config, parent)
         apply_jabka_service_checks_polish(self)
 
     cls.refresh_credential_groups = refresh_credential_groups
     cls.select_credential_group = select_credential_group
+    cls.refresh_credential_group_services_list = refresh_credential_group_services_list
     cls.__init__ = __init__
     # Cursor stability is functional and safe for every theme.
     cls.update_credential_group_from_form = _stable_update_credential_group_from_form
