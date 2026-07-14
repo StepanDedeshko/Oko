@@ -41,7 +41,7 @@ def test_new_install_gets_base_config_but_update_preserves_user_config():
     runtime_block = source.split("RUNTIME_DATA_EXCLUDES=(", 1)[1].split("\n)", 1)[0]
     assert "config.json" not in runtime_block
 
-    update_block = source.split('if [[ "$MODE" == "update" ]]', 1)[1].split("fi", 1)[0]
+    update_block = source.split('if [[ "$MODE" == "update" ]]', 1)[1].split("\nfi\n", 1)[0]
     assert "RSYNC_EXCLUDES+=(--exclude='config.json')" in update_block
     assert "базовый config.json" in source
 
