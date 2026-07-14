@@ -45,6 +45,7 @@ jobs:
           bash -n install_gui.sh
           bash -n UPDATE_OKO.sh
           bash -n CHECK_RELEASE.sh
+          bash -n IMPORT_JABBIX_RELEASE_ASSETS.sh
 
       - name: Check diff whitespace
         run: git diff --check origin/main...HEAD
@@ -79,17 +80,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify release assets
+      - name: Verify exact Jabbix release assets
         run: |
-          required=(
-            assets/themes/jabka/backgrounds/00_main_menu_wallpaper.png
-            assets/themes/jabka/backgrounds/10_settings_menu_wallpaper.png
-            assets/themes/jabka/sounds/frog_croak.wav
+          set -Eeuo pipefail
+          manifest="JABBIX_ASSET_SHA256SUMS_0.3.7.txt"
+          if [[ ! -f "$manifest" ]]; then
+            echo "Missing Jabbix checksum manifest: $manifest" >&2
+            exit 1
+          fi
+          sha256sum -c "$manifest"
+
+          python - <<'PY'
+          import wave
+          from pathlib import Path
+          from PIL import Image
+
+          pngs = (
+              Path("assets/themes/jabka/backgrounds/00_main_menu_wallpaper.png"),
+              Path("assets/themes/jabka/backgrounds/10_settings_menu_wallpaper.png"),
           )
-          for path in "${required[@]}"; do
-            if [[ ! -f "$path" ]]; then
-              echo "Missing required Jabbix asset: $path" >&2
-              exit 1
-            fi
-            echo "Asset OK: $path"
-          done
+          for path in pngs:
+              with Image.open(path) as image:
+                  assert image.format == "PNG", f"{path}: expected PNG"
+                  assert image.size == (1672, 941), f"{path}: unexpected size {image.size}"
+
+          wavs = (
+              Path("assets/themes/jabka/sounds/frog_croak.wav"),
+              Path("app/assets/sounds/jabbix_graph_check_kvak.wav"),
+              Path("app/assets/sounds/jabbix_update_found_kvak.wav"),
+          )
+          for path in wavs:
+              with wave.open(str(path), "rb") as audio:
+                  assert audio.getnchannels() == 1, f"{path}: expected mono"
+                  assert audio.getsampwidth() == 2, f"{path}: expected 16-bit PCM"
+                  assert audio.getframerate() == 44100, f"{path}: expected 44100 Hz"
+          PY
