@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import stat
 import zipfile
 from pathlib import Path
 
 from app.app_info import APP_VERSION
+from app.config import get_default_config
 
 
 EXPECTED_VERSION = "0.3.7"
@@ -88,8 +90,6 @@ def copy_runtime_tree() -> None:
         shutil.rmtree(DIST)
     STAGE.mkdir(parents=True)
 
-    # Обходим только исходные элементы верхнего уровня. Так staging-папка dist,
-    # создаваемая внутри репозитория, никогда не попадает в собственный обход.
     for source in list(ROOT.iterdir()):
         relative = source.relative_to(ROOT)
         if should_exclude(relative):
@@ -99,6 +99,14 @@ def copy_runtime_tree() -> None:
             shutil.copytree(source, destination, ignore=copy_ignore)
         elif source.is_file():
             shutil.copy2(source, destination)
+
+    # config.json intentionally is not tracked. Build a clean release-only
+    # default from code so no local links, credentials, sessions or user data
+    # can ever enter the published archives.
+    (STAGE / "config.json").write_text(
+        json.dumps(get_default_config(), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     for script in STAGE.glob("*.sh"):
         script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -121,6 +129,10 @@ def verify_stage() -> None:
     for path in forbidden:
         if path.exists():
             raise RuntimeError(f"В релиз попал запрещённый путь: {path.relative_to(STAGE)}")
+
+    config = json.loads((STAGE / "config.json").read_text(encoding="utf-8"))
+    if config != get_default_config():
+        raise RuntimeError("Сгенерированный config.json отличается от безопасного default config")
 
 
 def add_tree(archive: zipfile.ZipFile, prefix: str) -> None:
@@ -165,7 +177,7 @@ def write_checksums(paths: tuple[Path, ...]) -> Path:
 def verify_update_zip(path: Path) -> None:
     with zipfile.ZipFile(path) as archive:
         names = set(archive.namelist())
-        for required in ("main.py", "app/app_info.py", "install.sh", "UPDATE_OKO.sh"):
+        for required in ("main.py", "app/app_info.py", "install.sh", "UPDATE_OKO.sh", "config.json"):
             if required not in names:
                 raise RuntimeError(f"{required} отсутствует в update.zip")
         app_info = archive.read("app/app_info.py").decode("utf-8")
@@ -175,6 +187,10 @@ def verify_update_zip(path: Path) -> None:
             raise RuntimeError("В update.zip попал credentials.json")
         if any(name.startswith(("tests/", ".github/", ".venv/", "logs/", "data/")) for name in names):
             raise RuntimeError("В update.zip попали тесты, CI или пользовательские данные")
+
+        archived_config = json.loads(archive.read("config.json").decode("utf-8"))
+        if archived_config != get_default_config():
+            raise RuntimeError("В update.zip находится небезопасный config.json")
 
 
 def main() -> None:
