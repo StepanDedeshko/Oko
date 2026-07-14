@@ -3,11 +3,15 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QVBoxLayout,
+    QWidget,
 )
 
 from app.jabka_theme import is_jabka_config
@@ -32,10 +36,16 @@ QGroupBox#ServiceCredentialGroupsCard::title {
     padding: 0 8px;
     color: #EAF8D8;
 }
-QGroupBox#ServiceCredentialGroupsCard QLineEdit,
-QGroupBox#ServiceCredentialGroupsCard QComboBox {
-    min-height: 34px;
+QWidget#ServiceGroupsListPane,
+QWidget#ServiceGroupDetailsPane {
+    background: transparent;
 }
+QLabel#ServiceGroupsSectionLabel {
+    color: #B7F27A;
+    font-weight: 700;
+    padding: 1px 2px;
+}
+QListWidget#ServiceCredentialGroupsList,
 QListWidget#ServiceCredentialGroupMembers {
     background: rgba(6, 23, 13, 235);
     border: 1px solid rgba(102, 185, 91, 130);
@@ -43,14 +53,17 @@ QListWidget#ServiceCredentialGroupMembers {
     padding: 6px;
     outline: 0;
 }
+QListWidget#ServiceCredentialGroupsList::item,
 QListWidget#ServiceCredentialGroupMembers::item {
     min-height: 28px;
     padding: 3px 7px;
     border-radius: 7px;
 }
+QListWidget#ServiceCredentialGroupsList::item:hover,
 QListWidget#ServiceCredentialGroupMembers::item:hover {
     background: rgba(33, 79, 43, 210);
 }
+QListWidget#ServiceCredentialGroupsList::item:selected,
 QListWidget#ServiceCredentialGroupMembers::item:selected {
     background: #B7F27A;
     color: #07140D;
@@ -79,22 +92,11 @@ QSplitter#ServiceChecksEditor::handle {
 }
 """
 
-
-def _rename_label(root, old_text: str, new_text: str) -> None:
-    for label in root.findChildren(QLabel):
-        if label.text().strip() == old_text:
-            label.setText(new_text)
-
-
-def _rename_button(root, old_text: str, new_text: str) -> None:
-    for button in root.findChildren(QPushButton):
-        if button.text().strip() == old_text:
-            button.setText(new_text)
+_MAX_WIDGET_WIDTH = 16777215
 
 
 def _hide_duplicate_inner_title(widget) -> None:
-    # The settings page already provides its own page heading. The editor used to
-    # add the same heading once more, which produced two adjacent identical rows.
+    # The settings shell already has the page title. Keep only that outer heading.
     for child in widget.children():
         if isinstance(child, QLabel) and child.text().strip() == "Проверка сервисов":
             child.hide()
@@ -109,6 +111,196 @@ def _find_groups_box(widget):
     return None
 
 
+def _find_editor_splitter(widget):
+    for candidate in widget.findChildren(QSplitter):
+        if getattr(widget, "list_widget", None) is not None and candidate.indexOf(widget.list_widget) >= 0:
+            return candidate
+    return None
+
+
+def _current_group_id(widget) -> str:
+    combo = getattr(widget, "credential_group_select", None)
+    if combo is None:
+        return ""
+    return str(combo.currentData() or "")
+
+
+def _sync_group_list_selection(widget, selected_id: str | None = None) -> None:
+    group_list = getattr(widget, "credential_groups_list", None)
+    if not isinstance(group_list, QListWidget):
+        return
+    selected_id = str(selected_id if selected_id is not None else _current_group_id(widget))
+    target_row = -1
+    for row in range(group_list.count()):
+        item = group_list.item(row)
+        if str(item.data(Qt.ItemDataRole.UserRole) or "") == selected_id:
+            target_row = row
+            break
+    group_list.blockSignals(True)
+    group_list.setCurrentRow(target_row)
+    group_list.blockSignals(False)
+
+
+def _sync_group_list(widget, selected_id: str | None = None) -> None:
+    group_list = getattr(widget, "credential_groups_list", None)
+    if not isinstance(group_list, QListWidget):
+        return
+    selected_id = str(selected_id if selected_id is not None else _current_group_id(widget))
+    group_list.blockSignals(True)
+    group_list.clear()
+    target_row = -1
+    for row, group in enumerate(widget.credential_groups()):
+        group_id = str(group.get("id", "") or "")
+        item = QListWidgetItem(str(group.get("name") or group_id or "Без названия"))
+        item.setData(Qt.ItemDataRole.UserRole, group_id)
+        group_list.addItem(item)
+        if group_id == selected_id:
+            target_row = row
+    if target_row < 0 and group_list.count():
+        target_row = 0
+    group_list.setCurrentRow(target_row)
+    group_list.blockSignals(False)
+
+
+def _select_group_from_list(widget, row: int) -> None:
+    group_list = getattr(widget, "credential_groups_list", None)
+    combo = getattr(widget, "credential_group_select", None)
+    if not isinstance(group_list, QListWidget) or combo is None or row < 0:
+        return
+    item = group_list.item(row)
+    if item is None:
+        return
+    group_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+    for index in range(combo.count()):
+        if str(combo.itemData(index) or "") == group_id:
+            if combo.currentIndex() != index:
+                combo.setCurrentIndex(index)
+            else:
+                widget.select_credential_group()
+            return
+
+
+def _section_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("ServiceGroupsSectionLabel")
+    return label
+
+
+def _build_group_manager(widget, legacy_box) -> QGroupBox:
+    manager = QGroupBox("Группы общих доступов")
+    manager.setObjectName("ServiceCredentialGroupsCard")
+    manager.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    manager.setMinimumHeight(245)
+    manager.setMaximumHeight(330)
+
+    layout = QHBoxLayout(manager)
+    layout.setContentsMargins(16, 18, 16, 14)
+    layout.setSpacing(16)
+
+    list_pane = QWidget(manager)
+    list_pane.setObjectName("ServiceGroupsListPane")
+    list_pane.setMinimumWidth(250)
+    list_pane.setMaximumWidth(360)
+    list_layout = QVBoxLayout(list_pane)
+    list_layout.setContentsMargins(0, 0, 0, 0)
+    list_layout.setSpacing(8)
+    list_layout.addWidget(_section_label("Созданные группы"))
+
+    group_list = QListWidget(list_pane)
+    group_list.setObjectName("ServiceCredentialGroupsList")
+    group_list.setMinimumHeight(155)
+    group_list.setAlternatingRowColors(False)
+    group_list.currentRowChanged.connect(lambda row: _select_group_from_list(widget, row))
+    list_layout.addWidget(group_list, stretch=1)
+
+    buttons = QHBoxLayout()
+    add_button = QPushButton("Добавить группу")
+    add_button.setObjectName("PrimaryAction")
+    add_button.clicked.connect(widget.add_credential_group)
+    delete_button = QPushButton("Удалить группу")
+    delete_button.clicked.connect(widget.delete_credential_group)
+    buttons.addWidget(add_button)
+    buttons.addWidget(delete_button)
+    list_layout.addLayout(buttons)
+
+    details = QWidget(manager)
+    details.setObjectName("ServiceGroupDetailsPane")
+    details_layout = QVBoxLayout(details)
+    details_layout.setContentsMargins(0, 0, 0, 0)
+    details_layout.setSpacing(7)
+    details_layout.addWidget(_section_label("Название выбранной группы"))
+
+    name_input = widget.credential_group_name_input
+    name_input.setParent(details)
+    name_input.setMaximumWidth(_MAX_WIDGET_WIDTH)
+    name_input.setPlaceholderText("Например: Сервисы 2–5")
+    name_input.setClearButtonEnabled(True)
+    details_layout.addWidget(name_input)
+
+    details_layout.addWidget(_section_label("Сервисы в группе"))
+    members = widget.credential_group_services_list
+    members.setParent(details)
+    members.setObjectName("ServiceCredentialGroupMembers")
+    members.setMinimumWidth(0)
+    members.setMaximumWidth(_MAX_WIDGET_WIDTH)
+    members.setMinimumHeight(115)
+    members.setMaximumHeight(175)
+    members.setAlternatingRowColors(False)
+    details_layout.addWidget(members, stretch=1)
+
+    hint = QLabel(
+        "Группа объединяет сервисы с общими учётными данными. Пользователи вводят свои логины и пароли в разделе «Профиль»."
+    )
+    hint.setWordWrap(True)
+    details_layout.addWidget(hint)
+
+    layout.addWidget(list_pane, stretch=0)
+    layout.addWidget(details, stretch=1)
+
+    widget.credential_groups_list = group_list
+    widget.service_credential_groups_card = manager
+    widget.service_credential_groups_legacy_card = legacy_box
+    return manager
+
+
+def _expand_product_editor(widget, root) -> QSplitter | None:
+    products = getattr(widget, "list_widget", None)
+    if isinstance(products, QListWidget):
+        products.setObjectName("ServiceProductsList")
+        products.setMinimumWidth(230)
+        products.setMaximumWidth(340)
+
+    splitter = _find_editor_splitter(widget)
+    if splitter is None:
+        return None
+    splitter.setObjectName("ServiceChecksEditor")
+    splitter.setHandleWidth(7)
+    splitter.setChildrenCollapsible(False)
+    splitter.setMinimumWidth(0)
+    splitter.setMaximumWidth(_MAX_WIDGET_WIDTH)
+    splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+    splitter.setStretchFactor(0, 0)
+    splitter.setStretchFactor(1, 1)
+    splitter.setSizes([280, 1350])
+    widget.service_checks_editor_splitter = splitter
+
+    form_scroll = getattr(widget, "form_scroll", None)
+    if form_scroll is not None:
+        form_scroll.setMinimumWidth(600)
+        form_scroll.setMaximumWidth(_MAX_WIDGET_WIDTH)
+        form_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        form_container = form_scroll.widget()
+        if form_container is not None:
+            form_container.setMinimumWidth(760)
+            form_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+    # Reinsert without AlignLeft: the previous polish constrained the whole editor
+    # to a narrow column and left most of a wide monitor empty.
+    root.removeWidget(splitter)
+    root.addWidget(splitter, stretch=1)
+    return splitter
+
+
 def apply_jabka_service_checks_polish(widget) -> bool:
     if widget is None or not is_jabka_config(getattr(widget, "config", None)):
         return False
@@ -117,83 +309,33 @@ def apply_jabka_service_checks_polish(widget) -> bool:
     if not getattr(widget, "is_technical_editor", False):
         return False
 
+    root = widget.layout()
+    if root is None:
+        return False
+
     widget.setObjectName("JabkaServiceChecksPage")
     _hide_duplicate_inner_title(widget)
 
-    groups_box = _find_groups_box(widget)
-    if groups_box is not None:
-        groups_box.setTitle("Группы общих доступов")
-        groups_box.setObjectName("ServiceCredentialGroupsCard")
-        groups_box.setMinimumWidth(720)
-        groups_box.setMaximumWidth(1180)
-        groups_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        widget.service_credential_groups_card = groups_box
-        root = widget.layout()
-        if root is not None:
-            root.setAlignment(groups_box, Qt.AlignmentFlag.AlignLeft)
+    legacy_box = _find_groups_box(widget)
+    if legacy_box is not None:
+        root.removeWidget(legacy_box)
+        legacy_box.hide()
 
-    _rename_label(widget, "Доступ:", "Группа:")
-    _rename_label(widget, "Название доступа:", "Название группы:")
-    _rename_label(widget, "Сервисы:", "Сервисы группы:")
-    _rename_button(widget, "Добавить доступ", "Добавить группу")
-    _rename_button(widget, "Удалить доступ", "Удалить группу")
+    splitter = _expand_product_editor(widget, root)
+    manager = _build_group_manager(widget, legacy_box)
+    manager.setMinimumWidth(0)
+    manager.setMaximumWidth(_MAX_WIDGET_WIDTH)
+    root.addWidget(manager, stretch=0)
 
-    group_select = getattr(widget, "credential_group_select", None)
-    if group_select is not None:
-        group_select.setMinimumWidth(360)
-        group_select.setMaximumWidth(620)
-        group_select.setToolTip("Выберите группу сервисов с общими учётными данными")
-
-    group_name = getattr(widget, "credential_group_name_input", None)
-    if group_name is not None:
-        group_name.setMaximumWidth(620)
-        group_name.setPlaceholderText("Например: Сервисы 2–5")
-        group_name.setClearButtonEnabled(True)
-
-    members = getattr(widget, "credential_group_services_list", None)
-    if isinstance(members, QListWidget):
-        members.setObjectName("ServiceCredentialGroupMembers")
-        members.setMinimumWidth(620)
-        members.setMaximumWidth(920)
-        members.setMinimumHeight(105)
-        members.setMaximumHeight(155)
-        members.setAlternatingRowColors(False)
-        layout = groups_box.layout() if groups_box is not None else None
-        if layout is not None:
-            layout.setAlignment(members, Qt.AlignmentFlag.AlignLeft)
-
-    products = getattr(widget, "list_widget", None)
-    if isinstance(products, QListWidget):
-        products.setObjectName("ServiceProductsList")
-        products.setMinimumWidth(220)
-        products.setMaximumWidth(310)
-
-    splitter = None
-    for candidate in widget.findChildren(QSplitter):
-        splitter = candidate
-        break
+    root.setContentsMargins(12, 8, 12, 12)
+    root.setSpacing(10)
     if splitter is not None:
-        splitter.setObjectName("ServiceChecksEditor")
-        splitter.setHandleWidth(7)
-        splitter.setChildrenCollapsible(False)
-        splitter.setMaximumWidth(1400)
-        splitter.setSizes([260, 1040])
-        widget.service_checks_editor_splitter = splitter
-        root = widget.layout()
-        if root is not None:
-            root.setAlignment(splitter, Qt.AlignmentFlag.AlignLeft)
-
-    form_scroll = getattr(widget, "form_scroll", None)
-    if form_scroll is not None:
-        form_scroll.setMaximumWidth(1080)
-
-    root = widget.layout()
-    if root is not None:
-        root.setContentsMargins(12, 8, 12, 12)
-        root.setSpacing(10)
+        root.setStretchFactor(splitter, 1)
+    root.setStretchFactor(manager, 0)
 
     widget.setStyleSheet(widget.styleSheet() + "\n" + JABKA_SERVICE_CHECKS_QSS)
     widget.setProperty("jabka_service_checks_polished", True)
+    _sync_group_list(widget)
     return True
 
 
@@ -226,9 +368,8 @@ def _stable_update_credential_group_from_form(self, *_args):
         elif service.get("credential_group_id") == group_id:
             service["credential_group_id"] = ""
 
-    # Change the visible labels in place. Clearing/repopulating these combos used
-    # to call select_credential_group(), which called setText() on every keystroke
-    # and destroyed the user's cursor position or selection.
+    # Update every visible representation in place. Never clear/repopulate the
+    # controls while the user is typing, otherwise cursor and selection jump.
     select = getattr(self, "credential_group_select", None)
     if select is not None:
         current = select.currentIndex()
@@ -242,6 +383,14 @@ def _stable_update_credential_group_from_form(self, *_args):
                 service_group_combo.setItemText(index, group_name)
                 break
 
+    group_list = getattr(self, "credential_groups_list", None)
+    if isinstance(group_list, QListWidget):
+        for row in range(group_list.count()):
+            item = group_list.item(row)
+            if str(item.data(Qt.ItemDataRole.UserRole) or "") == group_id:
+                item.setText(group_name)
+                break
+
 
 def install_jabka_service_checks_polish() -> bool:
     import app.service_checks_widget as service_checks_widget
@@ -251,13 +400,27 @@ def install_jabka_service_checks_polish() -> bool:
         return False
 
     original_init = cls.__init__
+    original_refresh_groups = cls.refresh_credential_groups
+    original_select_group = cls.select_credential_group
+
+    def refresh_credential_groups(self, *args, **kwargs):
+        result = original_refresh_groups(self, *args, **kwargs)
+        _sync_group_list(self)
+        return result
+
+    def select_credential_group(self, *args, **kwargs):
+        result = original_select_group(self)
+        _sync_group_list_selection(self)
+        return result
 
     def __init__(self, config, parent=None):
         original_init(self, config, parent)
         apply_jabka_service_checks_polish(self)
 
+    cls.refresh_credential_groups = refresh_credential_groups
+    cls.select_credential_group = select_credential_group
     cls.__init__ = __init__
-    # The cursor-stability fix is functional and safe for every theme.
+    # Cursor stability is functional and safe for every theme.
     cls.update_credential_group_from_form = _stable_update_credential_group_from_form
     cls._jabka_service_checks_patch_installed = True
     return True
