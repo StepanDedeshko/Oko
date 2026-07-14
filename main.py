@@ -10,6 +10,7 @@ from app.config import ensure_config_exists, load_config
 from app.config_migrator import patch_config_file
 from app.canonical_link_store import install_canonical_link_settings
 from app.profile_links_polish import install_profile_links_polish
+from app.live_zabbix_link_label_polish import install_live_zabbix_link_label_polish
 from app.jabka_duty_note_fix import install_jabka_duty_note_fix
 from app.jabka_embedded_assets import apply_jabka_icon_to_widget, install_jabka_embedded_assets
 from app.jabka_notification_sounds import install_jabbix_notification_sounds
@@ -82,6 +83,7 @@ def main():
     # совместимости, поэтому обновление не удаляет пользовательские значения.
     install_canonical_link_settings(config)
     install_profile_links_polish()
+    install_live_zabbix_link_label_polish()
 
     jabka_icon_path = apply_jabka_runtime(config, app)
     install_jabbix_notification_sounds(config)
