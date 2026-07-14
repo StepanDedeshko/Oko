@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from app.config import ensure_config_exists, load_config
 from app.config_migrator import patch_config_file
+from app.canonical_links import install_canonical_link_settings
 from app.jabka_duty_note_fix import install_jabka_duty_note_fix
 from app.jabka_embedded_assets import apply_jabka_icon_to_widget, install_jabka_embedded_assets
 from app.jabka_notification_sounds import install_jabbix_notification_sounds
@@ -31,10 +32,8 @@ def show_start_loading(config):
     loading_config = config.get("loading_screen", {})
     if not loading_config.get("enabled", True):
         return
-
     if not loading_config.get("show_after_login", True):
         return
-
     duration_ms = int(loading_config.get("duration_ms", 7000))
     duration_ms = max(1000, duration_ms)
 
@@ -76,6 +75,11 @@ def main():
     ensure_config_exists()
     patch_config_file()
     config = load_config()
+
+    # Общие рабочие URL мигрируются в duty_links и редактируются только
+    # на странице «Настройки → Ссылки». Старые ключи остаются зеркалами
+    # совместимости, поэтому обновление не удаляет пользовательские значения.
+    install_canonical_link_settings(config)
 
     jabka_icon_path = apply_jabka_runtime(config, app)
     install_jabbix_notification_sounds(config)
