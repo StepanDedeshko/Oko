@@ -4,10 +4,13 @@ set -Eeuo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 EXPECTED_VERSION="0.3.7"
+ASSET_MANIFEST="JABBIX_ASSET_SHA256SUMS_0.3.7.txt"
 REQUIRED_ASSETS=(
     "assets/themes/jabka/backgrounds/00_main_menu_wallpaper.png"
     "assets/themes/jabka/backgrounds/10_settings_menu_wallpaper.png"
     "assets/themes/jabka/sounds/frog_croak.wav"
+    "app/assets/sounds/jabbix_graph_check_kvak.wav"
+    "app/assets/sounds/jabbix_update_found_kvak.wav"
 )
 
 missing=0
@@ -20,6 +23,14 @@ for asset in "${REQUIRED_ASSETS[@]}"; do
     fi
 done
 [[ "$missing" == "0" ]] || exit 2
+
+if [[ ! -f "$ASSET_MANIFEST" ]]; then
+    echo "Манифест ассетов — ОШИБКА: отсутствует $ASSET_MANIFEST" >&2
+    exit 2
+fi
+
+echo "SHA256 финальных ассетов..."
+sha256sum -c "$ASSET_MANIFEST"
 
 if [[ ! -x .venv/bin/python ]]; then
     echo "Виртуальное окружение — ОШИБКА: сначала выполните bash install.sh --no-launch" >&2
@@ -60,4 +71,4 @@ fi
 echo ""
 echo "Автоматические проверки релиза завершены."
 echo "Остаётся ручной запуск: python3 main.py"
-echo "И ручная проверка Live Zabbix / Redmine / OTRS / сервисов / тем."
+echo "И ручная проверка Live Zabbix / Redmine / OTRS / сервисов / тем / звуков Жабки."
