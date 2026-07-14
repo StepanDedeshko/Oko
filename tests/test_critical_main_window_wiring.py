@@ -31,24 +31,25 @@ def test_normal_redmine_flow_delegates_directly_to_original_once():
     assert "not any(is_critical_problem_item" in block
 
 
-def test_last_request_trigger_does_not_report_analysis_failure():
+def test_last_request_trigger_uses_main_graph_without_technical_analysis_text():
     block = MAIN_WINDOW_SOURCE.split(
         "def _critical_after_ip_lookup", 1
     )[1].split("def _critical_history_result", 1)[0]
-    assert "Дополнительный автоматический анализ значений не требуется" in block
+    assert "graph_page_urls=[definition.main_graph_page_url]" in block
+    assert "chart_image_urls=[definition.main_chart_image_url]" in block
+    assert "analysis_text=" not in block
+    assert "Дополнительный автоматический анализ значений не требуется" not in block
 
     analysis = CriticalAnalysisResult(
         trigger_id="last_request_gt_120m",
-        analysis_text=(
-            "Критический триггер времени с последнего запроса. "
-            "Дополнительный автоматический анализ значений не требуется."
-        ),
+        graph_page_urls=["https://zabbix.example/graph"],
+        chart_image_urls=["https://zabbix.example/chart2.php"],
     )
     comment = build_zabbix_comment(
         "135500", "https://redmine.stdpr.ru/issues/135500", analysis
     )
     assert "Автоматический анализ значений не выполнен" not in comment
-    assert "Дополнительный автоматический анализ" in comment
+    assert "Дополнительный автоматический анализ" not in comment
 
 
 def test_incomplete_history_dom_is_retried_before_analysis():
