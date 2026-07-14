@@ -190,3 +190,56 @@ def test_close_event_cleans_hidden_history_view():
     assert "_finish_critical_flow" in close_block
     assert "_cleanup_critical_history_view" in INTEGRATION_SOURCE
     assert "safe_delete_web_view" in INTEGRATION_SOURCE
+
+
+def test_critical_chart_png_is_captured_from_shared_authenticated_webview():
+    for marker in (
+        "CRITICAL_CHART_EXTRACTION_SCRIPT",
+        "document.images",
+        "canvas.toDataURL('image/png')",
+        "self.view.page().profile()",
+        "register_web_view(QWebEngineView(self))",
+        "base64.b64decode",
+        "captured_png_invalid",
+        "_cleanup_critical_chart_view",
+    ):
+        assert marker in MAIN_WINDOW_SOURCE
+    lowered = MAIN_WINDOW_SOURCE.casefold()
+    assert "temporarydirectory" not in lowered
+    assert "tempfile" not in lowered
+
+
+def test_critical_redmine_uses_real_file_attachments_and_locks_submit():
+    for marker in (
+        "class CriticalRedmineCreateDialog",
+        "DataTransfer",
+        "new File",
+        "input.files = transfer.files",
+        "attachments[dummy][file]",
+        "[token]",
+        "self._set_submit_locked(True)",
+        "self._set_submit_locked(False)",
+        "Создание задачи заблокировано",
+    ):
+        assert marker in MAIN_WINDOW_SOURCE
+
+
+def test_critical_description_embeds_attachment_names_not_implementation_report():
+    for marker in (
+        "def _critical_redmine_description",
+        'f"!{filename}!"',
+        "Основной график",
+        "График запросов по всем операциям",
+        "Ссылка на исходный график:",
+        "Наблюдается критический триггер:",
+    ):
+        assert marker in MAIN_WINDOW_SOURCE
+
+    for forbidden in (
+        "Проверка критического триггера выполнена автоматически Око",
+        "Доля медленных запросов: не требуется",
+        "Дополнительная проверка всех операций: не требуется",
+        "Ссылки на графики:",
+        "Картинка графика:",
+    ):
+        assert forbidden not in MAIN_WINDOW_SOURCE
