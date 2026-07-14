@@ -13,7 +13,6 @@ from app.live_zabbix_refresh_button import install_live_zabbix_refresh_button
 from app.live_zabbix_two_step_auth_fix import install_live_zabbix_two_step_auth_fix
 from app.profile_links_polish import install_profile_links_polish
 from app.live_zabbix_link_label_polish import install_live_zabbix_link_label_polish
-from app.critical_redmine_images import install_critical_redmine_images
 from app.jabka_duty_note_fix import install_jabka_duty_note_fix
 from app.jabka_embedded_assets import apply_jabka_icon_to_widget, install_jabka_embedded_assets
 from app.jabka_live_zabbix_polish import (
@@ -81,6 +80,11 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setDesktopFileName("oko")
+
+    # QtWebEngine-расширение критического Redmine загружается только после
+    # создания QApplication. Это исключает небезопасную выгрузку Qt при
+    # служебном импорте main.py тестами и утилитами.
+    from app.critical_redmine_images import install_critical_redmine_images
 
     default_icon_path = Path(__file__).resolve().parent / "assets" / "dezhurka_icon.png"
     icon_path = default_icon_path
