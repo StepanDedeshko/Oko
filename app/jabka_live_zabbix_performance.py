@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QRectF, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
-from PySide6.QtWidgets import QAbstractItemView, QStyle, QStyleOptionViewItem
+from PySide6.QtWidgets import QAbstractItemView, QStyle, QStyleOptionViewItem, QStyledItemDelegate
+from shiboken6 import isValid
 
 
 _BG_SELECTED = QColor("#2D6B3A")
@@ -17,13 +18,31 @@ _EDGE_HOVERED = QColor(102, 185, 91, 105)
 _ACCENT_NORMAL = QColor("#2D7D3A")
 
 
-def _visible_row_rect(delegate, row: int):
-    table = delegate.table
-    if row < 0 or row >= table.rowCount() or table.columnCount() <= 0:
+def _live_table(delegate):
+    """Return the backing table only while its Qt/C++ object is still alive."""
+    table = getattr(delegate, "table", None)
+    if table is None:
         return None
-    model = table.model()
-    first = table.visualRect(model.index(row, 0))
-    last = table.visualRect(model.index(row, table.columnCount() - 1))
+    try:
+        if not isValid(table):
+            return None
+        # Accessing viewport also validates the internal QAbstractScrollArea state.
+        table.viewport()
+    except RuntimeError:
+        return None
+    return table
+
+
+def _visible_row_rect(delegate, row: int):
+    table = _live_table(delegate)
+    if table is None or row < 0 or row >= table.rowCount() or table.columnCount() <= 0:
+        return None
+    try:
+        model = table.model()
+        first = table.visualRect(model.index(row, 0))
+        last = table.visualRect(model.index(row, table.columnCount() - 1))
+    except RuntimeError:
+        return None
     rect = first.united(last)
     if not rect.isValid() or rect.isEmpty():
         return None
@@ -31,16 +50,36 @@ def _visible_row_rect(delegate, row: int):
 
 
 def _update_hover_row(delegate, row: int) -> None:
+    table = _live_table(delegate)
+    if table is None:
+        return
     rect = _visible_row_rect(delegate, row)
-    if rect is not None:
-        delegate.table.viewport().update(rect)
+    if rect is None:
+        return
+    try:
+        viewport = table.viewport()
+        if isValid(viewport):
+            viewport.update(rect)
+    except RuntimeError:
+        return
 
 
 def _optimized_event_filter(self, watched, event):
-    if watched is self.table.viewport():
+    table = _live_table(self)
+    if table is None:
+        # During QApplication shutdown Python wrappers can outlive their C++ table.
+        # Returning False is enough: there is no live viewport left to handle.
+        return False
+
+    try:
+        viewport = table.viewport()
+    except RuntimeError:
+        return False
+
+    if watched is viewport:
         if event.type() == QEvent.Type.MouseMove:
             position = event.position().toPoint() if hasattr(event, "position") else event.pos()
-            index = self.table.indexAt(position)
+            index = table.indexAt(position)
             row = index.row() if index.isValid() else -1
             if row != self.hovered_row:
                 previous_row = self.hovered_row
@@ -52,10 +91,20 @@ def _optimized_event_filter(self, watched, event):
                 previous_row = self.hovered_row
                 self.hovered_row = -1
                 _update_hover_row(self, previous_row)
-    return super(self.__class__, self).eventFilter(watched, event)
+
+    # The filter only adds hover repainting and never consumes the original event.
+    # Avoid calling the C++ base implementation while Qt is tearing objects down.
+    return False
 
 
 def _optimized_paint(self, painter: QPainter, option, index):
+    table = _live_table(self)
+    if table is None:
+        try:
+            return QStyledItemDelegate.paint(self, painter, option, index)
+        except RuntimeError:
+            return None
+
     opt = QStyleOptionViewItem(option)
     self.initStyleOption(opt, index)
 
@@ -63,7 +112,7 @@ def _optimized_paint(self, painter: QPainter, option, index):
 
     row = index.row()
     column = index.column()
-    last_column = max(0, self.table.columnCount() - 1)
+    last_column = max(0, table.columnCount() - 1)
     first = column == 0
     last = column == last_column
     rect = QRectF(opt.rect).adjusted(4.0 if first else 0.0, 4.0, -4.0 if last else 0.0, -4.0)
