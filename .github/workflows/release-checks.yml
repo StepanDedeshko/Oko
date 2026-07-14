@@ -46,7 +46,6 @@ jobs:
           bash -n UPDATE_OKO.sh
           bash -n CHECK_RELEASE.sh
           bash -n IMPORT_JABBIX_RELEASE_ASSETS.sh
-          python -m py_compile app/critical_redmine_images.py
 
       - name: Check diff whitespace
         run: git diff --check origin/main...HEAD
@@ -55,13 +54,12 @@ jobs:
         env:
           QTWEBENGINE_DISABLE_SANDBOX: "1"
           QTWEBENGINE_CHROMIUM_FLAGS: "--no-sandbox --disable-gpu"
-          PYTHONFAULTHANDLER: "1"
         run: |
           set +e
-          xvfb-run -a env PYTHONPATH=. python -X faulthandler -m pytest -q --ignore=tests/test_critical_redmine_images.py --junitxml=pytest-junit.xml >pytest.log 2>&1
+          xvfb-run -a env PYTHONPATH=. python -m pytest -q --junitxml=pytest-junit.xml >pytest.log 2>&1
           status=$?
           printf '%s\n' "$status" > pytest.exitcode
-          tail -n 240 pytest.log
+          tail -n 180 pytest.log
           exit "$status"
 
       - name: Upload pytest diagnostics
