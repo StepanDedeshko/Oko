@@ -47,6 +47,14 @@ jobs:
           bash -n CHECK_RELEASE.sh
           bash -n IMPORT_JABBIX_RELEASE_ASSETS.sh
 
+      - name: Build and verify release archives
+        run: |
+          python build_release.py
+          unzip -t dist/update.zip
+          unzip -t dist/Oko-0.3.7-linux.zip
+          cd dist
+          sha256sum -c SHA256SUMS.txt
+
       - name: Check diff whitespace
         run: git diff --check origin/main...HEAD
 
@@ -73,6 +81,18 @@ jobs:
             pytest.exitcode
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Upload release candidate archives
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oko-0.3.7-release-candidate
+          path: |
+            dist/update.zip
+            dist/Oko-0.3.7-linux.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
 
   required-jabka-assets:
     runs-on: ubuntu-24.04
