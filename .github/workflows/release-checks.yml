@@ -91,18 +91,22 @@ jobs:
           sha256sum -c "$manifest"
 
           python - <<'PY'
+          import struct
           import wave
           from pathlib import Path
-          from PIL import Image
 
           pngs = (
               Path("assets/themes/jabka/backgrounds/00_main_menu_wallpaper.png"),
               Path("assets/themes/jabka/backgrounds/10_settings_menu_wallpaper.png"),
           )
+          png_signature = b"\x89PNG\r\n\x1a\n"
           for path in pngs:
-              with Image.open(path) as image:
-                  assert image.format == "PNG", f"{path}: expected PNG"
-                  assert image.size == (1672, 941), f"{path}: unexpected size {image.size}"
+              header = path.read_bytes()[:24]
+              assert len(header) == 24, f"{path}: truncated PNG header"
+              assert header[:8] == png_signature, f"{path}: expected PNG signature"
+              assert header[12:16] == b"IHDR", f"{path}: missing IHDR chunk"
+              size = struct.unpack(">II", header[16:24])
+              assert size == (1672, 941), f"{path}: unexpected size {size}"
 
           wavs = (
               Path("assets/themes/jabka/sounds/frog_croak.wav"),
