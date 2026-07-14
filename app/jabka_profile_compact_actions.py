@@ -83,7 +83,9 @@ def apply_jabka_profile_compact_actions(widget) -> bool:
         group_stack.setMinimumHeight(170)
         group_stack.setMaximumHeight(230)
 
-    service_column = QWidget(columns)
+    # Do not parent the wrapper to QSplitter before replaceWidget(); otherwise
+    # Qt registers it as an existing sibling and refuses the replacement.
+    service_column = QWidget()
     service_column.setObjectName("ProfileServiceGroupsColumn")
     service_column.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     service_layout = QVBoxLayout(service_column)
@@ -92,6 +94,7 @@ def apply_jabka_profile_compact_actions(widget) -> bool:
 
     old_service_card = columns.replaceWidget(1, service_column)
     if old_service_card is not service_card:
+        service_column.deleteLater()
         return False
     service_layout.addWidget(service_card, stretch=0)
     service_layout.addStretch(1)
