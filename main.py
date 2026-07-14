@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 import sys
-from PySide6.QtCore import QEventLoop, QTimer
 from pathlib import Path
 
+from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from app.config import ensure_config_exists, load_config
 from app.config_migrator import patch_config_file
+from app.jabka_duty_note_fix import install_jabka_duty_note_fix
+from app.jabka_embedded_assets import apply_jabka_icon_to_widget, install_jabka_embedded_assets
+from app.jabka_page_polish import apply_jabka_page_polish
+from app.jabka_theme import (
+    apply_jabka_runtime,
+    apply_jabka_widget_tree,
+    install_jabka_theme,
+)
 from app.login_dialog import LoginDialog
 from app.main_window import MainWindow
 from app.splash import ThemeSplash
@@ -16,6 +24,7 @@ from app.screen_utils import screen_under_cursor, screen_for_widget, center_widg
 from app.theme import apply_theme
 from app.app_info import APP_NAME, APP_VERSION
 from app.logger import get_logger
+
 
 def show_start_loading(config):
     loading_config = config.get("loading_screen", {})
@@ -52,22 +61,39 @@ def main():
     logger.info("APP_VERSION=%s", APP_VERSION)
     logger.info("Путь приложения: %s", app_root)
     logger.info("Путь config.json: %s", config_path)
+
+    # Регистрируем дополнительные темы до построения любых UI-экранов.
+    # Это не меняет пользовательские данные и не трогает рабочую логику.
+    install_jabka_theme()
+
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setDesktopFileName("oko")
 
-    icon_path = Path(__file__).resolve().parent / "assets" / "dezhurka_icon.png"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+    default_icon_path = Path(__file__).resolve().parent / "assets" / "dezhurka_icon.png"
+    icon_path = default_icon_path
 
     ensure_config_exists()
     patch_config_file()
     config = load_config()
+
+    jabka_icon_path = apply_jabka_runtime(config, app)
+    if jabka_icon_path is not None:
+        icon_path = jabka_icon_path
+
+    jabka_icon = install_jabka_embedded_assets(config, app)
+    if jabka_icon is None and icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+
     apply_theme(app, config.get("settings", {}).get("theme", "mass_effect"))
 
     startup_screen = screen_under_cursor()
 
     splash = ThemeSplash(config=config, preferred_screen=startup_screen)
+    if jabka_icon is not None:
+        apply_jabka_icon_to_widget(splash, jabka_icon)
+    elif icon_path.exists():
+        splash.setWindowIcon(QIcon(str(icon_path)))
     splash.show()
     app.processEvents()
     splash.wait_minimum(1400)
@@ -75,7 +101,9 @@ def main():
     app.processEvents()
 
     login_dialog = LoginDialog(config, preferred_screen=startup_screen)
-    if icon_path.exists():
+    if jabka_icon is not None:
+        apply_jabka_icon_to_widget(login_dialog, jabka_icon)
+    elif icon_path.exists():
         login_dialog.setWindowIcon(QIcon(str(icon_path)))
 
     if login_dialog.exec() != LoginDialog.Accepted:
@@ -86,8 +114,13 @@ def main():
 
     window = MainWindow(config=config, credentials=login_dialog.credentials)
 
-    if icon_path.exists():
+    if jabka_icon is not None:
+        apply_jabka_icon_to_widget(window, jabka_icon)
+    elif icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
+    apply_jabka_widget_tree(window, config)
+    apply_jabka_page_polish(window, config)
+    install_jabka_duty_note_fix(window, config)
 
     center_widget_on_screen(window, login_screen)
     window.show()

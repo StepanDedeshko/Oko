@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 800">
+  <defs><radialGradient id="r" cx="70%" cy="15%" r="80%"><stop offset="0" stop-color="#1f5229"/><stop offset=".42" stop-color="#071d0f"/><stop offset="1" stop-color="#020704"/></radialGradient></defs>
+  <rect width="1400" height="800" fill="url(#r)"/>
+  <rect x="40" y="60" width="1320" height="670" rx="28" fill="#06140b" opacity=".72" stroke="#2d7d3a"/>
+  <g opacity=".12" stroke="#8fe388"><path d="M80 160 H1320"/><path d="M80 240 H1320"/><path d="M80 320 H1320"/><path d="M80 400 H1320"/><path d="M80 480 H1320"/><path d="M80 560 H1320"/><path d="M80 640 H1320"/></g>
+  <g opacity=".20" fill="#b7f27a"><circle cx="1140" cy="150" r="80"/><circle cx="1240" cy="230" r="34"/><circle cx="1020" cy="250" r="26"/></g>
+  <path d="M0 650 C260 590 470 680 710 628 S1110 590 1400 650 V800 H0Z" fill="#031008" opacity=".90"/>
+  <text x="78" y="122" fill="#eaffd8" opacity=".18" font-size="40" font-family="DejaVu Sans, Arial" font-weight="700">live zabbix swamp radar</text>
+</svg>
