@@ -1,3 +1,5 @@
-#!/bin/bash
-cd "$(dirname "$0")"
-./ЗАПУСТИТЬ_ДЕЖУРКУ.sh
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "$SCRIPT_DIR/install.sh" "$@"
