@@ -3,14 +3,14 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSplitter
 
 from app.jabka_service_checks_polish import install_jabka_service_checks_polish
 from app.service_checks_widget import ServiceChecksSettingsWidget
 
 
 _APP = QApplication.instance() or QApplication([])
-_MAX_WIDGET_WIDTH = 16777215
 
 
 def _config(theme="jabka"):
@@ -29,27 +29,35 @@ def _config(theme="jabka"):
     }
 
 
-def test_jabka_service_checks_uses_full_width_and_bottom_group_manager():
+def test_jabka_service_checks_has_groups_left_and_products_right():
     install_jabka_service_checks_polish()
     widget = ServiceChecksSettingsWidget(_config())
 
     assert widget.property("jabka_service_checks_polished") is True
-    assert widget.service_credential_groups_card.title() == "Группы общих доступов"
-    assert widget.service_credential_groups_card.maximumWidth() == _MAX_WIDGET_WIDTH
-    assert widget.service_checks_editor_splitter.maximumWidth() == _MAX_WIDGET_WIDTH
-    assert widget.form_scroll.maximumWidth() == _MAX_WIDGET_WIDTH
-    assert widget.list_widget.maximumWidth() == 340
+    columns = widget.service_checks_columns
+    assert isinstance(columns, QSplitter)
+    assert columns.orientation() == Qt.Orientation.Horizontal
+    assert columns.indexOf(widget.service_credential_groups_card) == 0
+    assert columns.indexOf(widget.service_checks_editor_splitter) == 1
 
-    layout = widget.layout()
-    assert layout.indexOf(widget.service_checks_editor_splitter) >= 0
-    assert layout.indexOf(widget.service_credential_groups_card) > layout.indexOf(widget.service_checks_editor_splitter)
-    assert layout.indexOf(widget.service_credential_groups_legacy_card) == -1
+    root = widget.layout()
+    assert root.indexOf(columns) >= 0
+    assert root.indexOf(widget.service_credential_groups_card) == -1
+    assert root.indexOf(widget.service_checks_editor_splitter) == -1
+    assert root.indexOf(widget.service_credential_groups_legacy_card) == -1
     assert widget.service_credential_groups_legacy_card.isHidden()
 
+    groups = widget.service_credential_groups_card
+    assert groups.title() == "Группы общих доступов"
+    assert groups.isAncestorOf(widget.credential_groups_list)
+    assert groups.isAncestorOf(widget.credential_group_name_input)
+    assert groups.isAncestorOf(widget.credential_group_services_list)
     assert widget.credential_groups_list.count() == 2
-    assert widget.credential_groups_list.item(0).text() == "Общая группа"
-    assert widget.credential_groups_list.item(1).text() == "Вторая группа"
-    assert widget.credential_group_services_list.maximumWidth() == _MAX_WIDGET_WIDTH
+
+    product_editor = widget.service_checks_editor_splitter
+    assert product_editor.indexOf(widget.list_widget) == 0
+    assert product_editor.indexOf(widget.form_scroll) == 1
+    assert widget.list_widget.maximumWidth() == 330
 
     hidden_titles = [
         child
@@ -61,7 +69,7 @@ def test_jabka_service_checks_uses_full_width_and_bottom_group_manager():
     assert len(hidden_titles) == 1
     assert hidden_titles[0].isHidden()
 
-    button_texts = {button.text() for button in widget.service_credential_groups_card.findChildren(QPushButton)}
+    button_texts = {button.text() for button in groups.findChildren(QPushButton)}
     assert button_texts == {"Добавить группу", "Удалить группу"}
 
 
@@ -74,9 +82,9 @@ def test_group_list_selects_existing_group_for_editing():
     assert widget.credential_group_select.currentData() == "second_group"
     assert widget.credential_group_name_input.text() == "Вторая группа"
     checked_ids = {
-        widget.credential_group_services_list.item(row).data(0x0100)
+        widget.credential_group_services_list.item(row).data(Qt.ItemDataRole.UserRole)
         for row in range(widget.credential_group_services_list.count())
-        if widget.credential_group_services_list.item(row).checkState().value == 2
+        if widget.credential_group_services_list.item(row).checkState() == Qt.CheckState.Checked
     }
     assert checked_ids == {"service_2"}
 
@@ -110,6 +118,7 @@ def test_other_theme_keeps_original_service_checks_layout():
     widget = ServiceChecksSettingsWidget(_config(theme="mass_effect"))
 
     assert widget.property("jabka_service_checks_polished") is None
+    assert not hasattr(widget, "service_checks_columns")
     assert not hasattr(widget, "service_credential_groups_card")
     assert any(
         isinstance(child, QLabel) and child.text() == "Проверка сервисов" and not child.isHidden()
