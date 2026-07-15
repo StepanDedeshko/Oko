@@ -154,6 +154,7 @@ class CriticalRedmineCreateDialog(RedmineCreateDialog):
         self._attachment_ready = not bool(self.pending_attachments)
         self._attachment_injection_attempts = 0
         self._attachment_polls = 0
+        self._description_started = False
         super().__init__(
             profile,
             redmine_url,
@@ -206,31 +207,56 @@ class CriticalRedmineCreateDialog(RedmineCreateDialog):
     'input[type="file"]'
   );
   if (!input) return JSON.stringify({{ok:false, reason:'file_input_not_found'}});
-  if (typeof DataTransfer === 'undefined' || typeof File === 'undefined') {{
+  if (typeof File === 'undefined') {{
     return JSON.stringify({{ok:false, reason:'file_api_missing'}});
   }}
   try {{
-    input.setAttribute('multiple', 'multiple');
-    var transfer = new DataTransfer();
-    attachments.forEach(function(attachment) {{
+    var files = attachments.map(function(attachment) {{
       var binary = atob(String(attachment.data_base64 || ''));
       var bytes = new Uint8Array(binary.length);
       for (var index = 0; index < binary.length; index += 1) {{
         bytes[index] = binary.charCodeAt(index);
       }}
-      transfer.items.add(new File([bytes], attachment.filename, {{type:'image/png'}}));
+      return new File([bytes], attachment.filename, {{type:'image/png'}});
     }});
+
+    // Redmine's own uploader accepts File objects directly and creates the
+    // attachment tokens expected by the issue form. This avoids assigning to
+    // input.files, which QtWebEngine/Chromium can reject for security reasons.
+    if (typeof uploadAndAttachFiles === 'function') {{
+      uploadAndAttachFiles(files, input);
+      return JSON.stringify({{
+        ok:true,
+        method:'uploadAndAttachFiles',
+        expected_count:files.length,
+        input_name:String(input.name || '')
+      }});
+    }}
+
+    // Keep the old browser-native path as a compatibility fallback for Redmine
+    // installations that do not expose uploadAndAttachFiles globally.
+    if (typeof DataTransfer === 'undefined') {{
+      return JSON.stringify({{ok:false, reason:'redmine_uploader_missing'}});
+    }}
+    input.setAttribute('multiple', 'multiple');
+    var transfer = new DataTransfer();
+    files.forEach(function(file) {{ transfer.items.add(file); }});
     input.files = transfer.files;
     input.dispatchEvent(new Event('input', {{bubbles:true}}));
     input.dispatchEvent(new Event('change', {{bubbles:true}}));
     return JSON.stringify({{
       ok:input.files.length === attachments.length,
+      method:'DataTransfer',
       selected_count:input.files.length,
       expected_count:attachments.length,
       input_name:String(input.name || '')
     }});
   }} catch (error) {{
-    return JSON.stringify({{ok:false, reason:'file_injection_failed', error:String(error || '')}});
+    return JSON.stringify({{
+      ok:false,
+      reason:'file_injection_failed',
+      error:String(error && (error.stack || error.message) || error || '')
+    }});
   }}
 }})();
 """
@@ -289,11 +315,19 @@ class CriticalRedmineCreateDialog(RedmineCreateDialog):
         except (TypeError, ValueError):
             payload = {}
 
-        if payload.get("valid_issue_form") and self.pending_attachments and not self._attachment_ready:
-            if not self._attachment_started:
-                self._start_attachment_upload()
+        if not payload.get("valid_issue_form"):
+            super()._on_create_guard_result(result)
             return
-        super()._on_create_guard_result(result)
+
+        # Description and mandatory graph upload are independent. Start both as
+        # soon as the real issue form is available, but keep submit locked until
+        # both operations have completed successfully.
+        if self.pending_description and not self._description_injected and not self._description_started:
+            self._description_started = True
+            self._start_description_injection()
+        if self.pending_attachments and not self._attachment_ready and not self._attachment_started:
+            self._start_attachment_upload()
+        self._maybe_unlock_submit()
 
     def _start_attachment_upload(self) -> None:
         self._attachment_started = True
@@ -321,13 +355,26 @@ class CriticalRedmineCreateDialog(RedmineCreateDialog):
         except (TypeError, ValueError):
             payload = {}
         if payload.get("ok"):
+            get_logger().info(
+                "Critical Redmine attachment injection accepted: method=%s expected=%s input=%s",
+                payload.get("method") or "unknown",
+                payload.get("expected_count") or len(self.pending_attachments),
+                payload.get("input_name") or "",
+            )
             self._attachment_polls = 0
             QTimer.singleShot(CRITICAL_ATTACHMENT_POLL_MS, self._poll_attachment_status)
             return
         if self._attachment_injection_attempts < 5:
             QTimer.singleShot(600, self._try_attachment_injection)
             return
-        self._attachment_failed(str(payload.get("reason") or "file_injection_failed"))
+        reason = str(payload.get("reason") or "file_injection_failed")
+        error = str(payload.get("error") or "").strip()
+        get_logger().warning(
+            "Critical Redmine attachment injection failed: reason=%s error=%s",
+            reason,
+            error or "none",
+        )
+        self._attachment_failed(f"{reason}: {error}" if error else reason)
 
     def _poll_attachment_status(self) -> None:
         if self._attachment_ready:
@@ -366,8 +413,7 @@ class CriticalRedmineCreateDialog(RedmineCreateDialog):
                 token_count,
                 selected_count,
             )
-            self.status_label.setText("Графики прикреплены. Вставляю описание задачи...")
-            self._start_description_injection()
+            self._maybe_unlock_submit()
             return
 
         error_text = str(payload.get("error_text") or "").strip()
@@ -378,6 +424,24 @@ class CriticalRedmineCreateDialog(RedmineCreateDialog):
             self._attachment_failed("attachment_upload_timeout")
             return
         QTimer.singleShot(CRITICAL_ATTACHMENT_POLL_MS, self._poll_attachment_status)
+
+    def _maybe_unlock_submit(self) -> None:
+        description_ready = not self.pending_description or self._description_injected
+        attachments_ready = not self.pending_attachments or self._attachment_ready
+        if description_ready and attachments_ready:
+            get_logger().info("Critical Redmine form ready: description=true attachments=true")
+            self._set_submit_locked(False)
+            self.status_label.setText("")
+            self.status_label.setVisible(False)
+            return
+
+        self._set_submit_locked(True)
+        if description_ready and not attachments_ready:
+            self.status_label.setText("Описание вставлено. Жду загрузки графиков в Redmine...")
+            self.status_label.setVisible(True)
+        elif attachments_ready and not description_ready:
+            self.status_label.setText("Графики прикреплены. Вставляю описание задачи...")
+            self.status_label.setVisible(True)
 
     def _attachment_failed(self, reason: str) -> None:
         get_logger().warning("Critical Redmine attachment upload failed: %s", reason)
@@ -396,16 +460,17 @@ class CriticalRedmineCreateDialog(RedmineCreateDialog):
         if payload.get("ok"):
             self._description_injected = True
             get_logger().info("Critical Redmine description injection success")
-            self._set_submit_locked(False)
-            self.status_label.setText("")
-            self.status_label.setVisible(False)
+            self._maybe_unlock_submit()
             return
 
         if self._description_injection_attempts >= 4 and not self._description_injected:
             clipboard = QApplication.clipboard()
             if clipboard is not None:
                 clipboard.setText(self.pending_description)
-            get_logger().warning("Critical Redmine description injection failed")
+            get_logger().warning(
+                "Critical Redmine description injection failed: reason=%s",
+                payload.get("reason") or "unknown",
+            )
             self.status_label.setText(
                 "Не удалось вставить описание с изображениями. Создание задачи заблокировано; "
                 "описание скопировано в буфер обмена."

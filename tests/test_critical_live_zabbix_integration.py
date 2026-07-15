@@ -209,19 +209,55 @@ def test_critical_chart_png_is_captured_from_shared_authenticated_webview():
     assert "tempfile" not in lowered
 
 
-def test_critical_redmine_uses_real_file_attachments_and_locks_submit():
+def test_critical_redmine_uses_redmine_native_uploader_with_browser_fallback():
     for marker in (
         "class CriticalRedmineCreateDialog",
-        "DataTransfer",
+        "uploadAndAttachFiles",
         "new File",
+        "DataTransfer",
         "input.files = transfer.files",
         "attachments[dummy][file]",
         "[token]",
-        "self._set_submit_locked(True)",
-        "self._set_submit_locked(False)",
+        "Critical Redmine attachment injection accepted",
+        "Critical Redmine attachment injection failed",
         "Создание задачи заблокировано",
     ):
         assert marker in MAIN_WINDOW_SOURCE
+
+
+def test_critical_description_and_attachment_upload_start_independently():
+    guard_block = MAIN_WINDOW_SOURCE.split(
+        "def _on_create_guard_result(self, result):", 1
+    )[1].split("def _start_attachment_upload", 1)[0]
+    assert "self._start_description_injection()" in guard_block
+    assert "self._start_attachment_upload()" in guard_block
+    assert guard_block.index("self._start_description_injection()") < guard_block.index(
+        "self._start_attachment_upload()"
+    )
+    assert "self._maybe_unlock_submit()" in guard_block
+
+    description_result_block = MAIN_WINDOW_SOURCE.split(
+        "def _on_description_injection_result(self, result):", 1
+    )[1].split("class CriticalLiveZabbixMonitorWidget", 1)[0]
+    assert "self._maybe_unlock_submit()" in description_result_block
+    assert "self._set_submit_locked(False)" not in description_result_block
+
+    attachment_result_block = MAIN_WINDOW_SOURCE.split(
+        "def _on_attachment_status_result(self, result) -> None:", 1
+    )[1].split("def _attachment_failed", 1)[0]
+    assert "self._attachment_ready = True" in attachment_result_block
+    assert "self._maybe_unlock_submit()" in attachment_result_block
+
+
+def test_critical_submit_unlock_requires_description_and_attachments_ready():
+    ready_block = MAIN_WINDOW_SOURCE.split(
+        "def _maybe_unlock_submit(self) -> None:", 1
+    )[1].split("def _attachment_failed", 1)[0]
+    assert "description_ready = not self.pending_description or self._description_injected" in ready_block
+    assert "attachments_ready = not self.pending_attachments or self._attachment_ready" in ready_block
+    assert "if description_ready and attachments_ready:" in ready_block
+    assert "self._set_submit_locked(False)" in ready_block
+    assert "self._set_submit_locked(True)" in ready_block
 
 
 def test_critical_description_embeds_attachment_names_not_implementation_report():
