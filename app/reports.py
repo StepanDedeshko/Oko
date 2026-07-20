@@ -33,6 +33,10 @@ REPORT_HEADERS = (
     "Потерянное кол-во проходов",
 )
 
+# История проходов в рабочем Zabbix представлена значениями с пятиминутным
+# шагом. По согласованной формуле потери считаются: время_в_минутах * значение / 5.
+PASSAGE_SAMPLE_MINUTES = 5.0
+
 _DATETIME_FORMATS = (
     "%d.%m.%Y %H:%M:%S",
     "%d.%m.%Y %H:%M",
@@ -81,27 +85,22 @@ def _normalize_problem(value: str) -> str:
 
 
 def problem_matches_report_trigger(problem: str) -> bool:
-    """Return True for the eight outage trigger families used by the report.
-
-    Zabbix resolves macros such as ``{HOST.NAME}`` and ``{#FSNAME}`` before the
-    problem text reaches CSV, therefore matching is based on the stable text
-    around those dynamic values instead of on the literal template string.
-    """
+    """Match the eight outage trigger families after Zabbix macro expansion."""
     text = _normalize_problem(problem)
     if not text:
         return False
-
-    checks = (
-        "has been restarted (uptime < 10m)" in text,
-        text.startswith("zabbix agent on ") and " is unreachable for " in text,
-        text.startswith("точка монтирования ") and " находится в режиме read only" in text,
-        text.startswith("сервер недоступен через ping "),
-        "docker service not running" in text,
-        text.startswith("не запущен docker контейнер "),
-        text.startswith("tevian: ошибка получения api face detect http://") and "/face/detect" in text,
-        text.startswith("tevian: ошибка получения api face match http://") and "/face/match" in text,
+    return any(
+        (
+            "has been restarted (uptime < 10m)" in text,
+            text.startswith("zabbix agent on ") and " is unreachable for " in text,
+            text.startswith("точка монтирования ") and " находится в режиме read only" in text,
+            text.startswith("сервер недоступен через ping "),
+            "docker service not running" in text,
+            text.startswith("не запущен docker контейнер "),
+            text.startswith("tevian: ошибка получения api face detect http://") and "/face/detect" in text,
+            text.startswith("tevian: ошибка получения api face match http://") and "/face/match" in text,
+        )
     )
-    return any(checks)
 
 
 def parse_datetime_value(value) -> datetime | None:
@@ -113,18 +112,16 @@ def parse_datetime_value(value) -> datetime | None:
     raw = str(value or "").strip()
     if not raw:
         return None
-
     for fmt in _DATETIME_FORMATS:
         try:
             return datetime.strptime(raw, fmt)
         except ValueError:
             pass
 
-    # Excel serial date fallback. This is useful when a CSV was produced from a
-    # sheet where columns ``Начало`` / ``Восстановление`` were numeric values.
-    normalized = raw.replace(" ", "").replace(",", ".")
+    # Excel serial date fallback for CSV files exported after the operator's
+    # old formulas ``=A2*1`` and ``=B2*1`` were added manually.
     try:
-        serial = float(normalized)
+        serial = float(raw.replace(" ", "").replace(",", "."))
     except ValueError:
         return None
     if serial <= 0:
@@ -173,9 +170,9 @@ def load_outages_from_csv(
 ) -> list[OutageEvent]:
     """Read outage events from the operator CSV export.
 
-    The manually-added columns ``Начало`` / ``Восстановление`` are accepted as
-    fallbacks, but are no longer required. Downtime is always recalculated from
-    the source timestamps (equivalent to ``Восстановление - Начало``).
+    ``Начало`` / ``Восстановление`` remain accepted as fallbacks, but they are
+    not required anymore. Downtime is recalculated from the source timestamps,
+    equivalent to the old spreadsheet formula ``=G2-F2``.
     """
     source = Path(path)
     text = _decode_csv_bytes(source.read_bytes())
@@ -228,7 +225,7 @@ def load_outages_from_csv(
 
 
 def aggregate_outages(events: Iterable[OutageEvent]) -> list[OutageAggregate]:
-    """Sum downtime by the start date and network host, matching the old sheet."""
+    """Sum downtime by start date and network host, as in the old pivot sheet."""
     buckets: dict[tuple[date, str], dict] = {}
     for event in events:
         key = (event.started_at.date(), normalize_host(event.host))
@@ -252,6 +249,12 @@ def passage_average_key(report_date: date, host: str) -> tuple[str, str]:
     return report_date.isoformat(), normalize_host(host)
 
 
+def calculate_lost_passages(downtime_seconds: float, passage_average: float) -> float:
+    """Apply the agreed report formula: time(min) * passage value / 5."""
+    downtime_minutes = max(0.0, float(downtime_seconds or 0.0)) / 60.0
+    return downtime_minutes * float(passage_average) / PASSAGE_SAMPLE_MINUTES
+
+
 def build_report_rows(
     aggregates: Iterable[OutageAggregate],
     passage_averages: dict[tuple[str, str], float | None] | None = None,
@@ -260,9 +263,7 @@ def build_report_rows(
     result: list[TriggerReportRow] = []
     for item in aggregates:
         average = passage_averages.get(passage_average_key(item.report_date, item.host))
-        lost = None
-        if average is not None:
-            lost = (item.downtime_seconds / 60.0) * float(average)
+        lost = calculate_lost_passages(item.downtime_seconds, average) if average is not None else None
         result.append(
             TriggerReportRow(
                 report_date=item.report_date,
