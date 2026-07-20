@@ -7,7 +7,7 @@ configuration or credentials.
 """
 from __future__ import annotations
 
-from app.reports_widget import ReportsWidget
+from app.reports_widget_v2 import ReportsWidget
 
 _INSTALLED = False
 
