@@ -32,6 +32,7 @@ from app.jabka_theme import (
 )
 from app.login_dialog import LoginDialog
 from app.main_window import MainWindow
+from app.reports_integration import install_reports_integration
 from app.splash import ThemeSplash
 from app.loading_screen import LoadingScreen
 from app.screen_utils import screen_under_cursor, screen_for_widget, center_widget_on_screen, geometry_dict
@@ -101,6 +102,7 @@ def main():
     install_jabka_profile_polish()
     install_jabka_profile_compact_actions()
     install_live_zabbix_link_label_polish()
+    install_reports_integration()
 
     jabka_icon_path = apply_jabka_runtime(config, app)
     install_jabbix_notification_sounds(config)
