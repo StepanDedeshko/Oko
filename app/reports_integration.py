@@ -23,7 +23,7 @@ def install_reports_integration() -> None:
 
     base_window = main_window_base.MainWindow
     original_init = base_window.__init__
-    original_stop = base_window.stop_background_activity_for_exit
+    original_stop = getattr(base_window, "stop_background_activity_for_exit", None)
 
     def window_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
@@ -31,23 +31,29 @@ def install_reports_integration() -> None:
             return
         self.reports_widget = ReportsWidget(
             config=self.config,
-            profiles=self.profiles,
-            credentials=self.credentials,
+            profiles=getattr(self, "profiles", {}),
+            credentials=getattr(self, "credentials", {}),
             parent=self,
         )
         self.reports_page_index = self.stack.addWidget(self.reports_widget)
-        self.dashboard_widgets.append(self.reports_widget)
-        self.page_has_time_buttons[self.reports_page_index] = False
+        if hasattr(self, "dashboard_widgets"):
+            self.dashboard_widgets.append(self.reports_widget)
+        if hasattr(self, "page_has_time_buttons"):
+            self.page_has_time_buttons[self.reports_page_index] = False
 
     def open_reports_page(self):
         index = getattr(self, "reports_page_index", None)
         if index is None:
             return
         self.stack.setCurrentIndex(index)
-        self.set_time_selector_visible(False)
-        self.update_duty_section_switch(None)
-        self.pause_inactive_web_dashboards()
-        self.log_memory_status()
+        if hasattr(self, "set_time_selector_visible"):
+            self.set_time_selector_visible(False)
+        if hasattr(self, "update_duty_section_switch"):
+            self.update_duty_section_switch(None)
+        if hasattr(self, "pause_inactive_web_dashboards"):
+            self.pause_inactive_web_dashboards()
+        if hasattr(self, "log_memory_status"):
+            self.log_memory_status()
 
     def stop_background_activity_for_exit(self):
         reports = getattr(self, "reports_widget", None)
@@ -58,11 +64,14 @@ def install_reports_integration() -> None:
                 logger = getattr(self, "logger", None)
                 if logger is not None:
                     logger.exception("Failed to cleanup ReportsWidget")
-        return original_stop(self)
+        if original_stop is not None:
+            return original_stop(self)
+        return None
 
     base_window.__init__ = window_init
     base_window.open_reports_page = open_reports_page
-    base_window.stop_background_activity_for_exit = stop_background_activity_for_exit
+    if original_stop is not None:
+        base_window.stop_background_activity_for_exit = stop_background_activity_for_exit
 
     home_page = home_config.HomePageWidget
     original_visible_actions = home_page.visible_main_actions
